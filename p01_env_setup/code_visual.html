@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p01 环境搭建与显存估算 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;--orange:#F97316;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(249,115,22,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--orange),var(--danger));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(249,115,22,.2);border-left:3px solid var(--orange);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(249,115,22,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(249,115,22,.5);background:rgba(249,115,22,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(249,115,22,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(249,115,22,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+.shape-tag{display:inline-block;background:rgba(249,115,22,.2);border:1px solid rgba(249,115,22,.4);padding:2px 8px;border-radius:6px;font-size:11px;font-family:'Courier New',monospace;color:var(--orange);margin:2px;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p01</span>
+  <h1>环境搭建与显存估算</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'detect_gpu_preset() — GPU 自动检测',
+   desc:'通过 torch.cuda.get_device_properties(0) 获取 GPU 显存，自动选择训练 preset（24G/48G）。这样用户无需手动修改配置。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">detect_gpu_preset</span>() -> str:',hl:false},
+     {text:'    <span class="kw">import</span> torch',hl:false},
+     {text:'    <span class="kw">if</span> torch.cuda.is_available():',hl:false},
+     {text:'        <span class="cm"># 获取第一张 GPU 的显存（GB）</span>',hl:false},
+     {text:'        props = torch.cuda.get_device_properties(<span class="num">0</span>)',hl:true},
+     {text:'        vram_gb = props.total_mem / (<span class="num">1024</span> ** <span class="num">3</span>)',hl:true},
+     {text:'        gpu_name = torch.cuda.get_device_name(<span class="num">0</span>)',hl:false},
+     {text:'',hl:false},
+     {text:'        <span class="kw">if</span> vram_gb >= <span class="num">40</span>:  <span class="cm"># A6000/A100</span>',hl:true},
+     {text:'            <span class="kw">return</span> <span class="str">"GPU_48G"</span>',hl:true},
+     {text:'        <span class="kw">else</span>:              <span class="cm"># 4090/3090</span>',hl:false},
+     {text:'            <span class="kw">return</span> <span class="str">"GPU_24G"</span>',hl:false},
+     {text:'    <span class="kw">return</span> <span class="str">"CPU"</span>',hl:false},
+   ]},
+  {title:'estimate_model_memory() — 参数显存估算',
+   desc:'核心公式：参数显存 = 参数量 × 每参数字节 / 1024³。不同精度（fp32/bf16/int8/int4）对应不同的每参数字节数。',
+   code:[
+     {text:'BYTES_PER_PARAM = {',hl:false},
+     {text:'    <span class="str">"fp32"</span>: <span class="num">4.0</span>,   <span class="cm"># 32-bit = 4 字节</span>',hl:true},
+     {text:'    <span class="str">"bf16"</span>: <span class="num">2.0</span>,   <span class="cm"># 16-bit = 2 字节</span>',hl:true},
+     {text:'    <span class="str">"int8"</span>: <span class="num">1.0</span>,   <span class="cm"># 8-bit  = 1 字节</span>',hl:true},
+     {text:'    <span class="str">"int4"</span>: <span class="num">0.5</span>,   <span class="cm"># 4-bit  = 0.5 字节</span>',hl:true},
+     {text:'}',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="kw">def</span> <span class="fn">estimate_model_memory</span>(params_B, dtype):',hl:false},
+     {text:'    bytes = BYTES_PER_PARAM[dtype]',hl:false},
+     {text:'    <span class="kw">return</span> params_B * <span class="num">1e9</span> * bytes / <span class="num">1024</span>**<span class="num">3</span>',hl:true},
+   ]},
+  {title:'estimate_optimizer_memory() — 优化器状态估算',
+   desc:'AdamW 为每个参数维护 m(fp32) + v(fp32) = 8 字节/参数，是 bf16 参数本身的 4 倍。这是训练时最大的显存开销。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">estimate_optimizer_memory</span>(params_B, optimizer):',hl:false},
+     {text:'    bytes_per_param = {',hl:false},
+     {text:'        <span class="str">"adamw"</span>:    <span class="num">8.0</span>,  <span class="cm"># m(fp32)+v(fp32)=4+4</span>',hl:true},
+     {text:'        <span class="str">"sgd"</span>:      <span class="num">4.0</span>,  <span class="cm"># m(fp32)=4</span>',hl:false},
+     {text:'        <span class="str">"adam_8bit"</span>: <span class="num">2.0</span>,  <span class="cm"># m(int8)+v(int8)=1+1</span>',hl:false},
+     {text:'    }',hl:false},
+     {text:'    b = bytes_per_param[optimizer]',hl:false},
+     {text:'    <span class="kw">return</span> params_B * <span class="num">1e9</span> * b / <span class="num">1024</span>**<span class="num">3</span>',hl:true},
+   ]},
+  {title:'estimate_zero_memory() — ZeRO 分片调整',
+   desc:'ZeRO 将优化器/梯度/参数分片到 N 张 GPU 上。Stage 越高，分片越多，每卡显存越少。单卡时分片等于不分片。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">estimate_zero_memory</span>(P, G, O, stage, N):',hl:false},
+     {text:'    <span class="kw">if</span> stage == <span class="num">0</span>:  <span class="cm"># 无优化</span>',hl:false},
+     {text:'        <span class="kw">return</span> P, G, O',hl:false},
+     {text:'    <span class="kw">elif</span> stage == <span class="num">1</span>:  <span class="cm"># 优化器分片</span>',hl:false},
+     {text:'        <span class="kw">return</span> P, G, O/N',hl:true},
+     {text:'    <span class="kw">elif</span> stage == <span class="num">2</span>:  <span class="cm"># +梯度分片</span>',hl:false},
+     {text:'        <span class="kw">return</span> P, G/N, O/N',hl:true},
+     {text:'    <span class="kw">elif</span> stage == <span class="num">3</span>:  <span class="cm"># +参数分片</span>',hl:false},
+     {text:'        <span class="kw">return</span> P/N, G/N, O/N',hl:true},
+   ]},
+  {title:'benchmark_matmul() — 矩阵乘法吞吐测试',
+   desc:'矩阵乘法是大模型训练的核心操作。FLOPS = 2×M×N×K（乘法+加法），除以时间得到 TFLOPS。注意预热和 CUDA 同步。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">benchmark_matmul</span>(M, N, K, dtype):',hl:false},
+     {text:'    A = torch.randn(M, K, dtype=dtype, device=<span class="str">"cuda"</span>)',hl:false},
+     {text:'    B = torch.randn(K, N, dtype=dtype, device=<span class="str">"cuda"</span>)',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 预热（GPU 需要暖机达到最高频率）</span>',hl:false},
+     {text:'    <span class="kw">for</span> _ <span class="kw">in</span> range(warmup):',hl:false},
+     {text:'        torch.matmul(A, B)',hl:false},
+     {text:'    torch.cuda.synchronize()  <span class="cm"># 等待 GPU 完成</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    start = time.time()',hl:false},
+     {text:'    <span class="kw">for</span> _ <span class="kw">in</span> range(iters):',hl:false},
+     {text:'        torch.matmul(A, B)',hl:false},
+     {text:'    torch.cuda.synchronize()  <span class="cm"># 必须同步！</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    flops = <span class="num">2</span> * M * N * K * iters',hl:true},
+     {text:'    tflops = flops / elapsed / <span class="num">1e12</span>',hl:true},
+   ]},
+];
+
+function resize(){
+  const r=window.devicePixelRatio||1;
+  const rect=canvas.parentElement.getBoundingClientRect();
+  canvas.width=rect.width*r; canvas.height=rect.height*r;
+  W=rect.width; H=rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize',resize);
+
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+function renderCanvas(){
+  ctx.clearRect(0,0,W,H);
+  const p=Math.min(animProgress,1);
+  const cx=W/2,cy=H/2-40;
+  
+  if(currentStep===0){
+    // GPU detection flow
+    const boxes=[
+      {text:'torch.cuda\n.is_available()',x:cx,y:40,c:'#0984E3'},
+      {text:'get_device\n_properties(0)',x:cx,y:120,c:'#6C5CE7'},
+      {text:'vram_gb\n= total_mem/1024³',x:cx,y:200,c:'#F97316'},
+      {text:'≥40GB?\nGPU_48G : GPU_24G',x:cx,y:280,c:'#10B981'},
+    ];
+    boxes.forEach((b,i)=>{
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-i*.2)/.3)));
+      ctx.globalAlpha=ap;
+      ctx.fillStyle=b.c+'33'; ctx.strokeStyle=b.c+'88'; ctx.lineWidth=2;
+      drawRoundRect(b.x-80,b.y,160,55,10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=b.c; ctx.font='13px PingFang SC'; ctx.textAlign='center';
+      b.text.split('\n').forEach((line,li)=>{
+        ctx.fillText(line,b.x,b.y+20+li*18);
+      });
+      if(i>0){
+        ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(b.x,boxes[i-1].y+55); ctx.lineTo(b.x,b.y); ctx.stroke();
+      }
+      ctx.globalAlpha=1;
+    });
+  } else if(currentStep===1){
+    // Precision bytes visualization
+    const items=[{n:'fp32',b:4,c:'#EF4444'},{n:'bf16',b:2,c:'#6C5CE7'},{n:'int8',b:1,c:'#F59E0B'},{n:'int4',b:0.5,c:'#10B981'}];
+    items.forEach((it,i)=>{
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-i*.15)/.3)));
+      const y=30+i*70;
+      // Bytes blocks
+      const blockW=40,blockH=40;
+      for(let b=0;b<Math.ceil(it.b);b++){
+        const bw=b<Math.floor(it.b)?blockW:(it.b%1)*blockW||blockW;
+        ctx.globalAlpha=ap*.7;
+        ctx.fillStyle=it.c;
+        drawRoundRect(30+b*(blockW+5),y,bw,blockH,5); ctx.fill();
+      }
+      ctx.globalAlpha=ap;
+      ctx.font='bold 14px Courier New'; ctx.fillStyle=it.c; ctx.textAlign='left';
+      ctx.fillText(it.n+': '+it.b+' bytes',30+5*(blockW+5),y+25);
+      ctx.globalAlpha=1;
+    });
+  } else if(currentStep===2){
+    // AdamW state diagram
+    const ap=easeInOut(Math.min(1,p/.4));
+    ctx.globalAlpha=ap;
+    // theta box
+    ctx.fillStyle='rgba(108,92,231,.2)'; ctx.strokeStyle='rgba(108,92,231,.5)'; ctx.lineWidth=2;
+    drawRoundRect(cx-50,30,100,50,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#6C5CE7'; ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('θ (参数)',cx,60);
+    // m box
+    const mp=easeInOut(Math.max(0,(p-.3)/.3));
+    ctx.globalAlpha=mp;
+    ctx.fillStyle='rgba(239,68,68,.2)'; ctx.strokeStyle='rgba(239,68,68,.5)';
+    drawRoundRect(cx-120,130,100,50,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#EF4444'; ctx.fillText('m (动量)',cx-70,160);
+    // v box
+    ctx.fillStyle='rgba(249,115,22,.2)'; ctx.strokeStyle='rgba(249,115,22,.5)';
+    drawRoundRect(cx+20,130,100,50,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#F97316'; ctx.fillText('v (方差)',cx+70,160);
+    // arrows
+    ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(cx-20,80); ctx.lineTo(cx-70,130); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+20,80); ctx.lineTo(cx+70,130); ctx.stroke();
+    // sizes
+    if(p>.6){
+      const sp=easeInOut((p-.6)/.3);
+      ctx.globalAlpha=sp;
+      ctx.font='12px Courier New'; ctx.fillStyle='var(--warn)';
+      ctx.fillText('2B/p (bf16)',cx,25);
+      ctx.fillText('4B/p (fp32)',cx-70,195);
+      ctx.fillText('4B/p (fp32)',cx+70,195);
+    }
+    ctx.globalAlpha=1;
+  } else if(currentStep===3){
+    // ZeRO stages simple
+    const stages=[0,1,2,3];
+    const parts=['P','G','O'];
+    const partC=['#6C5CE7','#0984E3','#EF4444'];
+    stages.forEach((s,si)=>{
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-si*.2)/.3)));
+      ctx.globalAlpha=ap;
+      const y=30+si*70;
+      ctx.font='bold 13px PingFang SC'; ctx.fillStyle='var(--warn)'; ctx.textAlign='left';
+      ctx.fillText('Stage '+s,20,y+18);
+      parts.forEach((pt,pi)=>{
+        const full = (s===0) || (s===1&&pi<2) || (s===2&&pi===0);
+        const w=full?80:30;
+        ctx.fillStyle=partC[pi]+(full?'CC':'66');
+        drawRoundRect(100+pi*90,y,w,30,5); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='12px Courier New'; ctx.textAlign='center';
+        ctx.fillText(pt+(full?'':'/N'),100+pi*90+w/2,y+20);
+      });
+      ctx.globalAlpha=1;
+    });
+  } else if(currentStep===4){
+    // Matmul FLOPS diagram
+    const ap=easeInOut(Math.min(1,p/.4));
+    ctx.globalAlpha=ap;
+    const sz=60;
+    // Matrix A
+    ctx.fillStyle='rgba(108,92,231,.3)'; ctx.strokeStyle='rgba(108,92,231,.5)'; ctx.lineWidth=1;
+    drawRoundRect(30,50,sz,sz*1.5,5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#6C5CE7'; ctx.font='bold 12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('A',30+sz/2,50+sz*.75+5);
+    ctx.font='10px Courier New'; ctx.fillText('M×K',30+sz/2,50+sz*1.5+15);
+    // × sign
+    ctx.font='bold 20px PingFang SC'; ctx.fillStyle='var(--warn)';
+    ctx.fillText('×',110,50+sz*.75+5);
+    // Matrix B
+    ctx.fillStyle='rgba(0,184,148,.3)'; ctx.strokeStyle='rgba(0,184,148,.5)';
+    drawRoundRect(130,50,sz*1.5,sz,5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='bold 12px PingFang SC';
+    ctx.fillText('B',130+sz*.75,50+sz/2+5);
+    ctx.font='10px Courier New'; ctx.fillText('K×N',130+sz*.75,50+sz+15);
+    // = sign
+    ctx.font='bold 20px PingFang SC'; ctx.fillStyle='var(--warn)';
+    ctx.fillText('=',230,50+sz*.75+5);
+    // Matrix C
+    ctx.fillStyle='rgba(249,115,22,.3)'; ctx.strokeStyle='rgba(249,115,22,.5)';
+    drawRoundRect(250,50,sz*1.5,sz*1.5,5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#F97316'; ctx.font='bold 12px PingFang SC';
+    ctx.fillText('C',250+sz*.75,50+sz*.75+5);
+    ctx.font='10px Courier New'; ctx.fillText('M×N',250+sz*.75,50+sz*1.5+15);
+    // FLOPS
+    if(p>.5){
+      const fp=easeInOut((p-.5)/.3);
+      ctx.globalAlpha=fp;
+      ctx.font='bold 14px PingFang SC'; ctx.fillStyle='var(--warn)'; ctx.textAlign='center';
+      ctx.fillText('FLOPS = 2 × M × N × K',W/2,H-80);
+      ctx.font='12px PingFang SC'; ctx.fillStyle='var(--text-sub)';
+      ctx.fillText('每个 C[i,j] 需要 K 次乘法 + K 次加法',W/2,H-55);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+function updateCode(){
+  const panel=document.getElementById('codePanel');
+  panel.innerHTML='';
+  if(!steps[currentStep].code) return;
+  steps[currentStep].code.forEach(line=>{
+    const div=document.createElement('div');
+    div.className='code-line'+(line.hl?' highlight':'');
+    div.innerHTML=line.text||'&nbsp;';
+    panel.appendChild(div);
+  });
+}
+
+function render(){
+  renderCanvas();
+}
+
+function animate(){
+  animProgress+=.015;
+  if(animProgress>1.5) animProgress=1.5;
+  render();
+  animId=requestAnimationFrame(animate);
+}
+
+function goToStep(i){
+  currentStep=Math.max(0,Math.min(i,steps.length-1));
+  animProgress=0;
+  document.getElementById('infoTitle').textContent=steps[currentStep].title;
+  document.getElementById('infoDesc').innerHTML=steps[currentStep].desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCode();
+  const dots=document.getElementById('dots');
+  dots.innerHTML='';
+  for(let j=0;j<steps.length;j++){
+    const s=document.createElement('span');
+    if(j===currentStep) s.className='active';
+    s.onclick=()=>goToStep(j);
+    dots.appendChild(s);
+  }
+}
+
+function nextStep(){goToStep(currentStep+1);}
+function prevStep(){goToStep(currentStep-1);}
+function replay(){animProgress=0;}
+
+resize();
+goToStep(0);
+animate();
+</script>
+</body>
+</html>

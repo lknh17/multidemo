@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>V22 - 评估与A/B测试：代码讲解</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,sans-serif}.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}.badge{background:linear-gradient(135deg,#9c27b0,#ce93d8);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px;color:#fff}.title{font-size:18px;font-weight:600;flex:1}.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}.dots{display:flex;gap:6px;margin-left:16px}.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}.dot.active{background:#9c27b0}.dot.done{background:#ce93d8}.main{display:flex;height:calc(100vh - 136px)}.code-panel{flex:4;padding:16px;overflow-y:auto;background:#0d1117;font-family:monospace;font-size:13px;line-height:1.6}.code-line{padding:2px 8px;border-radius:3px;white-space:pre}.code-line.highlight{background:#9c27b022;border-left:3px solid #9c27b0}.canvas-area{flex:6;position:relative;display:flex;align-items:center;justify-content:center;background:#111827}canvas{border-radius:8px}.info-box{position:absolute;bottom:16px;left:16px;right:16px;background:#1a1e2eee;border:1px solid #333;border-radius:8px;padding:12px}.info-title{font-size:14px;font-weight:700;color:#9c27b0;margin-bottom:4px}.info-text{font-size:13px;color:#ccc}.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}.btn:hover{border-color:#9c27b0}.btn:disabled{opacity:.3}.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}</style></head>
+<body>
+<div class="header"><span class="badge">V22</span><span class="title">评估体系与 A/B 测试</span><span class="page-type">代码讲解</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="code-panel" id="codePanel"></div><div class="canvas-area"><canvas id="canvas"></canvas><div class="info-box"><div class="info-title" id="infoTitle"></div><div class="info-text" id="infoText"></div></div></div></div>
+<div class="controls"><button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button><div class="step-counter" id="stepCounter"></div><button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button><button class="btn" onclick="replay()">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-120}window.addEventListener('resize',resize);resize();
+function RR(x,y,w,h,r,f,s){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(f){ctx.fillStyle=f;ctx.fill()}if(s){ctx.strokeStyle=s;ctx.stroke()}}
+function arr(x1,y1,x2,y2,c='#555'){ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
+function txt(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+const steps=[
+{title:"RetrievalMetrics.ndcg_at_k",info:"NDCG 计算：排序 → DCG → IDCG → 归一化",
+code:[{text:'def ndcg_at_k(self, scores, relevance, k):',hl:true},{text:'    # 1. 按预测分数排序取 Top-K',hl:false},{text:'    topk_idx = scores.argsort(descending=True)[:k]',hl:true},{text:'    gains = 2**relevance[topk_idx] - 1',hl:false},{text:'    ',hl:false},{text:'    # 2. 对数折损因子',hl:true},{text:'    discounts = 1/log2(arange(1,k+1) + 1)',hl:false},{text:'    dcg = (gains * discounts).sum()',hl:true},{text:'    ',hl:false},{text:'    # 3. 理想排序 DCG',hl:true},{text:'    ideal = relevance.sort(desc=True)[:k]',hl:false},{text:'    idcg = (2**ideal-1) * discounts).sum()',hl:false},{text:'    ',hl:false},{text:'    return dcg / max(idcg, 1e-8)',hl:true}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+const items=[3,0,2,1,0,3,1,0];
+txt('scores → sort → Top-K',cx,20,'#aaa',12);
+items.forEach((rel,i)=>{const prog=Math.min(1,p*3-i*0.15);if(prog<=0)return;ctx.globalAlpha=Math.min(1,prog);
+const x=30+i*55;RR(x,35,48,28,3,'#1a1e2e',rel>0?'#9c27b0':'#555');
+txt(`rel=${rel}`,x+24,54,rel>0?'#9c27b0':'#888',10);
+if(i<5){const gain=(Math.pow(2,rel)-1);const disc=1/Math.log2(i+2);const w=gain*disc*20;
+RR(x,80,Math.max(2,w*prog),18,2,'#ce93d8');txt(`${(gain*disc).toFixed(1)}`,x+24,115,'#7dd3fc',9)}
+ctx.globalAlpha=1});
+if(p>0.6){const dcg=items.slice(0,5).reduce((s,r,i)=>(Math.pow(2,r)-1)/Math.log2(i+2)+s,0);
+txt(`DCG@5 = ${dcg.toFixed(2)}`,cx,150,'#ce93d8',13)}
+if(p>0.8){txt('NDCG = DCG / IDCG',cx,175,'#9c27b0',13)}}},
+
+{title:"ABTestFramework.welch_t_test",info:"Welch's t-test: 不等方差 → t 统计量 → p 值",
+code:[{text:'def welch_t_test(self, control, treatment):',hl:true},{text:'    n_c, n_t = len(control), len(treatment)',hl:false},{text:'    mean_c = control.mean()',hl:true},{text:'    mean_t = treatment.mean()',hl:true},{text:'    var_c = control.var(ddof=1)',hl:false},{text:'    var_t = treatment.var(ddof=1)',hl:false},{text:'    ',hl:false},{text:'    # t 统计量',hl:true},{text:'    se = sqrt(var_c/n_c + var_t/n_t)',hl:false},{text:'    t_stat = (mean_t - mean_c) / se',hl:true},{text:'    ',hl:false},{text:'    # Welch-Satterthwaite 自由度',hl:true},{text:'    nu = (var_c/n_c + var_t/n_t)^2 / ...',hl:false},{text:'    p_value = 2*(1 - t.cdf(|t_stat|, nu))',hl:true},{text:'    return t_stat, p_value',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+const blocks=[{n:'Control μ, σ²',c:'#7dd3fc'},{n:'Treatment μ, σ²',c:'#9c27b0'},{n:'SE = √(σ²_c/n + σ²_t/n)',c:'#ce93d8'},{n:'t = Δμ / SE',c:'#f7c948'},{n:'p = 2·(1-CDF(|t|))',c:'#00e5ff'}];
+blocks.forEach((b,i)=>{const prog=Math.min(1,p*(blocks.length+1)/(i+1));if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);const y=15+i*42;RR(cx-100,y,200,28,4,'#1a1e2e',b.c);
+txt(b.n,cx,y+18,b.c,11);if(i>0)arr(cx,y-10,cx,y+2,'#555');ctx.globalAlpha=1});
+if(p>0.8){RR(cx-60,230,120,25,4,'#9c27b033','#9c27b0');txt('p < 0.05?',cx,247,'#9c27b0',11)}}},
+
+{title:"BanditSelector.select_thompson",info:"从 Beta 后验采样 → 选择最大采样值的臂",
+code:[{text:'def select_thompson(self):',hl:true},{text:'    samples = []',hl:false},{text:'    for k in range(self.num_arms):',hl:true},{text:'        # 从 Beta 后验采样',hl:false},{text:'        theta = np.random.beta(',hl:true},{text:'            self.alpha[k],',hl:false},{text:'            self.beta[k])',hl:false},{text:'        samples.append(theta)',hl:false},{text:'    return np.argmax(samples)',hl:true},{text:'',hl:false},{text:'def update(self, arm, reward):',hl:true},{text:'    self.alpha[arm] += reward',hl:false},{text:'    self.beta[arm] += (1 - reward)',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('Thompson Sampling 流程',cx,20,'#aaa',12);
+const arms=[{a:10,b:90,c:'#9c27b0'},{a:30,b:70,c:'#ce93d8'},{a:60,b:40,c:'#00e5ff'},{a:40,b:60,c:'#f7c948'}];
+arms.forEach((arm,i)=>{const y=40+i*50;const prog=Math.min(1,p*2.5-i*0.3);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);
+RR(20,y,60,30,3,'#1a1e2e',arm.c);txt(`β(${arm.a},${arm.b})`,50,y+20,arm.c,9);
+// Sample arrow
+if(prog>0.5){arr(85,y+15,130,y+15,arm.c);const sample=arm.a/(arm.a+arm.b)+Math.sin(i*2)*0.05;
+const barW=sample*150;RR(135,y+5,barW,20,3,arm.c+'44',arm.c);
+txt(`θ=${sample.toFixed(2)}`,135+barW+25,y+20,arm.c,10)}
+ctx.globalAlpha=1});
+if(p>0.8){const best=2;const by=40+best*50;ctx.strokeStyle='#00e5ff';ctx.lineWidth=2;ctx.strokeRect(15,by-3,280,36);
+txt('选择 θ 最大的臂!',cx,260,'#00e5ff',12)}}},
+
+{title:"InterleavingExperiment.team_draft",info:"交替从 A/B 选取 → 混合列表 → 点击判定",
+code:[{text:'def team_draft(self, list_a, list_b, k):',hl:true},{text:'    merged, team_a, team_b = [], set(), set()',hl:false},{text:'    ptr_a, ptr_b = 0, 0',hl:false},{text:'    ',hl:false},{text:'    for i in range(k):',hl:true},{text:'        if len(team_a) <= len(team_b):',hl:true},{text:'            # A 队选，跳过已选文档',hl:false},{text:'            while list_a[ptr_a] in seen:',hl:false},{text:'                ptr_a += 1',hl:false},{text:'            merged.append(list_a[ptr_a])',hl:true},{text:'            team_a.add(list_a[ptr_a])',hl:false},{text:'        else:',hl:true},{text:'            merged.append(list_b[ptr_b])',hl:false},{text:'            team_b.add(list_b[ptr_b])',hl:false},{text:'    return merged, team_a, team_b',hl:true}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+const la=['d1','d3','d5','d7'];const lb=['d2','d4','d3','d6'];
+txt('A',40,15,'#9c27b0',11);txt('B',W-40,15,'#00e5ff',11);txt('Mixed',cx,15,'#ce93d8',11);
+la.forEach((d,i)=>{const y=25+i*30;const prog=Math.min(1,p*3-i*0.15);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);RR(10,y,55,22,3,'#1a1e2e','#9c27b0');txt(d,37,y+16,'#9c27b0',10);ctx.globalAlpha=1});
+lb.forEach((d,i)=>{const y=25+i*30;const prog=Math.min(1,p*3-i*0.15);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);RR(W-65,y,55,22,3,'#1a1e2e','#00e5ff');txt(d,W-37,y+16,'#00e5ff',10);ctx.globalAlpha=1});
+if(p>0.4){const mixed=[{d:'d1',t:'A'},{d:'d2',t:'B'},{d:'d3',t:'A'},{d:'d4',t:'B'}];
+mixed.forEach((m,i)=>{const y=25+i*30;const prog=Math.min(1,(p-0.4)*4-i*0.2);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);const c=m.t==='A'?'#9c27b0':'#00e5ff';
+RR(cx-30,y,60,22,3,'#1a1e2e',c);txt(m.d,cx,y+16,c,10);ctx.globalAlpha=1})}
+if(p>0.8){txt('→ judge clicks → winner',cx,170,'#ce93d8',11)}}},
+
+{title:"FairnessMetrics 公平性评估",info:"检测模型预测在不同群体间的偏差",
+code:[{text:'def demographic_parity(preds, sensitive):',hl:true},{text:'    # 正预测率应在群体间一致',hl:false},{text:'    g0 = preds[sensitive==0].mean()',hl:true},{text:'    g1 = preds[sensitive==1].mean()',hl:true},{text:'    return abs(g0 - g1)',hl:true},{text:'',hl:false},{text:'def equalized_odds(preds, labels, sens):',hl:true},{text:'    gaps = []',hl:false},{text:'    for y in [0, 1]:',hl:true},{text:'        mask = (labels == y)',hl:false},{text:'        r0 = preds[mask & (sens==0)].mean()',hl:false},{text:'        r1 = preds[mask & (sens==1)].mean()',hl:false},{text:'        gaps.append(abs(r0 - r1))',hl:true},{text:'    return max(gaps)',hl:true}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('公平性指标',cx,20,'#aaa',13);
+// 两个群体的条形图
+const groups=[{n:'Group A',rate:0.35,c:'#9c27b0'},{n:'Group B',rate:0.28,c:'#00e5ff'}];
+groups.forEach((g,i)=>{const x=cx-80+i*100;const barH=g.rate*200*Math.min(1,p*2);
+ctx.fillStyle=g.c+'66';ctx.fillRect(x,180-barH,60,barH);ctx.strokeStyle=g.c;ctx.strokeRect(x,180-barH,60,barH);
+txt(g.n,x+30,195,g.c,11);txt(`${(g.rate*100).toFixed(0)}%`,x+30,180-barH-10,g.c,11)});
+if(p>0.5){// Gap indicator
+ctx.strokeStyle='#f7c948';ctx.setLineDash([3,3]);ctx.beginPath();const y1=180-groups[0].rate*200;const y2=180-groups[1].rate*200;
+ctx.moveTo(cx-15,y1);ctx.lineTo(cx+15,y2);ctx.stroke();ctx.setLineDash([]);
+txt(`Gap: ${((groups[0].rate-groups[1].rate)*100).toFixed(0)}%`,cx,Math.min(y1,y2)-15,'#f7c948',11)}
+if(p>0.8){RR(cx-90,210,180,25,4,'#f7c94822','#f7c948');txt('DP Gap = 0.07 (需 < ε)',cx,227,'#f7c948',11)}}}
+];
+
+function renderCode(){const p=document.getElementById('codePanel');p.innerHTML='';steps[currentStep].code.forEach(l=>{const d=document.createElement('div');d.className='code-line'+(l.hl?' highlight':'');d.textContent=l.text;p.appendChild(d)})}
+function animate(){animProgress+=.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('infoTitle').textContent=steps[currentStep].title;document.getElementById('infoText').textContent=steps[currentStep].info;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))});renderCode()}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});init();
+</script></body></html>

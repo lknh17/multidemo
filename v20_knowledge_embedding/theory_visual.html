@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V20 - 知识增强多模态嵌入原理可视化</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;overflow:hidden}canvas{display:block}
+#controls{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
+#controls button{padding:10px 20px;border:1px solid;border-image:linear-gradient(135deg,#2196f3,#64b5f6) 1;border-radius:25px;background:rgba(33,150,243,0.1);color:#64b5f6;cursor:pointer;font-size:13px;transition:all 0.3s}
+#controls button:hover{background:rgba(33,150,243,0.3)}#controls button.active{background:linear-gradient(135deg,#2196f3,#64b5f6);color:#0a0a2e;border:1px solid #64b5f6}
+#info{position:fixed;top:20px;left:50%;transform:translateX(-50%);text-align:center;z-index:10}
+#title{font-size:20px;background:linear-gradient(135deg,#2196f3,#64b5f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:5px}#desc{font-size:13px;color:#aaa;max-width:700px}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;background:linear-gradient(135deg,#2196f3,#64b5f6);color:#fff;margin:2px}
+</style>
+</head>
+<body>
+<div id="info"><div id="title">V20 - 知识增强多模态嵌入原理</div><div id="desc"></div></div>
+<canvas id="canvas"></canvas>
+<div id="controls">
+<button onclick="setStep(0)" class="active">TransE</button>
+<button onclick="setStep(1)">TransR</button>
+<button onclick="setStep(2)">实体链接</button>
+<button onclick="setStep(3)">KG注意力</button>
+<button onclick="setStep(4)">GNN推理</button>
+<button onclick="setStep(5)">知识蒸馏</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,step=0,time=0;
+const descs=['TransE：关系=嵌入空间中的平移，h+r≈t，margin loss训练','TransR：每个关系有独立投影空间 M_r，h_r+r≈t_r','实体链接：Mention检测(span)→候选排序(相似度)→链接到KG实体','KG增强注意力：实体嵌入注入为额外KV对，门控融合控制注入强度','GNN消息传递：邻居聚合+关系感知，多层=多跳推理','知识蒸馏：KG-aware教师→纯视觉学生，软标签+特征对齐'];
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+window.addEventListener('resize',resize);resize();
+function setStep(s){step=s;time=0;document.querySelectorAll('#controls button').forEach((b,i)=>b.classList.toggle('active',i===s));document.getElementById('desc').textContent=descs[s]}
+setStep(0);
+
+function drawTransE(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';
+// Entities as points
+const entities=[
+{x:cx-180,y:cy-30,label:'h (猫)',color:'#ff6b6b'},
+{x:cx+80,y:cy-30,label:'t (动物)',color:'#6bff6b'},
+];
+// Relation arrow
+const progress=Math.min(1,(time%120)/80);
+const arrowX=entities[0].x+progress*(entities[1].x-entities[0].x);
+const arrowY=entities[0].y+progress*(entities[1].y-entities[0].y);
+
+// Draw embedding space
+ctx.strokeStyle='#333';ctx.lineWidth=1;
+ctx.strokeRect(cx-250,cy-120,500,200);
+ctx.fillStyle='#ffffff22';ctx.font='11px sans-serif';
+ctx.fillText('嵌入空间 ℝ^d',cx,cy-105);
+
+// Entities
+entities.forEach(e=>{
+ctx.fillStyle=e.color;
+ctx.beginPath();ctx.arc(e.x,e.y,12,0,Math.PI*2);ctx.fill();
+ctx.fillStyle='#fff';ctx.font='12px sans-serif';
+ctx.fillText(e.label,e.x,e.y+30);
+});
+
+// Relation vector
+ctx.beginPath();ctx.moveTo(entities[0].x+12,entities[0].y);
+ctx.lineTo(arrowX,arrowY);
+ctx.strokeStyle='#ffd93d';ctx.lineWidth=3;ctx.stroke();
+// Arrow head
+ctx.beginPath();ctx.moveTo(arrowX,arrowY-5);ctx.lineTo(arrowX+8,arrowY);ctx.lineTo(arrowX,arrowY+5);
+ctx.fillStyle='#ffd93d';ctx.fill();
+ctx.fillStyle='#ffd93d';ctx.font='bold 13px sans-serif';
+ctx.fillText('r (是一种)',cx-50,cy-55);
+
+// Formula
+ctx.fillStyle='#64b5f6';ctx.font='14px monospace';
+ctx.fillText('h + r ≈ t',cx,cy+70);
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';
+ctx.fillText('score(h,r,t) = -‖h + r - t‖₂',cx,cy+95);
+ctx.fillText('Loss = max(0, γ + score_neg - score_pos)',cx,cy+115);
+
+// Negative sample
+const negY=cy+10;
+ctx.fillStyle='#ff6b6b44';
+ctx.beginPath();ctx.arc(cx+80,negY,8,0,Math.PI*2);ctx.fill();
+ctx.strokeStyle='#ff6b6b';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+ctx.beginPath();ctx.moveTo(entities[0].x+12,entities[0].y);ctx.lineTo(cx+80,negY);ctx.stroke();
+ctx.setLineDash([]);
+ctx.fillStyle='#ff6b6b88';ctx.font='11px sans-serif';
+ctx.fillText("t' (桌子) ✗",cx+80,negY+22);
+ctx.textAlign='start';
+}
+
+function drawTransR(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';
+
+// Entity space
+ctx.strokeStyle='#ff6b6b44';ctx.lineWidth=1;
+ctx.strokeRect(cx-250,cy-110,200,180);
+ctx.fillStyle='#ff6b6b';ctx.font='11px sans-serif';
+ctx.fillText('实体空间 ℝ^d_e',cx-150,cy-95);
+
+// Relation space
+ctx.strokeStyle='#64b5f644';
+ctx.strokeRect(cx+50,cy-110,200,180);
+ctx.fillStyle='#64b5f6';
+ctx.fillText('关系空间 ℝ^d_r',cx+150,cy-95);
+
+// Entities in entity space
+const ents=[
+{x:cx-200,y:cy-40,label:'h'},
+{x:cx-120,y:cy+20,label:'t'},
+];
+ents.forEach(e=>{
+ctx.fillStyle='#ff6b6b';
+ctx.beginPath();ctx.arc(e.x,e.y,8,0,Math.PI*2);ctx.fill();
+ctx.fillStyle='#fff';ctx.font='11px sans-serif';
+ctx.fillText(e.label,e.x,e.y-12);
+});
+
+// Projection arrows
+const projPhase=Math.min(1,(time%100)/60);
+ctx.setLineDash([4,4]);ctx.strokeStyle='#ffd93d88';ctx.lineWidth=1.5;
+ctx.beginPath();ctx.moveTo(ents[0].x+8,ents[0].y);ctx.lineTo(ents[0].x+8+(cx+100-ents[0].x)*projPhase,ents[0].y);ctx.stroke();
+ctx.beginPath();ctx.moveTo(ents[1].x+8,ents[1].y);ctx.lineTo(ents[1].x+8+(cx+180-ents[1].x)*projPhase,ents[1].y);ctx.stroke();
+ctx.setLineDash([]);
+
+// Projected entities in relation space
+if(projPhase>0.5){
+const alpha=Math.min(1,(projPhase-0.5)*4);
+ctx.globalAlpha=alpha;
+ctx.fillStyle='#64b5f6';
+ctx.beginPath();ctx.arc(cx+100,cy-40,8,0,Math.PI*2);ctx.fill();
+ctx.beginPath();ctx.arc(cx+180,cy+20,8,0,Math.PI*2);ctx.fill();
+ctx.fillStyle='#fff';ctx.font='11px sans-serif';
+ctx.fillText('h_r',cx+100,cy-55);
+ctx.fillText('t_r',cx+180,cy+35);
+// Relation vector in projected space
+ctx.beginPath();ctx.moveTo(cx+108,cy-40);ctx.lineTo(cx+172,cy+20);
+ctx.strokeStyle='#ffd93d';ctx.lineWidth=2;ctx.stroke();
+ctx.fillStyle='#ffd93d';ctx.font='11px sans-serif';
+ctx.fillText('r',cx+145,cy-15);
+ctx.globalAlpha=1;
+}
+
+// Formula
+ctx.fillStyle='#ffd93d';ctx.font='12px monospace';
+ctx.fillText('M_r',cx-20,cy);
+ctx.fillStyle='#64b5f6';ctx.font='13px monospace';
+ctx.fillText('h_r = M_r·h,  t_r = M_r·t',cx,cy+90);
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';
+ctx.fillText('score = -‖h_r + r - t_r‖₂²',cx,cy+115);
+ctx.textAlign='start';
+}
+
+function drawEntityLinking(){
+const cx=W/2,cy=H/2-30;
+ctx.textAlign='center';
+ctx.fillStyle='#64b5f6';ctx.font='bold 14px sans-serif';
+ctx.fillText('实体链接流程',cx,cy-100);
+
+// Text with mentions
+const text='昨天 苹果 公司 发布了 新款 iPhone';
+const words=text.split(' ');
+const mentions=[{start:1,end:2,entity:'Apple Inc.',color:'#ff6b6b'},{start:5,end:5,entity:'iPhone',color:'#6bff6b'}];
+const phase=Math.floor(time*0.012)%3;
+
+// Step 1: text
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText('Step 1: 输入文本',cx,cy-70);
+words.forEach((w,i)=>{
+const x=cx-140+i*50;
+const isMention=mentions.some(m=>i>=m.start&&i<=m.end);
+ctx.fillStyle=isMention&&phase>=1?mentions.find(m=>i>=m.start&&i<=m.end).color+'44':'#1a1a4e';
+ctx.fillRect(x-20,cy-60,44,24);
+ctx.strokeStyle=isMention&&phase>=1?mentions.find(m=>i>=m.start&&i<=m.end).color:'#444';
+ctx.strokeRect(x-20,cy-60,44,24);
+ctx.fillStyle='#fff';ctx.font='12px sans-serif';
+ctx.fillText(w,x+2,cy-43);
+});
+
+// Step 2: mention detection
+if(phase>=1){
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText('Step 2: Mention 检测',cx,cy-10);
+mentions.forEach(m=>{
+const x1=cx-140+m.start*50-20;
+const x2=cx-140+m.end*50+24;
+ctx.strokeStyle=m.color;ctx.lineWidth=2;
+ctx.beginPath();ctx.moveTo(x1,cy-36);ctx.lineTo(x1,cy-30);ctx.lineTo(x2,cy-30);ctx.lineTo(x2,cy-36);ctx.stroke();
+ctx.fillStyle=m.color;ctx.font='10px sans-serif';
+ctx.fillText('mention',(x1+x2)/2,cy-18);
+});
+}
+
+// Step 3: candidate ranking
+if(phase>=2){
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText('Step 3: 候选排序 → 链接到KG',cx,cy+30);
+mentions.forEach((m,mi)=>{
+const y=cy+50+mi*40;
+ctx.fillStyle=m.color;ctx.font='12px sans-serif';
+const cands=mi===0?['Apple Inc. ✓','Apple (水果)','Apple Records']:['iPhone 15 ✓','iPad','iPod'];
+cands.forEach((c,ci)=>{
+const x=cx-120+ci*100;
+const isBest=ci===0;
+ctx.fillStyle=isBest?m.color+'66':'#1a1a2e';
+ctx.fillRect(x-5,y-8,95,20);
+ctx.strokeStyle=isBest?m.color:'#444';ctx.lineWidth=isBest?2:1;
+ctx.strokeRect(x-5,y-8,95,20);
+ctx.fillStyle=isBest?'#fff':'#888';ctx.font='10px sans-serif';
+ctx.fillText(c,x+42,y+6);
+});
+});
+}
+ctx.textAlign='start';
+}
+
+function drawKGAttention(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';
+ctx.fillStyle='#64b5f6';ctx.font='bold 14px sans-serif';
+ctx.fillText('KG 增强注意力机制',cx,cy-110);
+
+// Visual tokens
+ctx.fillStyle='#fff';ctx.font='11px sans-serif';
+ctx.fillText('视觉 Token (Q)',cx-120,cy-85);
+for(let i=0;i<6;i++){
+ctx.fillStyle='#ff6b6b44';
+ctx.fillRect(cx-180+i*22,cy-75,18,25);
+ctx.fillStyle='#ff6b6b';ctx.font='9px monospace';
+ctx.fillText(`v${i}`,cx-171+i*22,cy-58);
+}
+
+// Standard KV
+ctx.fillStyle='#fff';ctx.font='11px sans-serif';
+ctx.fillText('标准 K,V',cx+80,cy-85);
+for(let i=0;i<6;i++){
+ctx.fillStyle='#58a6ff44';
+ctx.fillRect(cx+30+i*22,cy-75,18,25);
+}
+
+// KG entity KV
+ctx.fillStyle='#fff';ctx.font='11px sans-serif';
+ctx.fillText('KG实体 K_kg,V_kg',cx+80,cy-35);
+const pulse=0.4+Math.sin(time*0.04)*0.3;
+for(let i=0;i<3;i++){
+ctx.fillStyle=`rgba(107,255,107,${pulse})`;
+ctx.fillRect(cx+50+i*30,cy-25,25,25);
+ctx.fillStyle='#6bff6b';ctx.font='9px monospace';
+ctx.fillText(`e${i}`,cx+56+i*30,cy-8);
+}
+
+// Concatenation bracket
+ctx.strokeStyle='#ffd93d';ctx.lineWidth=2;
+ctx.beginPath();
+ctx.moveTo(cx+25,cy-80);ctx.lineTo(cx+20,cy-80);ctx.lineTo(cx+20,cy+5);ctx.lineTo(cx+25,cy+5);
+ctx.stroke();
+ctx.fillStyle='#ffd93d';ctx.font='11px sans-serif';
+ctx.fillText('[K;K_kg]',cx+10,cy+20);
+
+// Attention arrows
+const attnPhase=(time%80)/80;
+for(let i=0;i<6;i++){
+const srcX=cx-171+i*22+9;
+// To standard KV
+ctx.beginPath();ctx.moveTo(srcX,cy-50);
+ctx.lineTo(cx+39+i*22+9,cy-50);
+ctx.strokeStyle=`rgba(88,166,255,${0.2+attnPhase*0.3})`;ctx.lineWidth=1;ctx.stroke();
+// To KG KV
+if(i<3){
+ctx.beginPath();ctx.moveTo(srcX,cy-50);
+ctx.lineTo(cx+62+i*30,cy-25);
+ctx.strokeStyle=`rgba(107,255,107,${0.2+attnPhase*0.4})`;ctx.lineWidth=1.5;ctx.stroke();
+}
+}
+
+// Gate
+ctx.fillStyle='#1a1a4e';ctx.fillRect(cx-80,cy+40,160,35);
+ctx.strokeStyle='#ffd93d';ctx.strokeRect(cx-80,cy+40,160,35);
+ctx.fillStyle='#ffd93d';ctx.font='12px sans-serif';
+ctx.fillText('Gate: g = σ(W[h_vis;h_kg])',cx,cy+62);
+ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
+ctx.fillText('h_fused = (1-g)·h_vis + g·h_kg',cx,cy+95);
+ctx.textAlign='start';
+}
+
+function drawGNN(){
+const cx=W/2,cy=H/2-10;
+ctx.textAlign='center';
+ctx.fillStyle='#64b5f6';ctx.font='bold 14px sans-serif';
+ctx.fillText('GNN 知识图谱消息传递',cx,cy-110);
+
+// KG nodes
+const nodes=[
+{x:cx,y:cy-50,label:'猫',color:'#ff6b6b'},
+{x:cx-120,y:cy+20,label:'动物',color:'#6bff6b'},
+{x:cx+120,y:cy+20,label:'宠物',color:'#58a6ff'},
+{x:cx-60,y:cy+80,label:'哺乳类',color:'#ffd93d'},
+{x:cx+60,y:cy+80,label:'可爱',color:'#d4a5ff'},
+];
+const edges=[
+{src:0,dst:1,rel:'是一种'},{src:0,dst:2,rel:'属于'},
+{src:1,dst:3,rel:'子类'},{src:2,dst:4,rel:'属性'},
+];
+
+// Draw edges
+const msgPhase=(time%100)/100;
+edges.forEach(e=>{
+const s=nodes[e.src],d=nodes[e.dst];
+ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(d.x,d.y);
+ctx.strokeStyle='#444';ctx.lineWidth=1.5;ctx.stroke();
+// Edge label
+ctx.fillStyle='#888';ctx.font='10px sans-serif';
+ctx.fillText(e.rel,(s.x+d.x)/2+10,(s.y+d.y)/2-5);
+// Animated message
+const mx=s.x+(d.x-s.x)*msgPhase;
+const my=s.y+(d.y-s.y)*msgPhase;
+ctx.fillStyle='#ffd93d';
+ctx.beginPath();ctx.arc(mx,my,4,0,Math.PI*2);ctx.fill();
+});
+
+// Draw nodes
+nodes.forEach(n=>{
+ctx.fillStyle=n.color;
+ctx.beginPath();ctx.arc(n.x,n.y,18,0,Math.PI*2);ctx.fill();
+ctx.fillStyle='#0a0a2e';ctx.font='bold 11px sans-serif';
+ctx.fillText(n.label,n.x,n.y+4);
+});
+
+// Formula
+ctx.fillStyle='#aaa';ctx.font='12px monospace';
+ctx.fillText('m_{j→i} = W_v·h_j + W_r·r_{j,i}',cx,cy+120);
+ctx.fillText('α_{ij} = softmax(LeakyReLU(a^T[W_q·h_i; m_{j→i}]))',cx,cy+140);
+ctx.fillText('h_i^(l+1) = ReLU(Σ α_{ij}·m_{j→i})',cx,cy+160);
+ctx.textAlign='start';
+}
+
+function drawDistill(){
+const cx=W/2,cy=H/2-10;
+ctx.textAlign='center';
+
+// Teacher (left)
+ctx.fillStyle='#ff6b6b22';ctx.fillRect(cx-230,cy-90,180,140);
+ctx.strokeStyle='#ff6b6b';ctx.strokeRect(cx-230,cy-90,180,140);
+ctx.fillStyle='#ff6b6b';ctx.font='bold 13px sans-serif';
+ctx.fillText('教师 (KG-enhanced)',cx-140,cy-70);
+ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
+ctx.fillText('ViT + KG Attention',cx-140,cy-45);
+ctx.fillText('+ 实体嵌入',cx-140,cy-28);
+ctx.fillStyle='#ff6b6b88';ctx.font='10px sans-serif';
+ctx.fillText('❄️ 冻结',cx-140,cy-10);
+
+// Teacher output
+const tBox={x:cx-180,y:cy+5,w:100,h:30};
+ctx.fillStyle='#ff6b6b44';ctx.fillRect(tBox.x,tBox.y,tBox.w,tBox.h);
+ctx.fillStyle='#ff6b6b';ctx.font='11px sans-serif';
+ctx.fillText('soft logits',tBox.x+50,tBox.y+20);
+
+// Student (right)
+ctx.fillStyle='#6bff6b22';ctx.fillRect(cx+50,cy-90,180,140);
+ctx.strokeStyle='#6bff6b';ctx.strokeRect(cx+50,cy-90,180,140);
+ctx.fillStyle='#6bff6b';ctx.font='bold 13px sans-serif';
+ctx.fillText('学生 (纯视觉)',cx+140,cy-70);
+ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
+ctx.fillText('ViT only',cx+140,cy-45);
+ctx.fillText('无 KG 依赖',cx+140,cy-28);
+ctx.fillStyle='#6bff6b88';ctx.font='10px sans-serif';
+ctx.fillText('🔥 训练中',cx+140,cy-10);
+
+// Student output
+const sBox={x:cx+80,y:cy+5,w:100,h:30};
+ctx.fillStyle='#6bff6b44';ctx.fillRect(sBox.x,sBox.y,sBox.w,sBox.h);
+ctx.fillStyle='#6bff6b';ctx.font='11px sans-serif';
+ctx.fillText('student logits',sBox.x+50,sBox.y+20);
+
+// Distill arrow
+const pulse=0.5+Math.sin(time*0.05)*0.3;
+ctx.setLineDash([6,4]);
+ctx.beginPath();ctx.moveTo(tBox.x+tBox.w,tBox.y+15);ctx.lineTo(sBox.x,sBox.y+15);
+ctx.strokeStyle=`rgba(255,217,61,${pulse})`;ctx.lineWidth=2;ctx.stroke();
+ctx.setLineDash([]);
+ctx.fillStyle='#ffd93d';ctx.font='12px sans-serif';
+ctx.fillText('KL散度',cx,cy+2);
+
+// Loss formula
+ctx.fillStyle='#64b5f6';ctx.font='13px monospace';
+ctx.fillText('L = (1-α)·L_task + α·T²·KL(z_s/T ‖ z_t/T) + β·L_feat',cx,cy+75);
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';
+ctx.fillText('T=4: 软标签传递 dark knowledge',cx,cy+100);
+ctx.fillText('推理时只需学生模型，无需 KG 查询',cx,cy+120);
+ctx.textAlign='start';
+}
+
+const drawFns=[drawTransE,drawTransR,drawEntityLinking,drawKGAttention,drawGNN,drawDistill];
+function animate(){ctx.fillStyle='#0a0a2e';ctx.fillRect(0,0,W,H);time++;drawFns[step]();requestAnimationFrame(animate)}
+animate();
+</script>
+</body>
+</html>

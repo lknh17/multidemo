@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v07 SFT 微调 (LoRA) - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre;overflow-x:auto}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v07</span><h1>SFT 微调 (LoRA)</h1><span class="tag">代码可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'LoRALinear.__init__',desc:'LoRALinear 初始化过程：<br><br>1. 接收一个<strong>原始 Linear 层</strong>并冻结其权重<br>2. 创建降维矩阵 <strong>lora_A</strong>：Linear(in, r, bias=False)<br>3. 创建升维矩阵 <strong>lora_B</strong>：Linear(r, out, bias=False)<br>4. 计算 <strong>scaling = alpha/r</strong><br>5. 关键初始化：A 用 Kaiming，B 全零<br><br>这确保训练开始时 ΔW=0，模型行为不变。',formula:'self.original.weight.requires_grad_(False)\nself.lora_A = Linear(in_feat, r, bias=False)\nself.lora_B = Linear(r, out_feat, bias=False)\nself.scaling = alpha / r\n\ninit: A ← kaiming, B ← zeros'},
+{title:'LoRALinear.forward',desc:'前向传播计算两路输出之和：<br><br>1. <strong>原始路径</strong>：original_out = W₀·x<br>2. <strong>LoRA 路径</strong>：<br>  • dropout(x) → lora_A → lora_B → × scaling<br>3. <strong>相加</strong>：output = original_out + lora_out<br><br>LoRA 增量很小（因为 B 初始为 0），训练过程中逐渐学到任务特定的调整。',formula:'def forward(self, x):\n  original_out = self.original(x)\n  lora_out = self.lora_B(\n    self.lora_A(\n      self.lora_dropout(x)\n    )\n  ) * self.scaling\n  return original_out + lora_out'},
+{title:'inject_lora：注入 LoRA 适配器',desc:'inject_lora 函数遍历模型所有模块，将匹配名称的 Linear 层替换为 LoRALinear：<br><br>1. <strong>遍历</strong>模型的所有 named_modules<br>2. 检查每个子模块是否是 <strong>nn.Linear</strong><br>3. 检查名称是否包含 <strong>target_names</strong>（如 "q_proj", "v_proj"）<br>4. 匹配的层被替换为 <strong>LoRALinear</strong> 包装<br>5. 记录替换数量<br><br>通常只对 Q 和 V 投影注入 LoRA，实践中效果最好。',formula:'for name, module in model.named_modules():\n  for child_name, child in module.named_children():\n    if isinstance(child, Linear) and\n       any(t in child_name for t in targets):\n      lora = LoRALinear(child, r, alpha)\n      setattr(module, child_name, lora)'},
+{title:'SFT 训练：只优化可训练参数',desc:'注入 LoRA 后的训练过程：<br><br>1. 构建优化器时，<strong>只传入 requires_grad=True</strong> 的参数<br>2. 前向传播正常执行（LoRA 路径自动生效）<br>3. 反向传播中，梯度只流经 LoRA 参数<br>4. 优化器只更新 A 和 B 矩阵<br><br>这大幅减少了显存占用（优化器状态 ∝ 可训练参数量），让大模型微调成为可能。',formula:'# 只优化 LoRA 参数\ntrainable = [p for p in model.parameters()\n             if p.requires_grad]\noptimizer = AdamW(trainable, lr=2e-4)\n\nfor batch in dataloader:\n  logits = model(images, input_ids)\n  loss = CE(logits, labels)\n  loss.backward()   # 梯度只到 A, B\n  optimizer.step()'},
+{title:'merge_weights：合并推理',desc:'训练完成后调用 merge_weights 合并 LoRA 权重：<br><br>1. 计算 <strong>delta_W = B.weight @ A.weight</strong><br>2. 应用缩放 <strong>delta_W *= scaling</strong><br>3. 原始权重 <strong>W₀ += delta_W</strong><br>4. 此后可以移除 LoRA 分支<br><br>合并后模型与标准模型结构完全一致，推理无任何额外开销。不同任务的 LoRA 可以独立保存和加载。',formula:'def merge_weights(self):\n  with torch.no_grad():\n    delta_w = (\n      self.lora_B.weight @\n      self.lora_A.weight\n    ) * self.scaling\n    self.original.weight.add_(delta_w)'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+  const cx=W/2,topY=10;
+  const lines=[
+    {code:'class LoRALinear(nn.Module):',color:'#6C5CE7',t:0},
+    {code:'  def __init__(self, original_linear, r=16, alpha=32):',color:'#94A3B8',t:.05},
+    {code:'    self.original = original_linear',color:'#0984E3',t:.1},
+    {code:'    self.original.weight.requires_grad_(False) # ❄️',color:'#0984E3',t:.15},
+    {code:'',color:'#94A3B8',t:.2},
+    {code:'    self.lora_A = Linear(in_feat, r, bias=False)',color:'#F59E0B',t:.25},
+    {code:'    self.lora_B = Linear(r, out_feat, bias=False)',color:'#F59E0B',t:.3},
+    {code:'    self.scaling = alpha / r',color:'#00B894',t:.35},
+    {code:'',color:'#94A3B8',t:.4},
+    {code:'    kaiming_uniform_(self.lora_A.weight)',color:'#F59E0B',t:.45},
+    {code:'    zeros_(self.lora_B.weight)  # ΔW=0 at start',color:'#F59E0B',t:.5}
+  ];
+  const lh=28;
+  for(let i=0;i<lines.length;i++){
+    const l=lines[i];if(!l.code)continue;
+    const lp=easeInOut(Math.max(0,Math.min(1,(p-l.t)/.12)));
+    const y=topY+i*lh;
+    const isActive=animProgress>l.t&&animProgress<l.t+.12;
+    ctx.globalAlpha=lp;
+    if(isActive){ctx.fillStyle=l.color+'22';ctx.fillRect(15,y,W-30,lh-3)}
+    ctx.fillStyle='#64748B';ctx.font='10px Courier New';ctx.textAlign='right';
+    ctx.fillText(String(i+1),12,y+lh/2+3);
+    ctx.fillStyle=l.color;ctx.font='12px Courier New';ctx.textAlign='left';
+    ctx.fillText(l.code,20,y+lh/2+4);
+    ctx.globalAlpha=1;
+  }
+  // Visual: matrices
+  if(p>.6){
+    const vp=easeInOut((p-.6)/.4);ctx.globalAlpha=vp;
+    const vy=topY+lines.length*lh+10;
+    ctx.fillStyle='rgba(9,132,227,.15)';ctx.strokeStyle='#0984E3';ctx.lineWidth=2;
+    drawRR(cx-120,vy,80,60,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('W₀ ❄️',cx-80,vy+35);
+    ctx.fillStyle='rgba(249,158,11,.2)';ctx.strokeStyle='#F59E0B';
+    drawRR(cx-20,vy,20,60,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='10px PingFang SC';ctx.fillText('A',cx-10,vy+35);
+    drawRR(cx+15,vy+15,60,20,4);ctx.fill();ctx.stroke();
+    ctx.fillText('B (zeros)',cx+45,vy+30);
+    ctx.fillStyle='#00B894';ctx.font='12px PingFang SC';
+    ctx.fillText('scaling='+String(32/16),cx+110,vy+35);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=20;
+  // Data flow
+  const bw=150,bh=32,gap=15;
+  const flow=[
+    {label:'输入 x',color:'#F59E0B',t:0},
+    {label:'W₀·x (原始路径) ❄️',color:'#0984E3',t:.15,branch:'left'},
+    {label:'dropout(x)',color:'#94A3B8',t:.15,branch:'right'},
+    {label:'lora_A(·)  [d→r]',color:'#F59E0B',t:.3,branch:'right'},
+    {label:'lora_B(·)  [r→d]',color:'#F59E0B',t:.45,branch:'right'},
+    {label:'× scaling',color:'#00B894',t:.6,branch:'right'},
+    {label:'+ (相加)',color:'#6C5CE7',t:.75},
+    {label:'output',color:'#00B894',t:.88}
+  ];
+  // Input
+  const sp0=easeInOut(Math.max(0,Math.min(1,p/.12)));
+  ctx.globalAlpha=sp0;
+  ctx.fillStyle='#F59E0B22';ctx.strokeStyle='#F59E0B';ctx.lineWidth=1.5;
+  drawRR(cx-bw/2,topY,bw,bh,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#F59E0B';ctx.font='12px Courier New';ctx.textAlign='center';
+  ctx.fillText('输入 x',cx,topY+bh/2+4);ctx.globalAlpha=1;
+  // Split into two branches
+  const leftX=cx-100,rightX=cx+100;
+  if(p>.12){
+    const bp=easeInOut((p-.12)/.08);ctx.globalAlpha=bp;
+    ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(cx,topY+bh);ctx.lineTo(leftX,topY+bh+25);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(cx,topY+bh);ctx.lineTo(rightX,topY+bh+25);ctx.stroke();ctx.globalAlpha=1;
+  }
+  // Left branch: W0
+  const ly=topY+bh+30;
+  if(p>.15){
+    const lp=easeInOut((p-.15)/.15);ctx.globalAlpha=lp;
+    ctx.fillStyle='#0984E322';ctx.strokeStyle='#0984E3';ctx.lineWidth=1.5;
+    drawRR(leftX-bw/2,ly,bw,bh,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='11px Courier New';ctx.textAlign='center';
+    ctx.fillText('original(x) = W₀·x',leftX,ly+bh/2+4);ctx.globalAlpha=1;
+  }
+  // Right branch: LoRA chain
+  const rSteps=[
+    {label:'lora_dropout(x)',color:'#94A3B8',y:ly},
+    {label:'lora_A(·)  d→r',color:'#F59E0B',y:ly+bh+gap},
+    {label:'lora_B(·)  r→d',color:'#F59E0B',y:ly+2*(bh+gap)},
+    {label:'× scaling (α/r)',color:'#00B894',y:ly+3*(bh+gap)}
+  ];
+  for(let i=0;i<rSteps.length;i++){
+    const delay=.15+i*.15;const rp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.12)));
+    const s=rSteps[i];ctx.globalAlpha=rp;
+    ctx.fillStyle=s.color+'22';ctx.strokeStyle=s.color;ctx.lineWidth=1;
+    drawRR(rightX-bw/2,s.y,bw,bh,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='11px Courier New';ctx.textAlign='center';
+    ctx.fillText(s.label,rightX,s.y+bh/2+4);
+    if(i<rSteps.length-1){ctx.strokeStyle=s.color+'44';ctx.beginPath();ctx.moveTo(rightX,s.y+bh);ctx.lineTo(rightX,s.y+bh+gap);ctx.stroke()}
+    ctx.globalAlpha=1;
+  }
+  // Merge
+  if(p>.75){
+    const mp=easeInOut((p-.75)/.15);ctx.globalAlpha=mp;
+    const my=ly+4*(bh+gap);
+    ctx.strokeStyle='#6C5CE7';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(leftX,ly+bh);ctx.lineTo(cx,my);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(rightX,ly+3*(bh+gap)+bh);ctx.lineTo(cx,my);ctx.stroke();
+    ctx.fillStyle='#6C5CE722';ctx.strokeStyle='#6C5CE7';
+    drawRR(cx-40,my+5,80,28,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('output = +',cx,my+24);ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=10;
+  // Model layers visualization
+  ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(108,92,231,${easeInOut(Math.min(1,p/.1))})`;
+  ctx.fillText('inject_lora: 遍历模型并注入',cx,topY+10);
+  const layers=[
+    {name:'patch_embed (Conv2d)',lora:false},
+    {name:'vis_proj (Linear)',lora:false},
+    {name:'transformer.layer0.attn.q_proj',lora:true},
+    {name:'transformer.layer0.attn.k_proj',lora:false},
+    {name:'transformer.layer0.attn.v_proj',lora:true},
+    {name:'transformer.layer0.ffn.fc1',lora:false},
+    {name:'transformer.layer1.attn.q_proj',lora:true},
+    {name:'transformer.layer1.attn.v_proj',lora:true},
+    {name:'lm_head (Linear)',lora:false}
+  ];
+  const lh=30;
+  for(let i=0;i<layers.length;i++){
+    const delay=.1+i*.08;const lp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.12)));
+    const l=layers[i],y=topY+25+i*lh;
+    ctx.globalAlpha=lp;
+    const isActive=animProgress>delay&&animProgress<delay+.12;
+    ctx.fillStyle=l.lora?'rgba(249,158,11,.15)':'rgba(100,116,139,.1)';
+    ctx.strokeStyle=l.lora?'#F59E0B':'#64748B';ctx.lineWidth=l.lora?2:1;
+    drawRR(20,y,W-40,lh-4,5);ctx.fill();ctx.stroke();
+    if(isActive&&l.lora){ctx.shadowColor='#F59E0B';ctx.shadowBlur=10;drawRR(20,y,W-40,lh-4,5);ctx.stroke();ctx.shadowBlur=0}
+    ctx.fillStyle=l.lora?'#F59E0B':'#94A3B8';ctx.font='11px Courier New';ctx.textAlign='left';
+    ctx.fillText(l.name,35,y+lh/2);
+    if(l.lora){ctx.fillStyle='#00B894';ctx.textAlign='right';ctx.font='bold 11px PingFang SC';ctx.fillText('→ LoRALinear ✓',W-30,y+lh/2)}
+    else{ctx.fillStyle='#64748B';ctx.textAlign='right';ctx.font='11px PingFang SC';ctx.fillText('保持不变',W-30,y+lh/2)}
+    ctx.globalAlpha=1;
+  }
+  // Summary
+  if(p>.85){
+    const sp=easeInOut((p-.85)/.15);ctx.globalAlpha=sp;
+    ctx.fillStyle='rgba(0,184,148,.1)';ctx.strokeStyle='#00B894';ctx.lineWidth=1.5;
+    const sy=topY+25+layers.length*lh+10;
+    drawRR(20,sy,W-40,30,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('注入了 4 个 LoRA 适配器 (r=16, alpha=32)',cx,sy+20);ctx.globalAlpha=1;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=10;
+  const code=[
+    {text:'# 只收集可训练参数',color:'#64748B'},
+    {text:'trainable = [p for p in model.parameters()',color:'#6C5CE7'},
+    {text:'             if p.requires_grad]',color:'#6C5CE7'},
+    {text:'optimizer = AdamW(trainable, lr=2e-4)',color:'#00B894'},
+    {text:'',color:'#94A3B8'},
+    {text:'for epoch in range(num_epochs):',color:'#94A3B8'},
+    {text:'  for images, ids, labels in loader:',color:'#94A3B8'},
+    {text:'    logits = model(images, ids)',color:'#0984E3'},
+    {text:'    loss = CE(logits, labels)',color:'#F59E0B'},
+    {text:'    optimizer.zero_grad()',color:'#94A3B8'},
+    {text:'    loss.backward()',color:'#EF4444'},
+    {text:'    optimizer.step()',color:'#00B894'}
+  ];
+  const lh=28;
+  for(let i=0;i<code.length;i++){
+    if(!code[i].text)continue;
+    const delay=i*.06;const cp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.1)));
+    const y=topY+i*lh;
+    const isActive=animProgress>delay&&animProgress<delay+.1;
+    ctx.globalAlpha=cp;
+    if(isActive){ctx.fillStyle=code[i].color+'22';ctx.fillRect(15,y,W-30,lh-3)}
+    ctx.fillStyle='#64748B';ctx.font='10px Courier New';ctx.textAlign='right';
+    ctx.fillText(String(i+1),14,y+lh/2+3);
+    ctx.fillStyle=code[i].color;ctx.font='12px Courier New';ctx.textAlign='left';
+    ctx.fillText(code[i].text,20,y+lh/2+4);
+    ctx.globalAlpha=1;
+  }
+  // Memory comparison
+  if(p>.7){
+    const mp=easeInOut((p-.7)/.3);ctx.globalAlpha=mp;
+    const my=topY+code.length*lh+15;
+    ctx.font='bold 12px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('显存节省 (优化器状态 ∝ 可训练参数)',cx,my);
+    // Full vs LoRA bars
+    const barW=W-80;
+    ctx.fillStyle='rgba(239,68,68,.3)';drawRR(40,my+10,barW,18,4);ctx.fill();
+    ctx.fillStyle='#EF4444';ctx.font='10px PingFang SC';ctx.textAlign='left';
+    ctx.fillText('全参: ~16GB optimizer states',48,my+23);
+    ctx.fillStyle='rgba(0,184,148,.3)';drawRR(40,my+35,barW*.01+5,18,4);ctx.fill();
+    ctx.fillStyle='#00B894';ctx.fillText('LoRA: ~125MB',48,my+48);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=10;
+  const code=[
+    {text:'def merge_weights(self):',color:'#6C5CE7'},
+    {text:'    with torch.no_grad():',color:'#94A3B8'},
+    {text:'        # 计算权重增量',color:'#64748B'},
+    {text:'        delta_w = (',color:'#F59E0B'},
+    {text:'            self.lora_B.weight',color:'#F59E0B'},
+    {text:'            @ self.lora_A.weight',color:'#F59E0B'},
+    {text:'        ) * self.scaling',color:'#00B894'},
+    {text:'        # 合并到原始权重',color:'#64748B'},
+    {text:'        self.original.weight.add_(delta_w)',color:'#EF4444'}
+  ];
+  const lh=30;
+  for(let i=0;i<code.length;i++){
+    const delay=i*.08;const cp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.12)));
+    const y=topY+i*lh;
+    const isActive=animProgress>delay&&animProgress<delay+.12;
+    ctx.globalAlpha=cp;
+    if(isActive){ctx.fillStyle=code[i].color+'22';ctx.fillRect(15,y,W-30,lh-3)}
+    ctx.fillStyle='#64748B';ctx.font='10px Courier New';ctx.textAlign='right';
+    ctx.fillText(String(i+1),14,y+lh/2+3);
+    ctx.fillStyle=code[i].color;ctx.font='12px Courier New';ctx.textAlign='left';
+    ctx.fillText(code[i].text,20,y+lh/2+4);
+    ctx.globalAlpha=1;
+  }
+  // Visual: merge animation
+  if(p>.7){
+    const vp=easeInOut((p-.7)/.3);ctx.globalAlpha=vp;
+    const vy=topY+code.length*lh+15;
+    // Before
+    ctx.fillStyle='#0984E322';ctx.strokeStyle='#0984E3';ctx.lineWidth=1.5;
+    drawRR(30,vy,60,50,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='11px PingFang SC';ctx.textAlign='center';ctx.fillText('W₀',60,vy+30);
+    ctx.fillStyle='#F59E0B';ctx.font='bold 18px sans-serif';ctx.fillText('+',100,vy+30);
+    ctx.fillStyle='#F59E0B22';ctx.strokeStyle='#F59E0B';
+    drawRR(115,vy+10,40,30,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='11px PingFang SC';ctx.fillText('ΔW',135,vy+30);
+    // Arrow
+    ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(170,vy+25);ctx.lineTo(200,vy+25);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(195,vy+20);ctx.lineTo(202,vy+25);ctx.lineTo(195,vy+30);ctx.stroke();
+    // After
+    ctx.fillStyle='#00B89422';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(210,vy,80,50,6);ctx.fill();ctx.stroke();
+    ctx.shadowColor='#00B894';ctx.shadowBlur=vp*10;
+    ctx.fillStyle='#00B894';ctx.font='bold 13px PingFang SC';ctx.fillText('W_merged',250,vy+30);
+    ctx.shadowBlur=0;
+    ctx.font='10px PingFang SC';ctx.fillStyle='#94A3B8';ctx.fillText('推理零开销',250,vy+60);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

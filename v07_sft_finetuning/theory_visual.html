@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v07 SFT 微调 (LoRA) - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:15px;color:var(--warn);text-align:center;line-height:1.8}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v07</span><h1>SFT 微调 (LoRA)</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'SFT 指令微调概念',desc:'<strong>Supervised Fine-Tuning (SFT)</strong> 是将预训练模型适配到特定任务的关键步骤。<br><br>流程：<strong>预训练模型</strong> + <strong>高质量指令数据</strong> → <strong>任务模型</strong><br><br>指令数据格式：<br>• 输入：图像 + 文本指令（如"描述这张广告图片"）<br>• 输出：期望的回答（如"这是一张运动鞋广告..."）<br><br>挑战：大模型参数量巨大（数十亿），<strong>全参数微调</strong>成本极高。<br>解决方案：<strong>LoRA 参数高效微调</strong>。',formula:'全参微调: 更新所有 N 个参数\nLoRA 微调: 只更新 << N 个参数\n\n效果: 接近全参微调，成本降低 10-100x'},
+{title:'LoRA 低秩分解',desc:'LoRA 的核心思想：<strong>权重更新矩阵是低秩的</strong>。<br><br>原始权重 W₀ ∈ R^{d×d} 不变，在旁边加两个小矩阵：<br>• <strong>A ∈ R^{d×r}</strong>：降维矩阵<br>• <strong>B ∈ R^{r×d}</strong>：升维矩阵<br>• r << d（典型 r=16，d=4096）<br><br>输出 = <strong>W₀·x + B·A·x · scaling</strong><br><br>动画展示：大矩阵 W₀ 旁边的两个小矩阵 A、B 如何工作。',formula:'W = W₀ + ΔW = W₀ + B·A · (α/r)\n\nW₀ ∈ R^{d×d}  (冻结)\nA ∈ R^{d×r}    (可训练)\nB ∈ R^{r×d}    (可训练)\nscaling = α/r'},
+{title:'参数冻结可视化',desc:'LoRA 的训练过程中：<br><br><strong>冻结参数 (W₀)</strong>：原始预训练权重，不参与梯度更新<br>• 显示为<strong>冰蓝色</strong>，requires_grad = False<br>• 保留了预训练学到的通用知识<br><br><strong>可训练参数 (A, B)</strong>：LoRA 适配器权重<br>• 显示为<strong>橙色</strong>，requires_grad = True<br>• 学习任务特定的知识增量<br><br>A 用 Kaiming 初始化，B 初始化为 0 → <strong>初始时 ΔW = B·A = 0</strong>，不改变原始模型行为。',formula:'初始化:\n  A: kaiming_uniform (有值)\n  B: zeros (全零)\n  → ΔW = B·A = 0 (安全启动)\n\n训练状态:\n  W₀.requires_grad = False  ❄️\n  A.requires_grad = True    🔥\n  B.requires_grad = True    🔥'},
+{title:'参数量对比',desc:'以 d=4096 为例对比参数量：<br><br><strong>全参微调</strong>：d² = 4096² = <strong>16,777,216</strong> 参数<br><br><strong>LoRA (r=16)</strong>：2·d·r = 2×4096×16 = <strong>131,072</strong> 参数<br>占比：131,072 / 16,777,216 = <strong>0.78%</strong><br><br>不到原来的 1%！但效果几乎一样。<br><br>实际中可以只对 <strong>Q 和 V 投影</strong>注入 LoRA，进一步减少参数量。整个大模型只需训练不到 1% 的参数。',formula:'全参: d² = 4096² = 16,777,216\nLoRA: 2dr = 2 × 4096 × 16 = 131,072\n\n占比 = 131,072 / 16,777,216 = 0.78%\n\n节省 99.22% 的可训练参数！'},
+{title:'权重合并 merge_weights',desc:'训练完成后，LoRA 权重可以<strong>合并</strong>到原始权重中：<br><br><strong>W_merged = W₀ + B·A · scaling</strong><br><br>合并后：<br>• 模型结构恢复原样（无额外分支）<br>• <strong>推理速度与原始模型完全相同</strong><br>• 不需要额外的 LoRA 计算开销<br><br>这是 LoRA 的重要优势：训练时参数高效，推理时<strong>零额外开销</strong>。<br><br>还可以为不同任务保存不同的 LoRA 权重，动态切换。',formula:'推理优化:\n  delta_W = (B.weight @ A.weight) * scaling\n  W₀.weight += delta_W\n\n合并后: output = W_merged · x\n(无额外分支，推理零开销)'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+  const cx=W/2,cy=H/2-20;
+  const bw=130,bh=50;
+  // Pretrained model
+  const p1=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=p1;ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=2;
+  drawRR(30,cy-bh/2,bw,bh,10);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('预训练模型',30+bw/2,cy-3);ctx.font='10px Courier New';ctx.fillStyle='#94A3B8';ctx.fillText('~Billions params',30+bw/2,cy+14);ctx.globalAlpha=1;
+  // Plus
+  if(p>.2){const pp=easeInOut((p-.2)/.1);ctx.globalAlpha=pp;ctx.fillStyle='#F59E0B';ctx.font='bold 24px sans-serif';ctx.fillText('+',bw+50,cy+5);ctx.globalAlpha=1}
+  // Instruction data
+  if(p>.25){
+    const dp=easeInOut((p-.25)/.2);ctx.globalAlpha=dp;
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(bw+70,cy-bh/2,bw,bh,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 13px PingFang SC';ctx.fillText('指令数据',bw+70+bw/2,cy-3);
+    ctx.font='10px PingFang SC';ctx.fillStyle='#94A3B8';ctx.fillText('图+文 → 回答',bw+70+bw/2,cy+14);ctx.globalAlpha=1;
+  }
+  // Arrow
+  if(p>.45){const ap=easeInOut((p-.45)/.15);ctx.globalAlpha=ap;ctx.strokeStyle='#F59E0B';ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(2*bw+85,cy);ctx.lineTo(2*bw+115,cy);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(2*bw+110,cy-6);ctx.lineTo(2*bw+117,cy);ctx.lineTo(2*bw+110,cy+6);ctx.stroke();ctx.globalAlpha=1}
+  // Task model
+  if(p>.55){
+    const tp=easeInOut((p-.55)/.25);ctx.globalAlpha=tp;
+    ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(2*bw+125,cy-bh/2,bw,bh,10);ctx.fill();ctx.stroke();
+    ctx.shadowColor='#F59E0B';ctx.shadowBlur=tp*15;
+    ctx.fillStyle='#F59E0B';ctx.font='bold 13px PingFang SC';ctx.fillText('任务模型',2*bw+125+bw/2,cy-3);ctx.shadowBlur=0;
+    ctx.font='10px PingFang SC';ctx.fillStyle='#94A3B8';ctx.fillText('广告理解/生成',2*bw+125+bw/2,cy+14);ctx.globalAlpha=1;
+  }
+  // Bottom: challenge
+  if(p>.8){const bp=easeInOut((p-.8)/.2);ctx.globalAlpha=bp;
+    ctx.fillStyle='#EF4444';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('挑战：全参微调数十亿参数 → 成本极高',cx,cy+60);
+    ctx.fillStyle='#00B894';ctx.fillText('解决：LoRA 只训练 <1% 参数，效果接近全参',cx,cy+82);ctx.globalAlpha=1}
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=20;
+  // W0 big matrix
+  const w0w=120,w0h=120;
+  const p1=easeInOut(Math.min(1,p/.25));
+  ctx.globalAlpha=p1;
+  ctx.fillStyle='rgba(9,132,227,.1)';ctx.strokeStyle='#0984E3';ctx.lineWidth=2;
+  drawRR(cx-w0w/2-80,topY,w0w,w0h,8);ctx.fill();ctx.stroke();
+  // Grid for W0
+  ctx.strokeStyle='rgba(9,132,227,.2)';ctx.lineWidth=.5;
+  for(let i=1;i<8;i++){
+    ctx.beginPath();ctx.moveTo(cx-w0w/2-80+i*w0w/8,topY);ctx.lineTo(cx-w0w/2-80+i*w0w/8,topY+w0h);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(cx-w0w/2-80,topY+i*w0h/8);ctx.lineTo(cx-w0w/2-80+w0w,topY+i*w0h/8);ctx.stroke();
+  }
+  ctx.fillStyle='#0984E3';ctx.font='bold 16px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('W₀',cx-80,topY+w0h/2+6);ctx.font='11px Courier New';ctx.fillStyle='#94A3B8';
+  ctx.fillText('d × d',cx-80,topY+w0h+18);ctx.fillText('(冻结)',cx-80,topY+w0h+33);ctx.globalAlpha=1;
+  // Plus sign
+  if(p>.3){const pp=easeInOut((p-.3)/.1);ctx.globalAlpha=pp;ctx.fillStyle='#F59E0B';ctx.font='bold 28px sans-serif';ctx.fillText('+',cx+10,topY+w0h/2+8);ctx.globalAlpha=1}
+  // A matrix (tall thin)
+  if(p>.35){
+    const ap=easeInOut((p-.35)/.2);
+    const aw=25,ah=w0h,ax=cx+50;
+    ctx.globalAlpha=ap;ctx.fillStyle='rgba(249,158,11,.2)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(ax,topY,aw,ah,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 14px PingFang SC';
+    ctx.fillText('A',ax+aw/2,topY+ah/2+5);ctx.font='10px Courier New';ctx.fillStyle='#F59E0B';
+    ctx.fillText('d×r',ax+aw/2,topY+ah+15);ctx.globalAlpha=1;
+  }
+  // × sign
+  if(p>.5){const mp=easeInOut((p-.5)/.1);ctx.globalAlpha=mp;ctx.fillStyle='#94A3B8';ctx.font='18px sans-serif';ctx.fillText('×',cx+90,topY+w0h/2+5);ctx.globalAlpha=1}
+  // B matrix (short wide)
+  if(p>.55){
+    const bp=easeInOut((p-.55)/.2);
+    const bw2=w0w,bh2=25,bx=cx+105;
+    ctx.globalAlpha=bp;ctx.fillStyle='rgba(249,158,11,.2)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(bx,topY+w0h/2-bh2/2,bw2,bh2,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 14px PingFang SC';
+    ctx.fillText('B',bx+bw2/2,topY+w0h/2+5);ctx.font='10px Courier New';ctx.fillStyle='#F59E0B';
+    ctx.fillText('r×d',bx+bw2/2,topY+w0h/2+bh2/2+15);ctx.globalAlpha=1;
+  }
+  // Scaling
+  if(p>.75){const sp=easeInOut((p-.75)/.15);ctx.globalAlpha=sp;
+    ctx.fillStyle='#00B894';ctx.font='bold 13px Courier New';ctx.textAlign='center';
+    ctx.fillText('× α/r',cx+90,topY+w0h/2+bh2+35);ctx.globalAlpha=1}
+  // Result formula
+  if(p>.85){const rp=easeInOut((p-.85)/.15);ctx.globalAlpha=rp;
+    ctx.fillStyle='rgba(0,184,148,.12)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(30,H-55,W-60,40,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 14px PingFang SC';
+    ctx.fillText('output = W₀·x + B·A·x · (α/r)',cx,H-30);ctx.globalAlpha=1}
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=20;
+  // Big grid for frozen W0
+  const gw=W-60,gh=100,gx=30;
+  const fp=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=fp;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillStyle='#0984E3';
+  ctx.fillText('W₀ — 冻结参数 (requires_grad=False)',cx,topY);
+  // Draw frozen grid
+  const cols=20,rows=5,cw=gw/cols,ch=gh/rows;
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const delay=(r*cols+c)*.002;const cp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    ctx.fillStyle=`rgba(9,132,227,${cp*.25})`;
+    ctx.fillRect(gx+c*cw+1,topY+15+r*ch+1,cw-2,ch-2);
+  }
+  // Snowflake overlay
+  if(fp>.5){ctx.fillStyle='rgba(9,132,227,.3)';ctx.font='20px sans-serif';
+    ctx.fillText('❄️ 冻结',cx,topY+15+gh/2+5)}
+  ctx.globalAlpha=1;
+  // LoRA A and B (trainable)
+  if(p>.4){
+    const lp=easeInOut((p-.4)/.3);
+    ctx.globalAlpha=lp;
+    const ly=topY+gh+35;
+    ctx.font='bold 14px PingFang SC';ctx.fillStyle='#F59E0B';
+    ctx.fillText('A, B — 可训练参数 (requires_grad=True)',cx,ly);
+    // A matrix
+    const aw=30,ah=60,ax=cx-80;
+    ctx.fillStyle='rgba(249,158,11,.3)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(ax,ly+10,aw,ah,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';ctx.fillText('A',ax+aw/2,ly+10+ah/2+4);
+    ctx.font='10px Courier New';ctx.fillText('d×r',ax+aw/2,ly+10+ah+15);
+    // B matrix
+    const bw=60,bh2=30,bx=cx+30;
+    ctx.fillStyle='rgba(249,158,11,.3)';ctx.strokeStyle='#F59E0B';
+    drawRR(bx,ly+10+15,bw,bh2,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';ctx.fillText('B',bx+bw/2,ly+10+15+bh2/2+4);
+    ctx.font='10px Courier New';ctx.fillText('r×d',bx+bw/2,ly+10+15+bh2+15);
+    // Fire emoji
+    ctx.font='20px sans-serif';ctx.fillText('🔥',cx-20,ly+10+ah/2+5);
+    ctx.globalAlpha=1;
+  }
+  // Init explanation
+  if(p>.75){
+    const ip=easeInOut((p-.75)/.25);ctx.globalAlpha=ip;
+    const iy=H-70;
+    ctx.fillStyle='rgba(0,184,148,.1)';ctx.strokeStyle='#00B894';ctx.lineWidth=1;
+    drawRR(30,iy,W-60,55,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('A: Kaiming 初始化 (有值)  |  B: 零初始化',cx,iy+20);
+    ctx.fillStyle='#F59E0B';ctx.fillText('→ 初始 ΔW = B·A = 0，安全启动不改变原模型',cx,iy+42);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=20;
+  // Full param bar
+  const barW=W-80,barH=40,bx=40;
+  const fp=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=fp;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillStyle='#EF4444';
+  ctx.fillText('全参微调',cx,topY);
+  ctx.fillStyle='rgba(239,68,68,.2)';ctx.strokeStyle='#EF4444';ctx.lineWidth=2;
+  drawRR(bx,topY+10,barW,barH,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#EF4444';ctx.font='bold 13px Courier New';
+  ctx.fillText('d² = 4096² = 16,777,216 参数 (100%)',cx,topY+10+barH/2+5);
+  ctx.globalAlpha=1;
+  // LoRA bar
+  if(p>.35){
+    const lp=easeInOut((p-.35)/.3);ctx.globalAlpha=lp;
+    const ly=topY+barH+40;
+    ctx.font='bold 14px PingFang SC';ctx.fillStyle='#00B894';ctx.fillText('LoRA 微调 (r=16)',cx,ly);
+    // Frozen part
+    ctx.fillStyle='rgba(9,132,227,.15)';ctx.strokeStyle='#0984E3';ctx.lineWidth=1;
+    drawRR(bx,ly+10,barW*.9922,barH,8);ctx.fill();ctx.stroke();
+    // Trainable part (tiny!)
+    const loraW=Math.max(barW*.0078,8);
+    ctx.fillStyle='rgba(249,158,11,.5)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(bx+barW-loraW,ly+10,loraW,barH,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='11px PingFang SC';ctx.textAlign='left';
+    ctx.fillText('冻结: 16,646,144 (99.22%)',bx+10,ly+10+barH/2+4);
+    ctx.fillStyle='#F59E0B';ctx.font='bold 11px PingFang SC';ctx.textAlign='right';
+    ctx.fillText('LoRA: 131,072 (0.78%)',bx+barW-5,ly+barH+30);
+    ctx.globalAlpha=1;
+  }
+  // Visual comparison
+  if(p>.7){
+    const vp=easeInOut((p-.7)/.3);ctx.globalAlpha=vp;
+    const vy=topY+2*barH+100;
+    ctx.font='bold 16px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('节省 99.22% 可训练参数！',cx,vy);
+    // Comparison circles
+    const r1=50,r2=5;
+    ctx.fillStyle='rgba(239,68,68,.2)';ctx.strokeStyle='#EF4444';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(cx-70,vy+55,r1*vp,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#EF4444';ctx.font='11px PingFang SC';ctx.fillText('全参',cx-70,vy+55+r1+15);
+    ctx.fillStyle='rgba(0,184,148,.3)';ctx.strokeStyle='#00B894';
+    ctx.beginPath();ctx.arc(cx+70,vy+55,r2*vp+2,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.fillText('LoRA',cx+70,vy+55+r1+15);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=20;
+  // Before merge: two branches
+  const bp=easeInOut(Math.min(1,p/.35));
+  ctx.globalAlpha=bp;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillStyle='#6C5CE7';
+  ctx.fillText('训练时 (两个分支)',cx,topY);
+  // Input
+  ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=1.5;
+  drawRR(cx-30,topY+15,60,30,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';ctx.fillText('x',cx,topY+35);
+  // W0 branch
+  ctx.strokeStyle='#0984E3';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(cx-15,topY+45);ctx.lineTo(cx-60,topY+70);ctx.stroke();
+  ctx.fillStyle='rgba(9,132,227,.15)';ctx.strokeStyle='#0984E3';
+  drawRR(cx-100,topY+72,80,30,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.font='12px PingFang SC';ctx.fillText('W₀·x ❄️',cx-60,topY+92);
+  // LoRA branch
+  ctx.strokeStyle='#F59E0B';ctx.beginPath();ctx.moveTo(cx+15,topY+45);ctx.lineTo(cx+60,topY+70);ctx.stroke();
+  ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';
+  drawRR(cx+20,topY+72,80,30,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';ctx.fillText('B·A·x 🔥',cx+60,topY+92);
+  // Merge arrow
+  ctx.strokeStyle='#94A3B8';
+  ctx.beginPath();ctx.moveTo(cx-60,topY+104);ctx.lineTo(cx,topY+125);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx+60,topY+104);ctx.lineTo(cx,topY+125);ctx.stroke();
+  ctx.fillStyle='#00B894';ctx.font='bold 12px PingFang SC';ctx.fillText('+',cx,topY+120);
+  ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';
+  drawRR(cx-50,topY+128,100,28,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#00B894';ctx.fillText('output',cx,topY+147);
+  ctx.globalAlpha=1;
+  // Merge animation
+  if(p>.45){
+    const mp=easeInOut((p-.45)/.35);ctx.globalAlpha=mp;
+    const my=topY+185;
+    ctx.font='bold 14px PingFang SC';ctx.fillStyle='#F59E0B';ctx.fillText('合并后 (推理零开销)',cx,my);
+    // Merge formula
+    ctx.fillStyle='rgba(0,184,148,.1)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(30,my+10,W-60,50,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 14px Courier New';
+    ctx.fillText('W_merged = W₀ + B·A · scaling',cx,my+30);
+    ctx.font='12px PingFang SC';ctx.fillStyle='#94A3B8';
+    ctx.fillText('单个矩阵，无额外分支',cx,my+50);
+    ctx.globalAlpha=1;
+  }
+  // Benefit
+  if(p>.85){
+    const bp2=easeInOut((p-.85)/.15);ctx.globalAlpha=bp2;
+    ctx.fillStyle='rgba(249,158,11,.1)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=1;
+    drawRR(30,H-55,W-60,40,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('不同任务可保存不同 LoRA → 动态切换，共享 W₀',cx,H-30);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

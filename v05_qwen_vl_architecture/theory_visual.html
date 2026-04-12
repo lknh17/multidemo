@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v05 Qwen-VL 架构 - 原理可视化</title>
+<style>
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v05</span>
+  <h1>Qwen-VL 架构解析</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/5</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'Qwen-VL 三段式架构',
+    desc: 'Qwen-VL 采用经典的<strong>三段式多模态架构</strong>：<br><br>1. <strong>Vision Transformer (ViT)</strong>：将图像分割为 patch 并编码为视觉 token 序列<br>2. <strong>Perceiver Resampler</strong>：将大量视觉 token 压缩为固定数量的表示<br>3. <strong>大语言模型 (LLM)</strong>：接收视觉 + 文本 token，生成输出<br><br>动画展示三个模块<strong>依次点亮</strong>，数据从左到右流动。这种设计让视觉信息能够高效地融入语言模型。',
+    formula: 'Image → ViT → [B,1024,D_v]\n  → Resampler → [B,256,D_llm]\n    → LLM → Output' },
+  { title: 'Perceiver Resampler 压缩',
+    desc: 'Perceiver Resampler 是连接视觉与语言的<strong>关键桥梁</strong>。<br><br>核心思想：用<strong>固定数量的可学习 Query</strong>（如 256 个）通过 Cross-Attention 从 1024 个视觉 token 中<strong>提取并压缩</strong>关键信息。<br><br>• Query (Q)：可学习参数，代表"想提取什么"<br>• Key/Value (K,V)：来自 ViT 输出的视觉特征<br>• 多层 Cross-Attention 迭代精炼<br><br>这样做的好处：<strong>大幅减少送入 LLM 的 token 数</strong>，降低计算量。',
+    formula: 'Q: learnable_queries [256, D]\nK,V: vision_proj(ViT_output) [1024, D]\nOutput = CrossAttn(Q, K, V) → [256, D]' },
+  { title: '多模态 Token 拼接',
+    desc: '压缩后的视觉 token 与文本 token 通过<strong>特殊标记</strong>拼接成统一序列：<br><br><strong>[BOS] &lt;img&gt; vis_token_1 ... vis_token_256 &lt;/img&gt; text_tokens [EOS]</strong><br><br>• <strong>&lt;img&gt; / &lt;/img&gt;</strong>：图像边界标记，让模型知道哪些是视觉信息<br>• 视觉 token 与文本 token 共享同一个 embedding 空间<br>• LLM 以<strong>自回归</strong>方式处理整个序列<br><br>这种设计简洁高效，让模型用统一方式理解多模态输入。',
+    formula: 'Sequence = [BOS] <img> v_1 v_2 ... v_256 </img> t_1 t_2 ... t_L [EOS]\n\n总长度 = 2 + 256 + L + 1 = 259 + L' },
+  { title: 'Qwen2-VL 改进：动态分辨率 + M-RoPE',
+    desc: 'Qwen2-VL 在 Qwen-VL 基础上引入两大改进：<br><br>1. <strong>动态分辨率</strong>：不再将所有图像缩放到固定尺寸，而是根据原始分辨率动态调整 patch 数量。高分辨率图像 → 更多 token → 更丰富的细节。<br><br>2. <strong>M-RoPE (Multi-dimensional Rotary Position Embedding)</strong>：将位置编码扩展到三维——时间(视频帧)、高度、宽度，让模型理解空间位置关系。<br><br>这使得 Qwen2-VL 能更好地处理不同尺寸的图像和视频。',
+    formula: 'Dynamic Resolution:\n  224×224 → 196 patches\n  448×448 → 784 patches\n\nM-RoPE: PE(t, h, w) = RoPE_t ⊗ RoPE_h ⊗ RoPE_w' },
+  { title: '对广告场景的意义',
+    desc: '在<strong>广告多模态理解</strong>场景中，Qwen-VL 架构有重要意义：<br><br>1. <strong>Embedding 提取</strong>：可从不同层提取表示<br>  • ViT 输出：纯视觉语义（素材画面理解）<br>  • Resampler 输出：压缩后的视觉表示（高效检索）<br>  • LLM 中间层：融合了视觉+文本的多模态表示<br><br>2. <strong>视觉信息压缩</strong>：1024→256 的压缩对在线推理至关重要，减少 4 倍计算量<br><br>3. <strong>多任务适配</strong>：统一架构支持图文匹配、内容理解、标签生成等多种广告任务。',
+    formula: '广告场景 Embedding 选择:\n  检索任务 → Resampler 输出 (256-dim)\n  理解任务 → LLM 中间层 (融合表示)\n  分类任务 → LLM [CLS] 或 pooled output' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+function drawArrow(x1,y1,x2,y2,color,alpha){
+  ctx.globalAlpha=alpha; ctx.strokeStyle=color; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  const a=Math.atan2(y2-y1,x2-x1);
+  ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-10*Math.cos(a-.3),y2-10*Math.sin(a-.3)); ctx.moveTo(x2,y2); ctx.lineTo(x2-10*Math.cos(a+.3),y2-10*Math.sin(a+.3)); ctx.stroke();
+  ctx.globalAlpha=1;
+}
+
+// Step 0: Three-stage architecture
+function renderStep0(p) {
+  const cx=W/2, cy=H/2;
+  const bw=140, bh=70, gap=60;
+  const modules = [
+    {label:'ViT\n视觉编码器', color:'#0984E3', x:cx-bw-gap-bw/2},
+    {label:'Resampler\n视觉压缩', color:'#6C5CE7', x:cx-bw/2},
+    {label:'LLM\n语言模型', color:'#00B894', x:cx+bw/2+gap}
+  ];
+  // Image input
+  const ip=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=ip;
+  ctx.fillStyle='rgba(249,158,11,.2)'; ctx.strokeStyle='#F59E0B';
+  drawRoundRect(modules[0].x-80,cy-25,50,50,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#F59E0B'; ctx.font='24px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('🖼',modules[0].x-55,cy+8);
+  ctx.font='11px PingFang SC'; ctx.fillText('输入图像',modules[0].x-55,cy+40);
+  ctx.globalAlpha=1;
+
+  for(let i=0;i<3;i++){
+    const delay=.15+i*.25;
+    const mp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const m=modules[i];
+    ctx.globalAlpha=mp;
+    // Glow
+    if(mp>0.5){
+      ctx.shadowColor=m.color; ctx.shadowBlur=20*mp;
+    }
+    ctx.fillStyle=m.color+'22'; ctx.strokeStyle=m.color;  ctx.lineWidth=2;
+    drawRoundRect(m.x,cy-bh/2,bw,bh,12); ctx.fill(); ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.fillStyle=m.color; ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+    const lines=m.label.split('\n');
+    ctx.fillText(lines[0],m.x+bw/2,cy-5);
+    ctx.font='12px PingFang SC'; ctx.fillStyle='#94A3B8';
+    ctx.fillText(lines[1],m.x+bw/2,cy+15);
+    ctx.globalAlpha=1;
+    // Arrows between modules
+    if(i<2){
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay-.15)/.15)));
+      drawArrow(m.x+bw+5,cy,modules[i+1].x-5,cy,m.color,ap);
+    }
+  }
+  // Arrow from image to ViT
+  if(p>.1){
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.1)/.1)));
+    drawArrow(modules[0].x-25,cy,modules[0].x-5,cy,'#F59E0B',ap);
+  }
+  // Output arrow
+  if(p>.85){
+    const op=easeInOut((p-.85)/.15);
+    drawArrow(modules[2].x+bw+5,cy,modules[2].x+bw+55,cy,'#00B894',op);
+    ctx.globalAlpha=op;
+    ctx.fillStyle='#00B894'; ctx.font='13px PingFang SC';
+    ctx.fillText('输出',modules[2].x+bw+75,cy+5);
+    ctx.globalAlpha=1;
+  }
+  // Dimension labels
+  if(p>.4){
+    const lp=easeInOut((p-.4)/.2);
+    ctx.globalAlpha=lp*.8; ctx.font='11px Courier New'; ctx.fillStyle='#F59E0B';
+    ctx.fillText('[B,1024,D_v]',modules[0].x+bw/2,cy+bh/2+20);
+    if(p>.6){
+      ctx.fillStyle='#6C5CE7';
+      ctx.fillText('[B,256,D_llm]',modules[1].x+bw/2,cy+bh/2+20);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Perceiver Resampler
+function renderStep1(p) {
+  const cx=W/2, topY=30;
+  // Vision tokens (1024)
+  const vp=easeInOut(Math.min(1,p/.25));
+  ctx.globalAlpha=vp;
+  ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='#0984E3'; ctx.fillText('ViT 输出: 1024 个视觉 Token',cx,topY);
+  // Draw grid of tokens
+  const cols=32, rows=4, tw=Math.min((W-80)/cols,14), th=10;
+  const gx=cx-cols*tw/2, gy=topY+15;
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const delay=(r*cols+c)*.0005;
+    const tp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    ctx.fillStyle=`rgba(9,132,227,${tp*.5})`;
+    ctx.fillRect(gx+c*tw+1,gy+r*th+1,tw-2,th-2);
+  }
+  ctx.globalAlpha=1;
+
+  // Learnable queries (256)
+  if(p>.25){
+    const qp=easeInOut(Math.max(0,Math.min(1,(p-.25)/.2)));
+    ctx.globalAlpha=qp;
+    ctx.fillStyle='#6C5CE7'; ctx.font='bold 13px PingFang SC';
+    ctx.fillText('可学习 Query: 256 个',cx,gy+rows*th+35);
+    const qcols=16, qrows=2, qw=Math.min((W-120)/qcols,20), qh=12;
+    const qx=cx-qcols*qw/2, qy=gy+rows*th+45;
+    for(let r=0;r<qrows;r++) for(let c=0;c<qcols;c++){
+      ctx.fillStyle=`rgba(108,92,231,${qp*.6})`;
+      ctx.fillRect(qx+c*qw+1,qy+r*qh+1,qw-2,qh-2);
+    }
+    ctx.globalAlpha=1;
+
+    // Cross-Attention
+    if(p>.5){
+      const cap=easeInOut(Math.max(0,Math.min(1,(p-.5)/.25)));
+      const cay=qy+qrows*qh+30;
+      ctx.globalAlpha=cap;
+      ctx.fillStyle='rgba(249,158,11,.15)'; ctx.strokeStyle='#F59E0B'; ctx.lineWidth=2;
+      drawRoundRect(cx-100,cay,200,50,10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#F59E0B'; ctx.font='bold 14px PingFang SC';
+      ctx.fillText('Cross-Attention',cx,cay+22);
+      ctx.font='11px PingFang SC'; ctx.fillStyle='#94A3B8';
+      ctx.fillText('Q=queries, K/V=vision_tokens',cx,cay+40);
+      // Arrows
+      ctx.strokeStyle='rgba(108,92,231,.5)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,qy+qrows*qh); ctx.lineTo(cx,cay); ctx.stroke();
+      ctx.strokeStyle='rgba(9,132,227,.5)';
+      ctx.beginPath(); ctx.moveTo(cx-40,gy+rows*th); ctx.lineTo(cx-40,cay); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx+40,gy+rows*th); ctx.lineTo(cx+40,cay); ctx.stroke();
+      ctx.globalAlpha=1;
+
+      // Output compressed tokens
+      if(p>.75){
+        const op=easeInOut((p-.75)/.25);
+        ctx.globalAlpha=op;
+        const oy=cay+70;
+        ctx.fillStyle='#00B894'; ctx.font='bold 13px PingFang SC';
+        ctx.fillText('输出: 256 个压缩后的视觉 Token',cx,oy);
+        const ocols=16, orows=2, ow=Math.min((W-120)/ocols,20), oh=12;
+        const ox=cx-ocols*ow/2, ooy=oy+10;
+        for(let r=0;r<orows;r++) for(let c=0;c<ocols;c++){
+          ctx.fillStyle=`rgba(0,184,148,${op*.6})`;
+          ctx.fillRect(ox+c*ow+1,ooy+r*oh+1,ow-2,oh-2);
+        }
+        // Compression ratio
+        ctx.fillStyle='#F59E0B'; ctx.font='bold 16px PingFang SC';
+        ctx.fillText('压缩比 4:1 (1024 → 256)',cx,ooy+orows*oh+25);
+        ctx.globalAlpha=1;
+      }
+    }
+  }
+}
+
+// Step 2: Multimodal token concatenation
+function renderStep2(p) {
+  const cx=W/2, cy=H/2-20;
+  const tokenW=28, tokenH=32, gap=3;
+  // BOS
+  const bp=easeInOut(Math.min(1,p/.1));
+  const startX=30;
+  let x=startX;
+  const drawToken=(tx,label,color,alpha)=>{
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=color+'33'; ctx.strokeStyle=color;
+    drawRoundRect(tx,cy,tokenW,tokenH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=color; ctx.font='9px Courier New'; ctx.textAlign='center';
+    ctx.fillText(label,tx+tokenW/2,cy+tokenH/2+3);
+    ctx.globalAlpha=1;
+    return tx+tokenW+gap;
+  };
+  // [BOS]
+  x=drawToken(x,'BOS','#F59E0B',bp);
+  // <img>
+  const ip=easeInOut(Math.max(0,Math.min(1,(p-.1)/.1)));
+  x=drawToken(x,'<img>','#EF4444',ip);
+  // Visual tokens
+  const numVis=12;
+  for(let i=0;i<numVis;i++){
+    const vp=easeInOut(Math.max(0,Math.min(1,(p-.2-i*.02)/.15)));
+    x=drawToken(x,`v${i+1}`,'#0984E3',vp);
+  }
+  // ... indicator
+  if(p>.4){
+    const dp=easeInOut((p-.4)/.1);
+    ctx.globalAlpha=dp; ctx.fillStyle='#94A3B8'; ctx.font='bold 14px sans-serif';
+    ctx.fillText('...',x+10,cy+tokenH/2+3);
+    ctx.globalAlpha=1; x+=25;
+  }
+  // </img>
+  const ep=easeInOut(Math.max(0,Math.min(1,(p-.5)/.1)));
+  x=drawToken(x,'</img>','#EF4444',ep);
+  // Text tokens
+  const texts=['广','告','素','材','描','述'];
+  for(let i=0;i<texts.length;i++){
+    const tp=easeInOut(Math.max(0,Math.min(1,(p-.6-i*.03)/.15)));
+    x=drawToken(x,texts[i],'#00B894',tp);
+  }
+  // [EOS]
+  const eosp=easeInOut(Math.max(0,Math.min(1,(p-.85)/.1)));
+  x=drawToken(x,'EOS','#F59E0B',eosp);
+
+  // Labels
+  if(p>.3){
+    const lp=easeInOut((p-.3)/.2);
+    ctx.globalAlpha=lp; ctx.font='12px PingFang SC';
+    // Bracket over visual tokens
+    const vStartX=startX+tokenW+gap+tokenW+gap;
+    const vEndX=vStartX+numVis*(tokenW+gap)+25;
+    ctx.strokeStyle='rgba(9,132,227,.6)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(vStartX,cy-8); ctx.lineTo(vEndX,cy-8); ctx.stroke();
+    ctx.fillStyle='#0984E3'; ctx.textAlign='center';
+    ctx.fillText('256 个视觉 Token (Resampler 输出)',(vStartX+vEndX)/2,cy-15);
+    ctx.globalAlpha=1;
+  }
+  if(p>.7){
+    const lp=easeInOut((p-.7)/.2);
+    ctx.globalAlpha=lp;
+    const tStartX=startX+(numVis+3)*(tokenW+gap)+25+tokenW+gap;
+    ctx.fillStyle='#00B894'; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('文本 Token',tStartX+texts.length*(tokenW+gap)/2,cy-15);
+    ctx.globalAlpha=1;
+  }
+  // Bottom summary
+  if(p>.9){
+    const sp=easeInOut((p-.9)/.1);
+    ctx.globalAlpha=sp; ctx.font='14px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+    ctx.fillText('统一序列 → 送入 LLM 进行自回归生成',cx,cy+tokenH+50);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Dynamic resolution + M-RoPE
+function renderStep3(p) {
+  const cx=W/2, topY=20;
+  // Title
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle=`rgba(108,92,231,${easeInOut(Math.min(1,p/.15))})`;
+  ctx.fillText('动态分辨率处理',cx,topY);
+
+  // Two images of different sizes
+  const imgs=[
+    {w:80,h:80,label:'224×224',patches:'196 patches',color:'#0984E3'},
+    {w:120,h:80,label:'336×224',patches:'441 patches',color:'#6C5CE7'},
+    {w:160,h:80,label:'448×448',patches:'784 patches',color:'#00B894'}
+  ];
+  const totalW=imgs.reduce((s,im)=>s+im.w+40,0)-40;
+  let ix=cx-totalW/2;
+  const iy=topY+30;
+  for(let i=0;i<imgs.length;i++){
+    const delay=.1+i*.2;
+    const ip=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const im=imgs[i];
+    ctx.globalAlpha=ip;
+    ctx.fillStyle=im.color+'22'; ctx.strokeStyle=im.color; ctx.lineWidth=2;
+    drawRoundRect(ix,iy,im.w,im.h,8); ctx.fill(); ctx.stroke();
+    // Grid inside
+    const gs=im.w/Math.sqrt(parseInt(im.patches))*2;
+    ctx.strokeStyle=im.color+'44'; ctx.lineWidth=.5;
+    for(let gx=ix+gs;gx<ix+im.w;gx+=gs){ ctx.beginPath(); ctx.moveTo(gx,iy); ctx.lineTo(gx,iy+im.h); ctx.stroke(); }
+    for(let gy=iy+gs;gy<iy+im.h;gy+=gs){ ctx.beginPath(); ctx.moveTo(ix,gy); ctx.lineTo(ix+im.w,gy); ctx.stroke(); }
+    ctx.fillStyle=im.color; ctx.font='11px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(im.label,ix+im.w/2,iy+im.h+15);
+    ctx.fillStyle='#F59E0B'; ctx.font='10px Courier New';
+    ctx.fillText(im.patches,ix+im.w/2,iy+im.h+30);
+    ctx.globalAlpha=1;
+    ix+=im.w+40;
+  }
+
+  // M-RoPE section
+  if(p>.6){
+    const rp=easeInOut((p-.6)/.3);
+    const ry=iy+imgs[0].h+60;
+    ctx.globalAlpha=rp;
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle='#6C5CE7'; ctx.textAlign='center';
+    ctx.fillText('M-RoPE: 多维旋转位置编码',cx,ry);
+    // Three dimensions
+    const dims=[
+      {label:'时间维 (t)',color:'#EF4444',icon:'⏱'},
+      {label:'高度维 (h)',color:'#00B894',icon:'↕'},
+      {label:'宽度维 (w)',color:'#0984E3',icon:'↔'}
+    ];
+    const dw=100, dh=40, dgap=30;
+    const dx=cx-(3*dw+2*dgap)/2;
+    for(let i=0;i<3;i++){
+      const dd=.6+i*.1;
+      const dp=easeInOut(Math.max(0,Math.min(1,(p-dd)/.15)));
+      ctx.globalAlpha=dp;
+      const d=dims[i];
+      ctx.fillStyle=d.color+'22'; ctx.strokeStyle=d.color;
+      drawRoundRect(dx+i*(dw+dgap),ry+20,dw,dh,8); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=d.color; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+      ctx.fillText(d.icon+' '+d.label,dx+i*(dw+dgap)+dw/2,ry+20+dh/2+5);
+    }
+    // Combine
+    if(p>.85){
+      const cp=easeInOut((p-.85)/.15);
+      ctx.globalAlpha=cp;
+      ctx.fillStyle='#F59E0B'; ctx.font='13px Courier New';
+      ctx.fillText('PE(t,h,w) = RoPE_t ⊗ RoPE_h ⊗ RoPE_w',cx,ry+dh+50);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Advertising significance
+function renderStep4(p) {
+  const cx=W/2, topY=20;
+  // Architecture with extraction points
+  const bw=110, bh=45, gap=30;
+  const modules=[
+    {label:'ViT',color:'#0984E3',y:topY+30},
+    {label:'Resampler',color:'#6C5CE7',y:topY+30+bh+gap},
+    {label:'LLM 层 1-N',color:'#00B894',y:topY+30+2*(bh+gap)}
+  ];
+  ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle=`rgba(249,158,11,${easeInOut(Math.min(1,p/.15))})`;
+  ctx.fillText('Embedding 提取位置',cx-80,topY);
+
+  const mx=cx-120;
+  for(let i=0;i<3;i++){
+    const delay=i*.15;
+    const mp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const m=modules[i];
+    ctx.globalAlpha=mp;
+    ctx.fillStyle=m.color+'22'; ctx.strokeStyle=m.color; ctx.lineWidth=2;
+    drawRoundRect(mx,m.y,bw,bh,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=m.color; ctx.font='bold 13px PingFang SC';
+    ctx.fillText(m.label,mx+bw/2,m.y+bh/2+5);
+    if(i<2){
+      drawArrow(mx+bw/2,m.y+bh,mx+bw/2,modules[i+1].y,m.color,mp*.7);
+    }
+    ctx.globalAlpha=1;
+  }
+  // Extraction arrows and labels
+  const extractions=[
+    {from:0, label:'纯视觉语义', use:'素材画面理解', color:'#0984E3', delay:.3},
+    {from:1, label:'压缩视觉表示', use:'高效检索 (4x加速)', color:'#6C5CE7', delay:.5},
+    {from:2, label:'多模态融合表示', use:'深度理解任务', color:'#00B894', delay:.7}
+  ];
+  for(const ext of extractions){
+    const ep=easeInOut(Math.max(0,Math.min(1,(p-ext.delay)/.2)));
+    const m=modules[ext.from];
+    const ax=mx+bw+10, ay=m.y+bh/2;
+    ctx.globalAlpha=ep;
+    // Arrow
+    ctx.strokeStyle=ext.color; ctx.lineWidth=2; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(ax+60,ay); ctx.stroke();
+    ctx.setLineDash([]);
+    // Label box
+    ctx.fillStyle=ext.color+'1A'; ctx.strokeStyle=ext.color+'66';
+    drawRoundRect(ax+65,ay-20,160,40,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=ext.color; ctx.font='bold 12px PingFang SC'; ctx.textAlign='left';
+    ctx.fillText(ext.label,ax+75,ay-3);
+    ctx.fillStyle='#94A3B8'; ctx.font='11px PingFang SC';
+    ctx.fillText('→ '+ext.use,ax+75,ay+14);
+    ctx.globalAlpha=1;
+  }
+  // Compression benefit
+  if(p>.85){
+    const bp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=bp;
+    ctx.fillStyle='rgba(249,158,11,.15)'; ctx.strokeStyle='#F59E0B';
+    drawRoundRect(cx-130,H-70,260,45,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#F59E0B'; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('1024→256 压缩: 在线推理减少 4x 计算',cx,H-42);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2500;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; } else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V16 - OCR 与文档理解原理可视化</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;overflow:hidden}canvas{display:block}
+#controls{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
+#controls button{padding:10px 20px;border:1px solid #00d4ff;border-radius:25px;background:rgba(0,212,255,0.1);color:#00d4ff;cursor:pointer;font-size:13px;transition:all 0.3s}
+#controls button:hover{background:rgba(0,212,255,0.3)}#controls button.active{background:#00d4ff;color:#0a0a2e}
+#info{position:fixed;top:20px;left:50%;transform:translateX(-50%);text-align:center;z-index:10}
+#title{font-size:20px;color:#00d4ff;margin-bottom:5px}#desc{font-size:13px;color:#aaa;max-width:600px}
+</style>
+</head>
+<body>
+<div id="info"><div id="title">V16 - OCR 与文档理解原理</div><div id="desc"></div></div>
+<canvas id="canvas"></canvas>
+<div id="controls">
+<button onclick="setStep(0)" class="active">DBNet</button>
+<button onclick="setStep(1)">CTC解码</button>
+<button onclick="setStep(2)">LayoutLM</button>
+<button onclick="setStep(3)">2D位置编码</button>
+<button onclick="setStep(4)">广告文字</button>
+<button onclick="setStep(5)">端到端Pipeline</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,step=0,time=0;
+const descs=['DBNet 可微二值化：学习自适应阈值，sigmoid(k·(P-T)) 替代硬二值化','CTC 解码：不需要精确对齐，允许重复+空白→去重去空白','LayoutLM：文本+2D位置+图像 三模态融合 Transformer','2D 位置编码：6个Embedding表编码空间坐标(x0,y0,x1,y1,w,h)','广告文字提取：检测→识别→分类（标题/价格/促销/品牌）','端到端 Pipeline：检测→识别→布局编码→结构化抽取'];
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+window.addEventListener('resize',resize);resize();
+function setStep(s){step=s;time=0;document.querySelectorAll('#controls button').forEach((b,i)=>b.classList.toggle('active',i===s));document.getElementById('desc').textContent=descs[s]}
+setStep(0);
+
+function drawDBNet(){
+const cx=W/2,cy=H/2-20;
+// Probability map
+ctx.fillStyle='#fff';ctx.font='bold 14px sans-serif';ctx.textAlign='center';
+ctx.fillText('Probability Map (P)',cx-150,cy-100);
+ctx.fillText('Threshold Map (T)',cx+150,cy-100);
+const sz=80;
+for(let i=0;i<sz;i++)for(let j=0;j<sz;j++){
+const x=cx-190+j*2.2,y=cy-90+i*1.8;
+const inText=(i>20&&i<60&&j>10&&j<70);
+const prob=inText?0.7+Math.sin(i*0.3+time*0.05)*0.2:0.1+Math.random()*0.1;
+ctx.fillStyle=`rgba(0,${Math.floor(prob*255)},${Math.floor(prob*200)},0.8)`;
+ctx.fillRect(x,y,2,1.5);
+const thresh=0.3+Math.sin(j*0.1)*0.1;
+const tx=cx+60+j*2.2;
+ctx.fillStyle=`rgba(${Math.floor(thresh*255)},${Math.floor(thresh*200)},0,0.8)`;
+ctx.fillRect(tx,y,2,1.5);
+}
+// Binary result
+const k=50,animK=Math.min(50,time*0.5);
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText(`Binary Map (k=${Math.floor(animK)})`,cx,cy+70);
+ctx.fillStyle='#aaa';ctx.font='12px monospace';
+ctx.fillText('B = σ(k·(P - T))',cx,cy+90);
+ctx.fillText(`k↑ → 决策越清晰，k=50时接近硬二值化但可微`,cx,cy+110);
+ctx.textAlign='start';
+}
+
+function drawCTC(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';ctx.font='bold 14px sans-serif';ctx.fillStyle='#00d4ff';
+ctx.fillText('CTC 解码过程',cx,cy-100);
+const raw=['a','a','-','b','-','-','c','c','c','-','d'];
+const step1=['a','-','b','-','c','-','d'];
+const final='abcd';
+const phase=Math.floor(time*0.015)%3;
+// Raw output
+ctx.font='13px sans-serif';ctx.fillStyle='#fff';
+ctx.fillText('Step 1: 模型原始输出',cx,cy-70);
+raw.forEach((c,i)=>{
+const x=cx-120+i*24;
+const isBlank=c==='-';
+ctx.fillStyle=isBlank?'#ff6b6b':'#6bff6b';
+ctx.fillRect(x,cy-60,20,25);
+ctx.fillStyle='#0a0a2e';ctx.font='12px monospace';
+ctx.fillText(c,x+10,cy-43);
+});
+if(phase>=1){
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText('Step 2: 去重复',cx,cy-10);
+step1.forEach((c,i)=>{
+const x=cx-80+i*24;
+const isBlank=c==='-';
+ctx.fillStyle=isBlank?'#ff6b6b55':'#ffd93d';
+ctx.fillRect(x,cy,20,25);
+ctx.fillStyle='#0a0a2e';ctx.font='12px monospace';
+ctx.fillText(c,x+10,cy+17);
+});
+}
+if(phase>=2){
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText('Step 3: 去空白 → 最终结果',cx,cy+50);
+for(let i=0;i<final.length;i++){
+const x=cx-30+i*24;
+ctx.fillStyle='#00d4ff';
+ctx.fillRect(x,cy+60,20,25);
+ctx.fillStyle='#0a0a2e';ctx.font='bold 14px monospace';
+ctx.fillText(final[i],x+10,cy+77);
+}
+}
+ctx.textAlign='start';
+}
+
+function drawLayoutLM(){
+const cx=W/2,cy=H/2-30;
+ctx.textAlign='center';ctx.font='bold 14px sans-serif';ctx.fillStyle='#00d4ff';
+ctx.fillText('LayoutLM 三模态融合',cx,cy-110);
+// Three branches
+const branches=[
+{label:'文本 Token',color:'#58a6ff',x:cx-180,items:['发票','金额','¥1280']},
+{label:'2D 位置',color:'#3fb950',x:cx,items:['(x0,y0,x1,y1)','坐标编码','空间关系']},
+{label:'图像 Patch',color:'#ff6b6b',x:cx+180,items:['ViT patch','视觉特征','布局感知']},
+];
+branches.forEach(b=>{
+ctx.fillStyle=b.color;ctx.font='bold 13px sans-serif';
+ctx.fillText(b.label,b.x,cy-80);
+b.items.forEach((item,i)=>{
+const y=cy-60+i*30;
+ctx.fillStyle=b.color+'44';
+ctx.fillRect(b.x-50,y,100,22);
+ctx.fillStyle=b.color;ctx.font='11px sans-serif';
+ctx.fillText(item,b.x,y+15);
+});
+// Arrow down
+ctx.beginPath();ctx.moveTo(b.x,cy-60+90);ctx.lineTo(b.x,cy+50);
+ctx.strokeStyle=b.color+'88';ctx.lineWidth=2;ctx.stroke();
+});
+// Fusion box
+ctx.fillStyle='#1a1a4e';ctx.fillRect(cx-120,cy+50,240,40);
+ctx.strokeStyle='#00d4ff';ctx.strokeRect(cx-120,cy+50,240,40);
+ctx.fillStyle='#00d4ff';ctx.font='13px sans-serif';
+ctx.fillText('h = e_token + e_1D + e_2D + e_image',cx,cy+75);
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';
+ctx.fillText('→ Transformer Encoder → 下游任务',cx,cy+110);
+ctx.textAlign='start';
+}
+
+function draw2DPos(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';ctx.font='bold 14px sans-serif';ctx.fillStyle='#00d4ff';
+ctx.fillText('2D 位置编码：6 个 Embedding 表',cx,cy-100);
+const tables=['E_x0','E_y0','E_x1','E_y1','E_w','E_h'];
+const colors=['#ff6b6b','#ffd93d','#6bff6b','#58a6ff','#d4a5ff','#ff9f43'];
+tables.forEach((t,i)=>{
+const x=cx-250+i*90;
+const pulse=0.5+Math.sin(time*0.04+i)*0.3;
+ctx.fillStyle=colors[i]+Math.floor(pulse*255).toString(16).padStart(2,'0');
+ctx.fillRect(x,cy-70,75,35);
+ctx.fillStyle='#fff';ctx.font='11px monospace';
+ctx.fillText(t,x+37,cy-48);
+});
+// Sum
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText('e_2D = E_x0(x0) + E_y0(y0) + E_x1(x1) + E_y1(y1) + E_w(w) + E_h(h)',cx,cy+10);
+// Visual example
+ctx.font='12px sans-serif';ctx.fillStyle='#aaa';
+ctx.fillText('示例：同一行的 token → y0 相似 → 位置编码相似 → 注意力更强',cx,cy+50);
+ctx.fillText('不同行的 token → y0 差异大 → 编码不同 → 自然区分',cx,cy+70);
+ctx.textAlign='start';
+}
+
+function drawAdText(){
+const cx=W/2,cy=H/2-20;
+// Simulated ad layout
+const adX=cx-150,adY=cy-100,adW=300,adH=200;
+ctx.fillStyle='#1a1a3e';ctx.fillRect(adX,adY,adW,adH);ctx.strokeStyle='#444';ctx.strokeRect(adX,adY,adW,adH);
+const regions=[
+{x:30,y:15,w:240,h:25,type:'标题',color:'#ff6b6b'},
+{x:80,y:60,w:140,h:20,type:'品牌',color:'#58a6ff'},
+{x:50,y:100,w:200,h:20,type:'促销文案',color:'#ffd93d'},
+{x:100,y:140,w:100,h:25,type:'价格',color:'#3fb950'},
+{x:80,y:175,w:140,h:18,type:'CTA',color:'#d4a5ff'},
+];
+regions.forEach((r,i)=>{
+const pulse=0.5+Math.sin(time*0.04+i*1.2)*0.3;
+ctx.strokeStyle=r.color;ctx.lineWidth=2;
+ctx.strokeRect(adX+r.x,adY+r.y,r.w,r.h);
+ctx.fillStyle=r.color+Math.floor(pulse*150).toString(16).padStart(2,'0');
+ctx.fillRect(adX+r.x,adY+r.y,r.w,r.h);
+// Label
+ctx.fillStyle=r.color;ctx.font='11px sans-serif';ctx.textAlign='left';
+ctx.fillText(r.type,adX+r.x+r.w+8,adY+r.y+15);
+});
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';ctx.textAlign='center';
+ctx.fillText('广告文字区域类型分类',cx,cy+120);
+ctx.textAlign='start';
+}
+
+function drawPipeline(){
+const cx=W/2,cy=H/2;
+const steps=['输入图像','文字检测\n(DBNet)','文字识别\n(CRNN/Attn)','布局编码\n(LayoutLM)','结构化抽取\n(BIO标注)'];
+const colors=['#aaa','#ff6b6b','#ffd93d','#58a6ff','#3fb950'];
+const activeIdx=Math.floor(time*0.015)%steps.length;
+steps.forEach((s,i)=>{
+const x=cx-260+i*130;
+const active=i<=activeIdx;
+ctx.fillStyle=active?colors[i]+'33':'#1a1a2e';
+ctx.strokeStyle=active?colors[i]:'#333';ctx.lineWidth=active?2:1;
+ctx.fillRect(x,cy-30,110,60);ctx.strokeRect(x,cy-30,110,60);
+ctx.fillStyle=active?colors[i]:'#555';ctx.font='12px sans-serif';ctx.textAlign='center';
+const lines=s.split('\n');
+lines.forEach((l,li)=>ctx.fillText(l,x+55,cy-10+li*16));
+if(i<steps.length-1){
+ctx.beginPath();ctx.moveTo(x+110,cy);ctx.lineTo(x+130,cy);
+ctx.strokeStyle=i<activeIdx?colors[i+1]:'#333';ctx.lineWidth=2;ctx.stroke();
+}
+});
+ctx.textAlign='start';
+}
+
+const drawFns=[drawDBNet,drawCTC,drawLayoutLM,draw2DPos,drawAdText,drawPipeline];
+function animate(){ctx.fillStyle='#0a0a2e';ctx.fillRect(0,0,W,H);time++;drawFns[step]();requestAnimationFrame(animate)}
+animate();
+</script>
+</body>
+</html>

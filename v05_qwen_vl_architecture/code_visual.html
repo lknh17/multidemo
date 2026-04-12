@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v05 Qwen-VL 架构 - 代码可视化</title>
+<style>
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:14px; color:var(--warn); text-align:left; line-height:1.8; white-space:pre; overflow-x:auto; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v05</span>
+  <h1>Qwen-VL 架构解析</h1>
+  <span class="tag">代码可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/5</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'PerceiverResampler.__init__',
+    desc: '初始化阶段定义三大核心组件：<br><br>1. <strong>可学习 queries</strong>：nn.Parameter，形状 [1, num_queries, llm_dim]，初始化为小随机值<br>2. <strong>vision_proj</strong>：线性投影层，将视觉特征维度对齐到 LLM 维度<br>3. <strong>Cross-Attention 层</strong>：每层包含 LayerNorm + MultiheadAttention + FFN，共 resampler_layers 层<br><br>最后加一个 final_norm 做输出归一化。',
+    formula: 'self.queries = nn.Parameter(\n  randn(1, num_queries, llm_dim) * 0.02\n)\nself.vision_proj = Linear(vision_dim, llm_dim)\nself.layers = [\n  norm_q, norm_kv, cross_attn, norm_ff, ffn\n] × resampler_layers\nself.final_norm = LayerNorm(llm_dim)' },
+  { title: 'PerceiverResampler.forward',
+    desc: '前向传播分为三步：<br><br>1. <strong>投影</strong>：vision_proj 将 ViT 输出 [B,N,vision_dim] → [B,N,llm_dim]<br>2. <strong>迭代 Cross-Attention</strong>：可学习 queries 作为 Q，视觉特征作为 K/V，多层迭代精炼<br>3. <strong>归一化</strong>：final_norm 产出最终压缩表示 [B,num_queries,llm_dim]<br><br>每层包含残差连接：q = q + cross_attn(norm_q(q), norm_kv(kv))',
+    formula: 'kv = vision_proj(vision_features)\nq = queries.expand(B, -1, -1)\n\nfor layer in layers:\n  q_norm = layer.norm_q(q)\n  kv_norm = layer.norm_kv(kv)\n  attn_out = cross_attn(q_norm, kv_norm, kv_norm)\n  q = q + attn_out           # 残差\n  q = q + ffn(norm_ff(q))    # FFN+残差\n\nreturn final_norm(q)' },
+  { title: 'VisionEncoder + Resampler 联合',
+    desc: '视觉编码器 VisionEncoder 采用简化版 ViT 架构：<br><br>1. <strong>Patch Embedding</strong>：Conv2d 将图像切分为 patch 并编码<br>2. <strong>位置编码</strong>：可学习的位置 embedding<br>3. <strong>Transformer Encoder</strong>：多层自注意力处理<br><br>VisionEncoder 输出 → Resampler 压缩，两者联合完成<strong>视觉信息的编码与压缩</strong>。',
+    formula: 'VisionEncoder:\n  x = patch_embed(image)  # Conv2d\n  x = x + pos_embed\n  x = transformer_encoder(x)\n  → [B, num_patches, vision_dim]\n\nResampler:\n  → [B, num_queries, llm_dim]' },
+  { title: 'MultimodalQwen.forward',
+    desc: 'MultimodalQwen 的完整前向流程：<br><br>1. <strong>视觉编码</strong>：vision_encoder(images) → [B,N,D_v]<br>2. <strong>Resampler 压缩</strong>：resampler(vis) → [B,Q,D_llm]<br>3. <strong>文本 Embedding</strong>：tok_embed(ids) → [B,L,D_llm]<br>4. <strong>拼接</strong>：cat([vis_tokens, txt_tokens]) → [B,Q+L,D_llm]<br>5. <strong>因果掩码</strong>：生成下三角 mask<br>6. <strong>LLM Decoder</strong>：Transformer + 归一化<br>7. <strong>输出</strong>：只取文本部分 → lm_head → logits',
+    formula: 'vis = vision_encoder(images)\nvis_tokens = resampler(vis)\ntxt_tokens = tok_embed(input_ids)\ncombined = cat([vis_tokens, txt_tokens])\ncombined += pos_embed[:, :seq_len]\nmask = causal_mask(seq_len)\nhidden = decoder(combined, mask)\ntext_hidden = hidden[:, Q:, :]\nlogits = lm_head(text_hidden)' },
+  { title: '推理：多模态输入处理流程',
+    desc: '完整的推理流程展示：<br><br>1. 输入一张广告图片 [3,224,224] + 文本指令<br>2. ViT 编码 → 196 个视觉 token<br>3. Resampler 压缩 → 64 个视觉 token<br>4. 与文本 token 拼接 → 统一序列<br>5. LLM 自回归生成回答<br><br>参数量分布：<br>• Vision: ~1.3M<br>• Resampler: ~4.2M<br>• LLM: ~13M<br><br>Resampler 仅占总参数约 22%，但完成了关键的跨模态对齐。',
+    formula: 'Input: image [2,3,224,224] + ids [2,32]\n\n  ViT: [2,196,256] → 0.5ms\n  Resampler: [2,64,512] → 0.3ms\n  Concat: [2,96,512]\n  LLM: [2,32,5000] → 1.2ms\n\nOutput logits: [2, 32, vocab_size]' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+function drawArrow(x1,y1,x2,y2,color,alpha){
+  ctx.globalAlpha=alpha; ctx.strokeStyle=color; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  const a=Math.atan2(y2-y1,x2-x1);
+  ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a-.3),y2-8*Math.sin(a-.3)); ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a+.3),y2-8*Math.sin(a+.3)); ctx.stroke();
+  ctx.globalAlpha=1;
+}
+function drawBox(x,y,w,h,label,color,alpha){
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle=color+'22'; ctx.strokeStyle=color; ctx.lineWidth=1.5;
+  drawRoundRect(x,y,w,h,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle=color; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText(label,x+w/2,y+h/2+4);
+  ctx.globalAlpha=1;
+}
+
+// Step 0: __init__ visualization
+function renderStep0(p) {
+  const cx=W/2, topY=25;
+  // Class box
+  const cp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=cp;
+  ctx.fillStyle='rgba(108,92,231,.1)'; ctx.strokeStyle='#6C5CE7'; ctx.lineWidth=2;
+  drawRoundRect(20,topY,W-40,H-50,12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#6C5CE7'; ctx.font='bold 15px PingFang SC'; ctx.textAlign='left';
+  ctx.fillText('class PerceiverResampler(nn.Module)',35,topY+22);
+  ctx.globalAlpha=1;
+
+  // queries
+  const qp=easeInOut(Math.max(0,Math.min(1,(p-.15)/.2)));
+  drawBox(40,topY+40,W-80,40,'self.queries = nn.Parameter(randn(1, 64, 512) * 0.02)','#F59E0B',qp);
+  if(qp>0.5){
+    ctx.globalAlpha=qp; ctx.font='11px PingFang SC'; ctx.fillStyle='#94A3B8'; ctx.textAlign='right';
+    ctx.fillText('可学习 Query 向量',W-50,topY+65);
+    ctx.globalAlpha=1;
+  }
+  // vision_proj
+  const vp=easeInOut(Math.max(0,Math.min(1,(p-.3)/.2)));
+  drawBox(40,topY+95,W-80,40,'self.vision_proj = Linear(256 → 512)','#0984E3',vp);
+  if(vp>0.5){
+    ctx.globalAlpha=vp; ctx.font='11px PingFang SC'; ctx.fillStyle='#94A3B8'; ctx.textAlign='right';
+    ctx.fillText('维度对齐投影',W-50,topY+120);
+    ctx.globalAlpha=1;
+  }
+  // Cross-Attention layers
+  const layerY=topY+150;
+  if(p>.45){
+    const lp=easeInOut((p-.45)/.3);
+    ctx.globalAlpha=lp;
+    ctx.fillStyle='rgba(0,184,148,.08)'; ctx.strokeStyle='rgba(0,184,148,.4)'; ctx.lineWidth=1;
+    drawRoundRect(40,layerY,W-80,130,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='bold 12px PingFang SC'; ctx.textAlign='left';
+    ctx.fillText('self.layers (× resampler_layers)',55,layerY+18);
+    // Sub-components
+    const comps=['norm_q: LayerNorm','norm_kv: LayerNorm','cross_attn: MultiheadAttention','norm_ff: LayerNorm','ffn: Linear→GELU→Linear'];
+    for(let i=0;i<comps.length;i++){
+      const dp=easeInOut(Math.max(0,Math.min(1,(p-.5-i*.05)/.15)));
+      ctx.globalAlpha=dp;
+      ctx.fillStyle='rgba(0,184,148,.15)'; ctx.strokeStyle='rgba(0,184,148,.5)';
+      const bx=55, by=layerY+28+i*20, bw=W-120;
+      drawRoundRect(bx,by,bw,17,4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#E2E8F0'; ctx.font='11px Courier New'; ctx.textAlign='left';
+      ctx.fillText(comps[i],bx+8,by+12);
+    }
+    ctx.globalAlpha=1;
+  }
+  // final_norm
+  if(p>.8){
+    const fp=easeInOut((p-.8)/.2);
+    drawBox(40,layerY+140,W-80,35,'self.final_norm = LayerNorm(512)','#F59E0B',fp);
+  }
+}
+
+// Step 1: forward visualization
+function renderStep1(p) {
+  const cx=W/2, topY=15;
+  const bw=180, bh=36, gap=12;
+  const flowSteps=[
+    {label:'vision_features [B,196,256]',color:'#0984E3',t:0},
+    {label:'vision_proj → kv [B,196,512]',color:'#0984E3',t:.12},
+    {label:'queries.expand → q [B,64,512]',color:'#6C5CE7',t:.24},
+    {label:'norm_q(q) + norm_kv(kv)',color:'#F59E0B',t:.36},
+    {label:'cross_attn(q, kv, kv)',color:'#00B894',t:.48},
+    {label:'q = q + attn_out (残差)',color:'#EF4444',t:.58},
+    {label:'q = q + ffn(norm_ff(q))',color:'#EF4444',t:.68},
+    {label:'↻ 重复 N 层',color:'#94A3B8',t:.78},
+    {label:'final_norm(q) → [B,64,512]',color:'#00B894',t:.88}
+  ];
+  let y=topY;
+  for(let i=0;i<flowSteps.length;i++){
+    const s=flowSteps[i];
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.12)));
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=s.color+'1A'; ctx.strokeStyle=s.color+'88'; ctx.lineWidth=1.5;
+    drawRoundRect(cx-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=s.color; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText(s.label,cx,y+bh/2+4);
+    if(i<flowSteps.length-1 && sp>.3){
+      ctx.strokeStyle=s.color+'44'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,y+bh); ctx.lineTo(cx,y+bh+gap); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=bh+gap;
+  }
+  // Loop indicator for layers 3-6
+  if(p>.78){
+    const lp=easeInOut((p-.78)/.1);
+    ctx.globalAlpha=lp*.5; ctx.strokeStyle='#94A3B8'; ctx.lineWidth=1.5; ctx.setLineDash([4,4]);
+    const ly1=topY+3*(bh+gap), ly2=topY+7*(bh+gap)+bh/2;
+    ctx.beginPath(); ctx.moveTo(cx+bw/2+10,ly2); ctx.lineTo(cx+bw/2+20,ly2); ctx.lineTo(cx+bw/2+20,ly1+bh/2); ctx.lineTo(cx+bw/2+10,ly1+bh/2); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: VisionEncoder + Resampler joint
+function renderStep2(p) {
+  const cx=W/2, topY=20;
+  const bw=200, bh=40, gap=15;
+  // VisionEncoder section
+  const vSteps=[
+    {label:'image [B,3,224,224]',color:'#F59E0B',t:0},
+    {label:'patch_embed (Conv2d)',color:'#0984E3',t:.12},
+    {label:'+ pos_embed',color:'#0984E3',t:.22},
+    {label:'TransformerEncoder (4层)',color:'#0984E3',t:.32},
+    {label:'LayerNorm → [B,196,256]',color:'#0984E3',t:.42}
+  ];
+  ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle=`rgba(9,132,227,${easeInOut(Math.min(1,p/.1))})`;
+  ctx.fillText('VisionEncoder',cx,topY);
+  let y=topY+10;
+  for(const s of vSteps){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.1)));
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=s.color+'1A'; ctx.strokeStyle=s.color+'66'; ctx.lineWidth=1;
+    drawRoundRect(cx-bw/2,y,bw,bh-5,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=s.color; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText(s.label,cx,y+(bh-5)/2+4);
+    if(s!==vSteps[vSteps.length-1]){
+      ctx.strokeStyle=s.color+'33'; ctx.beginPath(); ctx.moveTo(cx,y+bh-5); ctx.lineTo(cx,y+bh-5+5); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=bh;
+  }
+  // Arrow to Resampler
+  if(p>.5){
+    const ap=easeInOut((p-.5)/.1);
+    ctx.globalAlpha=ap; ctx.strokeStyle='#F59E0B'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx,y); ctx.lineTo(cx,y+20); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx-5,y+15); ctx.lineTo(cx,y+20); ctx.lineTo(cx+5,y+15); ctx.fill();
+    ctx.globalAlpha=1;
+    // Resampler box
+    const rp=easeInOut((p-.55)/.2);
+    ctx.globalAlpha=rp;
+    ctx.fillStyle='rgba(108,92,231,.12)'; ctx.strokeStyle='#6C5CE7'; ctx.lineWidth=2;
+    drawRoundRect(cx-bw/2,y+25,bw,50,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#6C5CE7'; ctx.font='bold 13px PingFang SC';
+    ctx.fillText('PerceiverResampler',cx,y+45);
+    ctx.font='11px Courier New'; ctx.fillStyle='#94A3B8';
+    ctx.fillText('[B,196,256] → [B,64,512]',cx,y+62);
+    ctx.globalAlpha=1;
+  }
+  // Output
+  if(p>.8){
+    const op=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=op;
+    ctx.strokeStyle='#00B894'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx,y+75); ctx.lineTo(cx,y+95); ctx.stroke();
+    ctx.fillStyle='rgba(0,184,148,.15)'; ctx.strokeStyle='#00B894';
+    drawRoundRect(cx-bw/2,y+100,bw,35,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='bold 12px PingFang SC';
+    ctx.fillText('视觉 Token [B, 64, 512] → 送入 LLM',cx,y+122);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: MultimodalQwen.forward
+function renderStep3(p) {
+  const cx=W/2, topY=10;
+  const bw=220, bh=30, gap=6;
+  const flowSteps=[
+    {label:'images [B,3,224,224]',color:'#F59E0B',t:0},
+    {label:'vision_encoder → [B,196,256]',color:'#0984E3',t:.08},
+    {label:'resampler → vis_tokens [B,64,512]',color:'#6C5CE7',t:.18},
+    {label:'tok_embed(ids) → txt_tokens [B,L,512]',color:'#00B894',t:.28},
+    {label:'cat([vis_tokens, txt_tokens]) → [B,64+L,512]',color:'#F59E0B',t:.38},
+    {label:'+ pos_embed[:, :seq_len]',color:'#94A3B8',t:.48},
+    {label:'causal_mask = triu(seq_len)',color:'#EF4444',t:.56},
+    {label:'decoder(combined, mask) → hidden',color:'#6C5CE7',t:.64},
+    {label:'norm(hidden)',color:'#94A3B8',t:.72},
+    {label:'text_hidden = hidden[:, 64:, :]',color:'#00B894',t:.80},
+    {label:'lm_head(text_hidden) → logits [B,L,V]',color:'#F59E0B',t:.88}
+  ];
+  let y=topY;
+  for(const s of flowSteps){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.1)));
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=s.color+'1A'; ctx.strokeStyle=s.color+'66'; ctx.lineWidth=1;
+    drawRoundRect(cx-bw/2,y,bw,bh,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=s.color; ctx.font='10px Courier New'; ctx.textAlign='center';
+    ctx.fillText(s.label,cx,y+bh/2+3);
+    if(s!==flowSteps[flowSteps.length-1] && sp>.3){
+      ctx.strokeStyle=s.color+'33'; ctx.beginPath(); ctx.moveTo(cx,y+bh); ctx.lineTo(cx,y+bh+gap); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=bh+gap;
+  }
+}
+
+// Step 4: Inference pipeline
+function renderStep4(p) {
+  const cx=W/2, topY=15;
+  // Pipeline boxes with timing
+  const stages=[
+    {label:'📷 输入图像 [2,3,224,224]',sub:'+ 文本 token [2,32]',color:'#F59E0B',time:''},
+    {label:'ViT 编码',sub:'[2,196,256]',color:'#0984E3',time:'~0.5ms'},
+    {label:'Resampler 压缩',sub:'[2,64,512]',color:'#6C5CE7',time:'~0.3ms'},
+    {label:'Token 拼接',sub:'[2,96,512]',color:'#00B894',time:'~0.01ms'},
+    {label:'LLM 解码',sub:'[2,32,5000]',color:'#EF4444',time:'~1.2ms'},
+    {label:'输出 Logits',sub:'[2,32,vocab_size]',color:'#F59E0B',time:''}
+  ];
+  const bw=180, bh=42, gap=12;
+  let y=topY;
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.14;
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.14)));
+    const s=stages[i];
+    ctx.globalAlpha=sp;
+    // Glow effect for active
+    if(sp>0.8 && animProgress>delay && animProgress<delay+.2){
+      ctx.shadowColor=s.color; ctx.shadowBlur=15;
+    }
+    ctx.fillStyle=s.color+'1A'; ctx.strokeStyle=s.color; ctx.lineWidth=1.5;
+    drawRoundRect(cx-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.fillStyle=s.color; ctx.font='bold 12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(s.label,cx,y+16);
+    ctx.font='10px Courier New'; ctx.fillStyle='#94A3B8';
+    ctx.fillText(s.sub,cx,y+32);
+    if(s.time){
+      ctx.fillStyle=s.color; ctx.font='11px PingFang SC'; ctx.textAlign='left';
+      ctx.fillText(s.time,cx+bw/2+10,y+bh/2+4);
+    }
+    if(i<stages.length-1 && sp>.3){
+      drawArrow(cx,y+bh+2,cx,y+bh+gap-2,s.color,sp*.5);
+    }
+    ctx.globalAlpha=1;
+    y+=bh+gap;
+  }
+  // Param distribution
+  if(p>.85){
+    const pp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=pp;
+    const py=y+10;
+    ctx.font='bold 13px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+    ctx.fillText('参数分布',cx,py);
+    const bars=[
+      {label:'Vision',pct:.07,color:'#0984E3'},
+      {label:'Resampler',pct:.22,color:'#6C5CE7'},
+      {label:'LLM',pct:.71,color:'#00B894'}
+    ];
+    const barW=W-80, barH=16;
+    let bx=40;
+    for(const b of bars){
+      const w=barW*b.pct;
+      ctx.fillStyle=b.color+'66';
+      drawRoundRect(bx,py+8,w,barH,4); ctx.fill();
+      ctx.fillStyle=b.color; ctx.font='10px PingFang SC'; ctx.textAlign='center';
+      if(w>40) ctx.fillText(`${b.label} ${(b.pct*100).toFixed(0)}%`,bx+w/2,py+8+barH/2+3);
+      bx+=w;
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2500;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; } else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

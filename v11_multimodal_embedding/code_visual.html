@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v11 多模态 Embedding - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}
+.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:13px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre-wrap}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}
+.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v11</span><h1>多模态 Embedding 生成</h1><span class="tag">代码可视化</span><div class="dots" id="dots"></div></div>
+<div class="main">
+  <div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+  <div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'encode_image / encode_text 流程',desc:'<strong>EmbeddingModel</strong> 提供 encode_image 和 encode_text 两个独立方法：<br><br><strong>encode_image(images)</strong>：<br>1. PatchEmbed → +CLS token → +Position<br>2. img_encoder.forward_with_intermediates<br>3. 提取指定层特征 → fusion_img → L2 normalize<br><br><strong>encode_text(input_ids)</strong>：<br>1. TokenEmbed → +Position<br>2. txt_encoder.forward_with_intermediates<br>3. 各层 mean pooling → fusion_txt → L2 normalize',
+formula:'def encode_image(images):\n  x = patch_embed(images).flatten(2).transpose(1,2)\n  x = cat([img_cls, x]) + img_pos\n  _, inters = img_encoder.forward_with_intermediates(x)\n  feats = [inters[l] for l in layer_indices]\n  return normalize(fusion_img(feats))\n\ndef encode_text(input_ids):\n  x = tok_embed(ids) + txt_pos\n  _, inters = txt_encoder.forward_with_intermediates(x)\n  feats = [inters[l].mean(1) for l in layer_indices]\n  return normalize(fusion_txt(feats))'},
+{title:'FAISSRetriever.build 索引构建',desc:'<strong>FAISSRetriever</strong> 封装 FAISS 索引的构建和搜索：<br><br>构建流程：<br>1. 初始化时选择索引类型（Flat / IVF）<br>2. <strong>IndexFlatIP</strong>：内积搜索（L2归一化后 = 余弦）<br>3. <strong>IndexIVFFlat</strong>：聚类后局部搜索<br>4. build(embeddings) 方法：<br>   - IVF 需要先 <strong>train</strong>（学习聚类中心）<br>   - 然后 <strong>add</strong>（添加所有向量）<br>5. FAISS 不可用时退化为 numpy 暴力搜索',
+formula:'class FAISSRetriever:\n  def __init__(embed_dim, index_type="flat"):\n    if "flat": index = IndexFlatIP(embed_dim)\n    if "ivf":  index = IndexIVFFlat(quantizer, dim, 100)\n\n  def build(embeddings: np.ndarray):\n    if hasattr(index, "train"):\n      index.train(embeddings)  # IVF需要训练\n    index.add(embeddings)  # 添加全部向量'},
+{title:'FAISSRetriever.search 检索',desc:'<strong>search(queries, top_k)</strong> 方法执行检索：<br><br>FAISS 路径：<br>1. 调用 <strong>index.search(queries, top_k)</strong><br>2. 返回 scores 和 indices（已排序）<br><br>Numpy 降级路径：<br>1. 计算 queries @ embeddings.T（矩阵乘法）<br>2. argsort 取 Top-K indices<br>3. take_along_axis 取对应 scores<br><br>两条路径结果一致，FAISS 版本更快。',
+formula:'def search(queries: np.ndarray, top_k=10):\n  if self.index:  # FAISS\n    scores, indices = self.index.search(queries, top_k)\n  else:  # numpy fallback\n    sims = queries @ self.embeddings.T\n    indices = argsort(-sims, axis=1)[:, :top_k]\n    scores = take_along_axis(sims, indices, axis=1)\n  return scores, indices'},
+{title:'评估函数：Recall / NDCG / MRR',desc:'三个评估函数的实现：<br><br><strong>compute_recall_at_k</strong>：遍历每个 query，检查 Top-K 中是否包含正确标签<br><br><strong>compute_ndcg_at_k</strong>：计算 DCG = Σ 1/log₂(j+2)（命中位置），再除以 IDCG（理想排序的 DCG）<br><br><strong>compute_mrr</strong>：找到第一个正确结果的位置，取倒数<br><br>所有函数都是对 retrieved_indices 做评估，输入为检索结果的索引矩阵。',
+formula:'def compute_recall_at_k(indices, gt, query, k):\n  for i: if query[i] in gt[indices[i,:k]]: hits+=1\n  return hits / len(query)\n\ndef compute_ndcg_at_k(indices, gt, query, k):\n  DCG = Σ 1/log2(j+2) if match\n  IDCG = ideal DCG\n  return mean(DCG/IDCG)\n\ndef compute_mrr(indices, gt, query):\n  for each query: find first correct → 1/(j+1)\n  return mean'},
+{title:'端到端检索 Pipeline',desc:'完整的端到端检索流程：<br><br>1. 加载训练好的 <strong>EmbeddingModel</strong><br>2. <strong>离线编码</strong>：遍历候选数据集，调用 encode_image/encode_text 生成所有 embedding<br>3. <strong>建立索引</strong>：FAISSRetriever.build(all_embeddings)<br>4. <strong>在线查询</strong>：encode_text(query) → search(query_emb, top_k)<br>5. <strong>评估</strong>：compute_recall_at_k / compute_ndcg / compute_mrr<br>6. 可选：精排重排序',
+formula:'# 离线\nmodel = EmbeddingModel(cfg)\nall_embs = [model.encode_image(batch) for ...]\nretriever = FAISSRetriever(dim, "ivf")\nretriever.build(np.concat(all_embs))\n\n# 在线\nquery_emb = model.encode_text(query_ids)\nscores, indices = retriever.search(query_emb, k=10)\n\n# 评估\nrecall = compute_recall_at_k(indices, gt, query, 10)\nndcg = compute_ndcg_at_k(indices, gt, query, 10)\nmrr = compute_mrr(indices, gt, query)'}
+];
+
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+function drawBox(x,y,w,h,label,color,alpha){ctx.globalAlpha=alpha;ctx.fillStyle=color+'22';ctx.strokeStyle=color;drawRR(x,y,w,h,8);ctx.fill();ctx.stroke();ctx.fillStyle=color;ctx.font='11px PingFang SC';ctx.textAlign='center';ctx.textBaseline='middle';const ls=label.split('\n');ls.forEach((l,i)=>ctx.fillText(l,x+w/2,y+h/2+(i-(ls.length-1)/2)*13));ctx.globalAlpha=1}
+function drawArrow(x1,y1,x2,y2,color,alpha){ctx.globalAlpha=alpha;ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a-.3),y2-7*Math.sin(a-.3));ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a+.3),y2-7*Math.sin(a+.3));ctx.stroke();ctx.globalAlpha=1}
+
+function renderStep0(p){
+  const cx=W/2,imgX=cx-110,txtX=cx+110,bw=100,bh=24;
+  // Two columns
+  const ip=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=ip;ctx.fillStyle='#0984E3';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillText('encode_image',imgX,15);
+  ctx.fillStyle='#00B894';ctx.fillText('encode_text',txtX,15);ctx.globalAlpha=1;
+  
+  const imgStages=[{l:'images [B,3,H,W]',y:25},{l:'PatchEmbed',y:55},{l:'+CLS +PositionEmb',y:85},{l:'Encoder+intermediates',y:115},{l:'[inters[l] for l]',y:145},{l:'fusion_img(feats)',y:175},{l:'L2 normalize → emb',y:205}];
+  const txtStages=[{l:'input_ids [B,L]',y:25},{l:'TokenEmbed',y:55},{l:'+PositionEmb',y:85},{l:'Encoder+intermediates',y:115},{l:'mean(1) per layer',y:145},{l:'fusion_txt(feats)',y:175},{l:'L2 normalize → emb',y:205}];
+  
+  imgStages.forEach((s,i)=>{const d=.05+i*.08,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.15)));drawBox(imgX-bw/2,s.y,bw,bh,s.l,'#0984E3',ap);if(i>0)drawArrow(imgX,imgStages[i-1].y+bh,imgX,s.y,'#0984E3',ap*.3)});
+  txtStages.forEach((s,i)=>{const d=.05+i*.08,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.15)));drawBox(txtX-bw/2,s.y,bw,bh,s.l,'#00B894',ap);if(i>0)drawArrow(txtX,txtStages[i-1].y+bh,txtX,s.y,'#00B894',ap*.3)});
+  
+  // Divider
+  ctx.strokeStyle='rgba(255,255,255,.08)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx,20);ctx.lineTo(cx,240);ctx.stroke();
+}
+
+function renderStep1(p){
+  const cx=W/2;
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=tp;ctx.fillStyle='#00B894';ctx.font='bold 15px PingFang SC';ctx.textAlign='center';ctx.fillText('FAISSRetriever.build() 数据流',cx,18);ctx.globalAlpha=1;
+  
+  const stages=[
+    {l:'embeddings\n[N, D] ndarray',x:cx,y:35,c:'#94A3B8',t:.1},
+    {l:'index_type?',x:cx,y:80,c:'#F59E0B',t:.2},
+    {l:'IndexFlatIP',x:cx-90,y:120,c:'#EF4444',t:.3},
+    {l:'IndexIVFFlat',x:cx+90,y:120,c:'#0984E3',t:.3},
+    {l:'直接 add()',x:cx-90,y:165,c:'#EF4444',t:.45},
+    {l:'train() 学聚类',x:cx+90,y:165,c:'#0984E3',t:.45},
+    {l:'add() 添加向量',x:cx+90,y:205,c:'#0984E3',t:.6},
+    {l:'索引构建完成 ✓',x:cx,y:250,c:'#00B894',t:.75}
+  ];
+  const bw=110,bh=26;
+  stages.forEach(s=>{const ap=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.15)));drawBox(s.x-bw/2,s.y,bw,bh,s.l,s.c,ap)});
+  const arrows=[[0,1],[1,2],[1,3],[2,4],[3,5],[5,6],[4,7],[6,7]];
+  arrows.forEach(([a,b])=>{const sa=stages[a],sb=stages[b];const ap=easeInOut(Math.max(0,Math.min(1,(p-sb.t)/.1)));if(ap>0)drawArrow(sa.x,sa.y+bh,sb.x,sb.y,sb.c,ap*.3)});
+}
+
+function renderStep2(p){
+  const cx=W/2;
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=tp;ctx.fillStyle='#0984E3';ctx.font='bold 15px PingFang SC';ctx.textAlign='center';ctx.fillText('FAISSRetriever.search() 数据流',cx,18);ctx.globalAlpha=1;
+  
+  const stages=[
+    {l:'queries [M, D]',x:cx,y:35,c:'#0984E3',t:.1},
+    {l:'FAISS 可用?',x:cx,y:75,c:'#F59E0B',t:.2},
+    {l:'index.search(q,k)',x:cx-100,y:115,c:'#00B894',t:.35},
+    {l:'q @ embs.T',x:cx+100,y:115,c:'#6C5CE7',t:.35},
+    {l:'scores, indices',x:cx-100,y:155,c:'#00B894',t:.5},
+    {l:'argsort → topK',x:cx+100,y:155,c:'#6C5CE7',t:.5},
+    {l:'take_along_axis',x:cx+100,y:195,c:'#6C5CE7',t:.6},
+    {l:'return (scores, indices)',x:cx,y:240,c:'#00B894',t:.75}
+  ];
+  const bw=110,bh=26;
+  stages.forEach(s=>{const ap=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.15)));drawBox(s.x-bw/2,s.y,bw,bh,s.l,s.c,ap)});
+  const arrows=[[0,1],[1,2],[1,3],[2,4],[3,5],[5,6],[4,7],[6,7]];
+  arrows.forEach(([a,b])=>{const sa=stages[a],sb=stages[b];const ap=easeInOut(Math.max(0,Math.min(1,(p-sb.t)/.1)));if(ap>0)drawArrow(sa.x,sa.y+bh,sb.x,sb.y,sb.c,ap*.3)});
+  // Labels
+  if(p>.25){const lp=easeInOut(Math.max(0,Math.min(1,(p-.25)/.1)));ctx.globalAlpha=lp;ctx.fillStyle='#00B894';ctx.font='11px PingFang SC';ctx.textAlign='left';ctx.fillText('Yes (FAISS)',cx-60,100);ctx.fillStyle='#6C5CE7';ctx.textAlign='right';ctx.fillText('No (numpy)',cx+60,100);ctx.globalAlpha=1}
+}
+
+function renderStep3(p){
+  const cx=W/2;
+  const metrics=[
+    {name:'compute_recall_at_k',color:'#EF4444',logic:'query[i] in gt[indices[:k]] → hit'},
+    {name:'compute_ndcg_at_k',color:'#F59E0B',logic:'DCG=Σ1/log2(j+2) / IDCG'},
+    {name:'compute_mrr',color:'#0984E3',logic:'find first correct → 1/(j+1)'}
+  ];
+  const colW=W/3;
+  
+  for(let i=0;i<3;i++){
+    const d=i*.15,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.25)));
+    const mx=colW/2+i*colW;
+    
+    ctx.globalAlpha=ap;ctx.fillStyle=metrics[i].color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(metrics[i].name,mx,20);ctx.globalAlpha=1;
+    
+    // Input
+    drawBox(mx-45,30,90,22,'indices, gt, query',metrics[i].color,ap);
+    
+    // Loop
+    if(p>d+.1){
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.1)/.15)));
+      drawBox(mx-40,60,80,22,'for i in range(N)',metrics[i].color,lp);
+      drawArrow(mx,52,mx,60,metrics[i].color,lp*.3);
+    }
+    
+    // Logic
+    if(p>d+.2){
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.2)/.15)));
+      drawBox(mx-50,92,100,22,metrics[i].logic,metrics[i].color,lp);
+      drawArrow(mx,82,mx,92,metrics[i].color,lp*.3);
+    }
+    
+    // Return
+    if(p>d+.3){
+      const rp=easeInOut(Math.max(0,Math.min(1,(p-d-.3)/.12)));
+      drawBox(mx-40,125,80,22,'return mean','#00B894',rp);
+      drawArrow(mx,114,mx,125,metrics[i].color,rp*.3);
+    }
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2;
+  const stages=[
+    {l:'加载 EmbeddingModel',x:cx,y:10,c:'#6C5CE7',t:0},
+    {l:'遍历数据集',x:cx-110,y:50,c:'#94A3B8',t:.08},
+    {l:'encode_image/text',x:cx-110,y:85,c:'#0984E3',t:.16},
+    {l:'收集所有 embeddings',x:cx-110,y:120,c:'#0984E3',t:.24},
+    {l:'FAISSRetriever(dim)',x:cx+110,y:50,c:'#00B894',t:.1},
+    {l:'retriever.build(embs)',x:cx+110,y:85,c:'#00B894',t:.3},
+    {l:'索引就绪 ✓',x:cx+110,y:120,c:'#00B894',t:.38},
+    {l:'encode_text(query)',x:cx,y:165,c:'#F59E0B',t:.45},
+    {l:'retriever.search(q, k)',x:cx,y:200,c:'#00B894',t:.55},
+    {l:'scores, indices',x:cx,y:235,c:'#00B894',t:.65},
+    {l:'evaluate (R@K, NDCG, MRR)',x:cx,y:270,c:'#EF4444',t:.75},
+    {l:'返回最终结果',x:cx,y:305,c:'#00B894',t:.85}
+  ];
+  const bw=120,bh=24;
+  stages.forEach(s=>{const ap=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.15)));drawBox(s.x-bw/2,s.y,bw,bh,s.l,s.c,ap)});
+  const arrows=[[0,1],[1,2],[2,3],[0,4],[4,5],[3,5],[5,6],[6,7],[7,8],[8,9],[9,10],[10,11]];
+  arrows.forEach(([a,b])=>{const sa=stages[a],sb=stages[b];const t=sb.t;const ap=easeInOut(Math.max(0,Math.min(1,(p-t)/.1)));if(ap>0)drawArrow(sa.x,sa.y+bh,sb.x,sb.y,sb.c,ap*.3)});
+  
+  // Section labels
+  if(p>.1){const lp=easeInOut(Math.max(0,Math.min(1,(p-.1)/.1)));ctx.globalAlpha=lp;ctx.fillStyle='#94A3B8';ctx.font='11px PingFang SC';ctx.textAlign='center';ctx.fillText('离线编码',cx-110,43);ctx.fillText('索引构建',cx+110,43);ctx.globalAlpha=1}
+  if(p>.45){const lp=easeInOut(Math.max(0,Math.min(1,(p-.45)/.1)));ctx.globalAlpha=lp;ctx.fillStyle='#F59E0B';ctx.font='11px PingFang SC';ctx.textAlign='center';ctx.fillText('在线查询',cx,158);ctx.globalAlpha=1}
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const s=performance.now(),d=2500;function t(n){animProgress=Math.min(1,(n-s)/d);render();if(animProgress<1)animId=requestAnimationFrame(t)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(t)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(idx=>()=>{currentStep=idx;updateUI();startAnim()})(i);d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

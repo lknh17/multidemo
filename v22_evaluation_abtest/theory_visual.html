@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>V22 - 评估与A/B测试：原理可视化</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,sans-serif;overflow-x:hidden}.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}.badge{background:linear-gradient(135deg,#9c27b0,#ce93d8);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px;color:#fff}.title{font-size:18px;font-weight:600;flex:1}.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}.dots{display:flex;gap:6px;margin-left:16px}.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}.dot.active{background:#9c27b0;box-shadow:0 0 8px #9c27b0}.dot.done{background:#ce93d8}.main{display:flex;height:calc(100vh - 136px)}.canvas-area{flex:6;background:#0d1117;display:flex;align-items:center;justify-content:center}canvas{border-radius:8px}.info-panel{flex:4;padding:24px;overflow-y:auto;background:#111827;border-left:1px solid #222}.step-title{font-size:20px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,#9c27b0,#ce93d8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.8;color:#ccc}.formula{background:#1a1e2e;border:1px solid #333;border-radius:8px;padding:12px;font-family:monospace;font-size:14px;color:#7dd3fc;margin:12px 0;white-space:pre-wrap}.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}.btn:hover{border-color:#9c27b0;box-shadow:0 0 12px rgba(156,39,176,.3)}.btn:disabled{opacity:.3}.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}.hl{color:#9c27b0}.hl2{color:#ce93d8}.hl3{color:#00e5ff}</style></head>
+<body>
+<div class="header"><span class="badge">V22</span><span class="title">评估体系与 A/B 测试</span><span class="page-type">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div></div></div>
+<div class="controls"><button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button><div class="step-counter" id="stepCounter"></div><button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button><button class="btn" onclick="replay()">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-40}window.addEventListener('resize',resize);resize();
+function RR(x,y,w,h,r,f,s){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(f){ctx.fillStyle=f;ctx.fill()}if(s){ctx.strokeStyle=s;ctx.stroke()}}
+function arr(x1,y1,x2,y2,c='#555'){const a=Math.atan2(y2-y1,x2-x1),l=7;ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.fillStyle=c;ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-l*Math.cos(a-.3),y2-l*Math.sin(a-.3));ctx.lineTo(x2-l*Math.cos(a+.3),y2-l*Math.sin(a+.3));ctx.fill()}
+function txt(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+const steps=[
+{title:"NDCG：折损累积增益",desc:`<p><span class="hl">NDCG</span> 衡量排序质量，位置越靠前权重越大。</p><p>DCG 对每个位置施加对数折损：排在第 1 位的结果权重最高。</p><div class="formula">DCG@K = Σ (2^rel_i - 1) / log₂(i+1)
+NDCG@K = DCG@K / IDCG@K
+
+IDCG = 理想排序的 DCG（上界）
+NDCG ∈ [0, 1]，越接近 1 越好</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-30;
+txt('搜索结果排序',cx,25,'#aaa',14);
+const items=[{rel:3,c:'#9c27b0'},{rel:2,c:'#ce93d8'},{rel:0,c:'#555'},{rel:1,c:'#7dd3fc'},{rel:3,c:'#9c27b0'}];
+items.forEach((item,i)=>{const prog=Math.min(1,p*2-i*0.15);if(prog<=0)return;ctx.globalAlpha=Math.min(1,prog);
+const y=45+i*50;const w=180;RR(cx-w/2,y,w,35,4,'#1a1e2e',item.c);
+txt(`#${i+1}`,cx-w/2-30,y+22,'#aaa',11);
+const relBar=item.rel/3*60;RR(cx-w/2+10,y+8,relBar*prog,20,3,item.c+'88');
+txt(`rel=${item.rel}`,cx+20,y+22,item.c,11);
+// 折损因子
+const discount=1/Math.log2(i+2);const discW=discount*100;
+RR(cx+w/2+20,y+5,discW*prog,25,3,'#7dd3fc33','#7dd3fc');
+txt(`1/log₂(${i+2})=${discount.toFixed(2)}`,cx+w/2+80,y+22,'#7dd3fc',10);
+ctx.globalAlpha=1});
+if(p>0.7){const dcg=items.reduce((s,it,i)=>s+(Math.pow(2,it.rel)-1)/Math.log2(i+2),0);txt(`DCG@5 = ${dcg.toFixed(2)}`,cx,320,'#ce93d8',14)}}},
+
+{title:"Welch's t-test 检验",desc:`<p><span class="hl">Welch's t-test</span> 比较两组均值差异，不要求等方差。</p><div class="formula">t = (X̄_A - X̄_B) / √(s²_A/n_A + s²_B/n_B)
+
+自由度 (Welch-Satterthwaite):
+ν = (s²_A/n_A + s²_B/n_B)² /
+    [(s²_A/n_A)²/(n_A-1) + (s²_B/n_B)²/(n_B-1)]
+
+p < α → 拒绝 H₀，差异显著</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-20;
+// 绘制两个分布
+txt('Control (对照组)',cx-120,25,'#7dd3fc',13);txt('Treatment (实验组)',cx+120,25,'#9c27b0',13);
+const drawDist=(mx,color,mean,std)=>{ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
+for(let x=-100;x<=100;x++){const xv=x/30;const yv=Math.exp(-0.5*((xv-mean)/std)**2)/(std*2.5);
+const px=mx+x,py=cy+60-yv*200*Math.min(1,p*2);if(x===-100)ctx.moveTo(px,py);else ctx.lineTo(px,py)}ctx.stroke()};
+drawDist(cx-120,'#7dd3fc',0,1);
+drawDist(cx+120,'#9c27b0',0.8,1.1);
+if(p>0.4){ctx.setLineDash([4,4]);ctx.strokeStyle='#7dd3fc';ctx.beginPath();ctx.moveTo(cx-120,cy-40);ctx.lineTo(cx-120,cy+70);ctx.stroke();
+ctx.strokeStyle='#9c27b0';ctx.beginPath();ctx.moveTo(cx+120+24,cy-40);ctx.lineTo(cx+120+24,cy+70);ctx.stroke();ctx.setLineDash([]);
+txt('μ_C',cx-120,cy-50,'#7dd3fc',11);txt('μ_T',cx+120+24,cy-50,'#9c27b0',11)}
+if(p>0.6){arr(cx-120,cy+80,cx+144,cy+80,'#ce93d8');txt('Δ = μ_T - μ_C',cx+12,cy+95,'#ce93d8',12)}
+if(p>0.8){RR(cx-80,cy+110,160,30,6,'#9c27b033','#9c27b0');txt('p < 0.05 → 显著!',cx,cy+130,'#9c27b0',12)}}},
+
+{title:"Bootstrap 置信区间",desc:`<p><span class="hl">Bootstrap</span> 通过有放回重采样构建差值分布。</p><div class="formula">重复 B=10000 次:
+  1. 从 Control 有放回采样 → C*
+  2. 从 Treatment 有放回采样 → T*
+  3. δ* = mean(T*) - mean(C*)
+
+95% CI = [δ*(2.5%), δ*(97.5%)]
+若 CI 不包含 0 → 差异显著</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-10;
+txt('Bootstrap 差值分布',cx,25,'#aaa',14);
+// 模拟直方图
+const nbins=30;const binW=W*0.6/nbins;const startX=cx-W*0.3;
+for(let i=0;i<nbins;i++){const x=(i-nbins/2)/nbins*6;const h=Math.exp(-0.5*((x-1)/1.2)**2)*150;
+const prog=Math.min(1,p*2.5-i*0.03);if(prog<=0)continue;
+const bx=startX+i*binW;const bh=h*prog;
+const inCI=(i>=8&&i<=25);
+ctx.fillStyle=inCI?'#9c27b044':'#33333344';ctx.fillRect(bx,cy+80-bh,binW-1,bh);
+ctx.strokeStyle=inCI?'#9c27b0':'#555';ctx.strokeRect(bx,cy+80-bh,binW-1,bh)}
+if(p>0.5){// CI bounds
+const ciL=startX+8*binW,ciR=startX+25*binW;
+ctx.strokeStyle='#ce93d8';ctx.lineWidth=2;ctx.setLineDash([5,3]);
+ctx.beginPath();ctx.moveTo(ciL,cy-80);ctx.lineTo(ciL,cy+85);ctx.stroke();
+ctx.beginPath();ctx.moveTo(ciR,cy-80);ctx.lineTo(ciR,cy+85);ctx.stroke();ctx.setLineDash([]);
+txt('2.5%',ciL,cy-85,'#ce93d8',10);txt('97.5%',ciR,cy-85,'#ce93d8',10)}
+if(p>0.7){// zero line
+const zeroX=startX+12*binW;ctx.strokeStyle='#ff4444';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+ctx.beginPath();ctx.moveTo(zeroX,cy-70);ctx.lineTo(zeroX,cy+85);ctx.stroke();ctx.setLineDash([]);
+txt('0',zeroX,cy+100,'#ff4444',11)}
+if(p>0.9){txt('CI 不含 0 → 差异显著',cx,cy+120,'#9c27b0',13)}}},
+
+{title:"Thompson Sampling",desc:`<p><span class="hl">Thompson Sampling</span> 用 Beta 后验采样选择最优臂。</p><div class="formula">每个臂 k 维护 Beta(α_k, β_k) 分布:
+  初始: α=1, β=1 (均匀先验)
+  观察奖励 r ∈ {0,1}:
+    α_k += r, β_k += (1-r)
+
+选择: 从每个 Beta(α_k, β_k) 采样
+      选择采样值最大的臂
+
+后验均值: E[θ_k] = α_k/(α_k+β_k)</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('Thompson Sampling: Beta 后验演化',cx,25,'#aaa',14);
+const arms=[{a:15,b:85,c:'#9c27b0',n:'臂1 (10%)'},{a:25,b:75,c:'#ce93d8',n:'臂2 (25%)'},{a:50,b:50,c:'#00e5ff',n:'臂3 (50%)'},{a:35,b:65,c:'#f7c948',n:'臂4 (35%)'}];
+arms.forEach((arm,idx)=>{const baseY=50+idx*80;const prog=Math.min(1,p*2-idx*0.2);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);
+// Beta 分布近似
+const a=1+(arm.a-1)*prog,b=1+(arm.b-1)*prog;
+const mean=a/(a+b);
+txt(arm.n,60,baseY+15,arm.c,11);
+ctx.strokeStyle=arm.c;ctx.lineWidth=2;ctx.beginPath();
+for(let x=0;x<=200;x++){const t=x/200;const logP=(a-1)*Math.log(t+1e-10)+(b-1)*Math.log(1-t+1e-10);
+const h=Math.exp(logP)*30;const px=120+x*1.5,py=baseY+50-Math.min(h,50);
+if(x===0)ctx.moveTo(px,py);else ctx.lineTo(px,py)}ctx.stroke();
+// 均值线
+const mx=120+mean*300;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(mx,baseY);ctx.lineTo(mx,baseY+55);ctx.stroke();ctx.setLineDash([]);
+txt(`μ=${mean.toFixed(2)}`,mx,baseY-5,arm.c,10);
+ctx.globalAlpha=1});
+if(p>0.8){RR(cx-100,370,200,30,6,'#00e5ff22','#00e5ff');txt('臂3 被选中最多 → 最优!',cx,390,'#00e5ff',12)}}},
+
+{title:"UCB1 探索-利用平衡",desc:`<p><span class="hl">UCB1</span> 同时考虑平均奖励和不确定性。</p><div class="formula">UCB_k = X̄_k + c·√(ln(N) / n_k)
+
+X̄_k: 臂 k 的平均奖励（利用）
+c·√(ln(N)/n_k): 不确定性加成（探索）
+
+被选次数少的臂 → n_k 小 → 加成大 → 更可能被探索
+被选次数多的臂 → 不确定性下降 → 依赖平均奖励</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('UCB1: 利用 + 探索',cx,25,'#aaa',14);
+const arms=[{mean:0.1,n:200,c:'#555'},{mean:0.25,n:150,c:'#ce93d8'},{mean:0.5,n:800,c:'#9c27b0'},{mean:0.35,n:100,c:'#f7c948'},{mean:0.2,n:50,c:'#00e5ff'}];
+const N=arms.reduce((s,a)=>s+a.n,0);
+arms.forEach((arm,i)=>{const x=60+i*(W-120)/5;const baseY=H-60;const prog=Math.min(1,p*2-i*0.15);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);
+// 平均奖励柱
+const meanH=arm.mean*200*prog;ctx.fillStyle=arm.c+'88';ctx.fillRect(x,baseY-meanH,40,meanH);
+// UCB 加成
+const bonus=2*Math.sqrt(Math.log(N)/arm.n);const bonusH=bonus*200*prog;
+ctx.fillStyle=arm.c+'33';ctx.fillRect(x,baseY-meanH-bonusH,40,bonusH);ctx.strokeStyle=arm.c;ctx.setLineDash([3,3]);ctx.strokeRect(x,baseY-meanH-bonusH,40,bonusH);ctx.setLineDash([]);
+txt(`μ=${arm.mean}`,x+20,baseY+15,arm.c,9);
+txt(`n=${arm.n}`,x+20,baseY+28,'#888',9);
+const ucb=arm.mean+bonus;txt(`UCB=${ucb.toFixed(2)}`,x+20,baseY-meanH-bonusH-10,arm.c,9);
+ctx.globalAlpha=1});
+txt('■ 平均奖励 (利用)',cx-80,40,'#aaa',11);txt('□ UCB 加成 (探索)',cx+80,40,'#aaa',11)}},
+
+{title:"Team Draft 交错实验",desc:`<p><span class="hl">交错实验</span>将两个排序列表混合展示，通过用户点击判断优劣。</p><div class="formula">Team Draft 算法:
+  交替从 A、B 列表中选取文档
+  落后方优先选（保证平衡）
+  
+用户点击后统计:
+  wins_A = 点击了更多 A 贡献文档的查询数
+  wins_B = 点击了更多 B 贡献文档的查询数
+  
+Δ = (wins_A - wins_B) / total
+比传统 A/B 测试灵敏度高 10-100 倍</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+// 列表 A
+const listA=['doc1','doc3','doc5','doc7','doc9'];const listB=['doc2','doc3','doc4','doc6','doc8'];
+txt('List A',80,25,'#9c27b0',13);txt('List B',W-80,25,'#00e5ff',13);txt('Mixed',cx,25,'#ce93d8',13);
+listA.forEach((d,i)=>{const y=45+i*35;const prog=Math.min(1,p*3-i*0.2);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);RR(30,y,100,25,3,'#1a1e2e','#9c27b0');txt(d,80,y+17,'#9c27b0',10);ctx.globalAlpha=1});
+listB.forEach((d,i)=>{const y=45+i*35;const prog=Math.min(1,p*3-i*0.2);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);RR(W-130,y,100,25,3,'#1a1e2e','#00e5ff');txt(d,W-80,y+17,'#00e5ff',10);ctx.globalAlpha=1});
+// Mixed list
+if(p>0.4){const mixed=[{d:'doc1',t:'A'},{d:'doc2',t:'B'},{d:'doc3',t:'A'},{d:'doc4',t:'B'},{d:'doc5',t:'A'}];
+mixed.forEach((m,i)=>{const y=45+i*35;const prog=Math.min(1,(p-0.4)*3-i*0.15);if(prog<=0)return;
+ctx.globalAlpha=Math.min(1,prog);const c=m.t==='A'?'#9c27b0':'#00e5ff';
+RR(cx-50,y,100,25,3,'#1a1e2e',c);txt(m.d,cx,y+17,c,10);txt(m.t,cx+60,y+17,'#888',9);ctx.globalAlpha=1})}
+// Clicks
+if(p>0.7){const clicks=[0,2,4];clicks.forEach(i=>{const y=45+i*35;ctx.fillStyle='#f7c94844';ctx.fillRect(cx-50,y,100,25);txt('👆',cx+75,y+18,'#f7c948',12)});
+txt('A clicks: 2, B clicks: 1 → A wins!',cx,240,'#9c27b0',12)}}}
+];
+
+function animate(){animProgress+=.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}
+function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('stepTitle').innerHTML=steps[currentStep].title;document.getElementById('stepDesc').innerHTML=steps[currentStep].desc;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))})}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});init();
+</script></body></html>

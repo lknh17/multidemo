@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p05 GRPO 强化学习 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:14px; color:var(--warn); text-align:center; line-height:1.8; white-space:pre-line; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p05</span>
+  <h1>GRPO 强化学习</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/7</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: '为什么需要 GRPO？',
+    desc: '传统 RLHF 需要训练<strong>4 个模型</strong>（策略、奖励、参考、Critic），显存消耗大且工程复杂。DPO 虽然简单，但无法利用<strong>可验证奖励</strong>（如数学答案的正确性）。<br><br>GRPO 的突破：<strong>去掉 Critic 模型</strong>，用组内采样的相对排名代替绝对优势估计。<br><br>右侧动画对比了 PPO（4 个模型）和 GRPO（2 个模型）的架构差异。',
+    formula: 'PPO: 策略 + 奖励 + 参考 + Critic = 4 个模型\nGRPO: 策略 + 参考 = 2 个模型（省 50% 显存）' },
+  { title: 'Group 采样：核心机制',
+    desc: '对每个 prompt，GRPO 从当前策略采样 <strong>G 个响应</strong>（Group），然后用奖励函数对每个响应评分。<br><br>关键点：不需要知道"绝对好"是多少，只需要知道<strong>组内谁更好</strong>。<br><br>动画展示：一个数学题 prompt 生成 G=4 个不同的推理响应，每个获得不同的奖励分数。',
+    formula: 'Prompt x → 采样 G 个响应 {y₁, y₂, ..., y_G}\n用奖励函数计算 {r₁, r₂, ..., r_G}' },
+  { title: '组内归一化：相对优势',
+    desc: '将奖励分数在组内做<strong>标准化</strong>（减均值、除标准差），得到归一化优势。<br><br>好处：<br>• 自动产生<strong>基线</strong>（组均值），减小梯度方差<br>• 对奖励函数的<strong>绝对值不敏感</strong>，只关心相对排名<br>• 消除了对 Critic 模型的依赖<br><br>动画展示：原始奖励 → 归一化优势的转换过程。',
+    formula: 'Â_i = (r_i - μ_r) / σ_r\nμ_r = mean(r₁,...,r_G)\nσ_r = std(r₁,...,r_G)' },
+  { title: 'PPO-Clip 策略更新',
+    desc: '用归一化优势更新策略，通过 <strong>clip 机制</strong>限制每次更新幅度。<br><br>当优势为正（好响应）：增大生成概率，但最多到 1+ε<br>当优势为负（差响应）：减小生成概率，但最少到 1-ε<br><br>这防止了策略一步跳太远导致崩溃。<br><br>动画展示：clip 函数如何限制概率比的变化范围。',
+    formula: 'L = min(r(θ)·Â, clip(r(θ), 1-ε, 1+ε)·Â)\nr(θ) = π_θ(y|x) / π_old(y|x)' },
+  { title: 'KL 散度约束',
+    desc: '限制策略 π_θ 不能偏离参考模型 π_ref 太远。<br><br>为什么？<br>• 防止<strong>奖励欺骗</strong>：模型找到奖励 shortcut<br>• 保持<strong>语言质量</strong>：不忘记基本语言能力<br>• 训练<strong>稳定性</strong>：避免策略剧烈变化<br><br>动画展示：不同 β 值下策略偏离程度的对比。',
+    formula: 'L_total = L_GRPO - β · D_KL[π_θ ‖ π_ref]\nβ 越大 → 约束越强 → 策略越保守' },
+  { title: '奖励函数设计',
+    desc: '数学推理的奖励包含三个维度：<br><br><strong>正确性</strong>（60%）：答案是否正确<br><strong>格式</strong>（30%）：推理步骤是否清晰<br><strong>长度</strong>（10%）：防止过长响应<br><br>组合奖励缓解了<strong>稀疏奖励问题</strong>：即使答案错误，好的推理格式也能获得正向信号。<br><br>动画展示：三种奖励的评分过程。',
+    formula: 'r_total = 0.6·r_correct + 0.3·r_format + 0.1·r_length\n正确答案+好格式 → +1.0\n错误答案+好格式 → +0.3\n无法提取答案 → -1.0' },
+  { title: 'GRPO 完整训练流程',
+    desc: '将所有组件组合：<br><br>1. <strong>采样</strong>：对每个 prompt 生成 G 个响应<br>2. <strong>评分</strong>：奖励函数打分<br>3. <strong>归一化</strong>：组内标准化得到优势<br>4. <strong>更新</strong>：PPO-Clip 策略更新<br>5. <strong>约束</strong>：KL 惩罚控制偏离<br>6. <strong>监控</strong>：检测奖励欺骗<br><br>动画展示：完整的 GRPO 训练循环。',
+    formula: '循环: Prompt → G个采样 → 奖励评分 → \n归一化优势 → PPO-Clip更新 → KL约束 → 下一轮' },
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function hsl(h,s,l){ return `hsl(${h},${s}%,${l}%)`; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: PPO vs GRPO comparison
+function renderStep0(p) {
+  const cx=W/2, cy=H/2;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // PPO (top)
+  ctx.fillStyle=`rgba(239,68,68,${easeInOut(Math.min(1,p/.3))})`; ctx.fillText('PPO: 4 个模型',cx,30);
+  const ppoModels=['策略模型','奖励模型','参考模型','Critic'];
+  const ppoColors=['#6C5CE7','#F59E0B','#94A3B8','#EF4444'];
+  const gap=110, sx=cx-1.5*gap;
+  for(let i=0;i<4;i++){
+    const delay=i*.1;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=sx+i*gap;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=ppoColors[i]+'22'; ctx.strokeStyle=ppoColors[i];
+    drawRoundRect(x-45,50,90,40,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=ppoColors[i]; ctx.font='12px PingFang SC';
+    ctx.fillText(ppoModels[i],x,75);
+    ctx.globalAlpha=1;
+  }
+  // GRPO (bottom)
+  const gy=cy+30;
+  ctx.fillStyle=`rgba(0,184,148,${easeInOut(Math.max(0,(p-.5)/.3))})`; ctx.font='bold 14px PingFang SC';
+  ctx.fillText('GRPO: 2 个模型 + 规则奖励',cx,gy-20);
+  const grpoModels=['策略模型','参考模型','规则奖励函数'];
+  const grpoColors=['#6C5CE7','#94A3B8','#10B981'];
+  const gsx=cx-gap;
+  for(let i=0;i<3;i++){
+    const delay=.55+i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=gsx+i*gap;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=grpoColors[i]+'22'; ctx.strokeStyle=grpoColors[i];
+    drawRoundRect(x-50,gy,100,40,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=grpoColors[i]; ctx.font='12px PingFang SC';
+    ctx.fillText(grpoModels[i],x,gy+25);
+    ctx.globalAlpha=1;
+  }
+  // Crossed out Critic
+  if(p>.4){
+    const cp=easeInOut((p-.4)/.15);
+    ctx.globalAlpha=cp; ctx.strokeStyle='#EF4444'; ctx.lineWidth=3;
+    const cx4=sx+3*gap;
+    ctx.beginPath(); ctx.moveTo(cx4-50,50); ctx.lineTo(cx4+50,90); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx4+50,50); ctx.lineTo(cx4-50,90); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Arrow: savings
+  if(p>.85){
+    const sp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=sp; ctx.font='bold 16px PingFang SC'; ctx.fillStyle='#00B894';
+    ctx.fillText('节省 ~50% 显存',cx,gy+80);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Group Sampling
+function renderStep1(p) {
+  const cx=W/2, topY=20;
+  // Prompt box
+  const pp=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=pp;
+  ctx.fillStyle='rgba(108,92,231,.15)'; ctx.strokeStyle='#6C5CE7';
+  drawRoundRect(cx-120,topY,240,45,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#6C5CE7'; ctx.font='13px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText('Prompt: "小明有15个苹果..."',cx,topY+28);
+  ctx.globalAlpha=1;
+  // Sample arrows
+  const G=4, responses=['y₁: 步骤1...#### 19','y₂: 计算...#### 19','y₃: 答案是20','y₄: 步骤1...#### 17'];
+  const rewards=[1.0, 0.4, -0.5, 0.1];
+  const rColors=['#10B981','#F59E0B','#EF4444','#94A3B8'];
+  const respY=topY+100, respGap=70;
+  const rsx=cx-(G-1)*respGap/2;
+  for(let i=0;i<G;i++){
+    const delay=.25+i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const x=rsx+i*respGap;
+    ctx.globalAlpha=ap;
+    // Arrow
+    ctx.strokeStyle='rgba(108,92,231,.4)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(cx,topY+45); ctx.lineTo(x,respY); ctx.stroke();
+    // Response box
+    ctx.fillStyle=rColors[i]+'1A'; ctx.strokeStyle=rColors[i];
+    drawRoundRect(x-55,respY,110,55,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=rColors[i]; ctx.font='11px PingFang SC';
+    ctx.fillText(responses[i].substring(0,12)+'...',x,respY+20);
+    // Reward
+    if(p>.6){
+      const rp=easeInOut(Math.max(0,Math.min(1,(p-.6-i*.05)/.2)));
+      ctx.globalAlpha=rp;
+      ctx.font='bold 14px Courier New';
+      ctx.fillText(`r=${rewards[i].toFixed(1)}`,x,respY+45);
+    }
+    ctx.globalAlpha=1;
+  }
+  // Label
+  if(p>.85){
+    ctx.globalAlpha=easeInOut((p-.85)/.15);
+    ctx.font='13px PingFang SC'; ctx.fillStyle='#00B894';
+    ctx.fillText('G=4 个响应，奖励差异明显 → 可以学习',cx,respY+85);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Normalization
+function renderStep2(p) {
+  const cx=W/2, topY=20;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Raw rewards
+  const rewards=[1.0, 0.4, -0.5, 0.1];
+  const mean=0.25, std=0.55;
+  const normed=rewards.map(r=>((r-mean)/std).toFixed(2));
+  // Left: raw
+  ctx.fillStyle=`rgba(249,158,11,${easeInOut(Math.min(1,p/.25))})`; ctx.fillText('原始奖励',cx-100,topY);
+  const colors=['#10B981','#F59E0B','#EF4444','#94A3B8'];
+  for(let i=0;i<4;i++){
+    const delay=i*.06;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.05-delay)/.2)));
+    const y=topY+25+i*45;
+    ctx.globalAlpha=ap;
+    // Bar
+    const barW=Math.max(5,Math.abs(rewards[i])*120);
+    const barX=rewards[i]>=0?cx-100:cx-100-barW;
+    ctx.fillStyle=colors[i]+'44';
+    drawRoundRect(cx-100-60,y,barW+60,28,6); ctx.fill();
+    ctx.fillStyle=colors[i]; ctx.font='bold 13px Courier New'; ctx.textAlign='right';
+    ctx.fillText(`r${i+1}=${rewards[i].toFixed(1)}`,cx-100-5,y+19);
+    ctx.globalAlpha=1;
+  }
+  // Arrow
+  if(p>.35){
+    const arp=easeInOut((p-.35)/.15);
+    ctx.globalAlpha=arp; ctx.strokeStyle='#F59E0B'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(cx-15,topY+90); ctx.lineTo(cx+25,topY+90); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+20,topY+84); ctx.lineTo(cx+27,topY+90); ctx.lineTo(cx+20,topY+96); ctx.stroke();
+    ctx.font='11px PingFang SC'; ctx.textAlign='center'; ctx.fillStyle='#F59E0B';
+    ctx.fillText('归一化',cx+5,topY+78);
+    ctx.globalAlpha=1;
+  }
+  // Right: normalized
+  if(p>.45){
+    const np=easeInOut((p-.45)/.25);
+    ctx.globalAlpha=np;
+    ctx.fillStyle='#00B894'; ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('归一化优势',cx+120,topY);
+    for(let i=0;i<4;i++){
+      const y=topY+25+i*45;
+      const v=parseFloat(normed[i]);
+      const barW=Math.abs(v)*60;
+      ctx.fillStyle=(v>=0?'#10B981':'#EF4444')+'44';
+      drawRoundRect(cx+60,y,barW+60,28,6); ctx.fill();
+      ctx.fillStyle=v>=0?'#10B981':'#EF4444';
+      ctx.font='bold 13px Courier New'; ctx.textAlign='left';
+      ctx.fillText(`Â${i+1}=${normed[i]}`,cx+65,y+19);
+    }
+    ctx.globalAlpha=1;
+  }
+  // Mean/std info
+  if(p>.75){
+    ctx.globalAlpha=easeInOut((p-.75)/.25);
+    ctx.font='12px Courier New'; ctx.fillStyle='#94A3B8'; ctx.textAlign='center';
+    ctx.fillText(`μ=${mean.toFixed(2)}  σ=${std.toFixed(2)}`,cx,topY+215);
+    ctx.font='13px PingFang SC'; ctx.fillStyle='#00B894';
+    ctx.fillText('正优势→增大概率  负优势→减小概率',cx,topY+240);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: PPO-Clip
+function renderStep3(p) {
+  const cx=W/2, topY=30;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle=`rgba(108,92,231,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.fillText('PPO-Clip 机制',cx,topY);
+  // Draw clip function
+  const plotX=60, plotY=topY+40, plotW=W-120, plotH=H-130;
+  const midX=plotX+plotW/2, midY=plotY+plotH/2;
+  // Axes
+  const ap1=easeInOut(Math.max(0,Math.min(1,(p-.1)/.2)));
+  ctx.globalAlpha=ap1;
+  ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(plotX,midY); ctx.lineTo(plotX+plotW,midY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(midX,plotY); ctx.lineTo(midX,plotY+plotH); ctx.stroke();
+  // Labels
+  ctx.fillStyle='#94A3B8'; ctx.font='11px Courier New';
+  ctx.fillText('r(θ)',plotX+plotW+5,midY+4);
+  ctx.fillText('L',midX,plotY-5);
+  ctx.fillText('1-ε',midX-plotW*0.2,midY+18); ctx.fillText('1+ε',midX+plotW*0.2,midY+18);
+  ctx.globalAlpha=1;
+  // Clip region
+  if(p>.3){
+    const cp=easeInOut((p-.3)/.3);
+    ctx.globalAlpha=cp*.2;
+    ctx.fillStyle='#6C5CE7';
+    ctx.fillRect(midX-plotW*0.2,plotY,plotW*0.4,plotH);
+    ctx.globalAlpha=1;
+    // A>0 line (green)
+    ctx.globalAlpha=cp;
+    ctx.strokeStyle='#10B981'; ctx.lineWidth=3;
+    ctx.beginPath();
+    ctx.moveTo(plotX,midY+plotH*0.3);
+    ctx.lineTo(midX-plotW*0.2,midY+plotH*0.3);// flat before clip
+    ctx.lineTo(midX-plotW*0.2,midY-plotH*0.1); // jump at 1-eps
+    ctx.lineTo(midX+plotW*0.2,midY-plotH*0.3); // slope in clip region
+    ctx.lineTo(midX+plotW*0.2,midY-plotH*0.3); // clip at 1+eps
+    ctx.lineTo(plotX+plotW,midY-plotH*0.3);     // flat after
+    ctx.stroke();
+    ctx.fillStyle='#10B981'; ctx.font='12px PingFang SC';
+    ctx.fillText('Â > 0（好响应）',plotX+plotW-80,midY-plotH*0.3-10);
+    // A<0 line (red)
+    ctx.strokeStyle='#EF4444'; ctx.lineWidth=3;
+    ctx.beginPath();
+    ctx.moveTo(plotX,midY-plotH*0.2);
+    ctx.lineTo(midX-plotW*0.2,midY-plotH*0.2);
+    ctx.lineTo(midX-plotW*0.2,midY+plotH*0.1);
+    ctx.lineTo(midX+plotW*0.2,midY+plotH*0.25);
+    ctx.lineTo(midX+plotW*0.2,midY+plotH*0.25);
+    ctx.lineTo(plotX+plotW,midY+plotH*0.25);
+    ctx.stroke();
+    ctx.fillStyle='#EF4444'; ctx.font='12px PingFang SC';
+    ctx.fillText('Â < 0（差响应）',plotX+plotW-80,midY+plotH*0.25+20);
+    ctx.globalAlpha=1;
+  }
+  // Epsilon annotation
+  if(p>.7){
+    ctx.globalAlpha=easeInOut((p-.7)/.3);
+    ctx.font='13px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+    ctx.fillText('ε=0.2: 概率比只能在 [0.8, 1.2] 范围内变化',cx,plotY+plotH+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: KL Divergence
+function renderStep4(p) {
+  const cx=W/2, topY=20;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Three scenarios with different beta
+  const betas=[0.01, 0.05, 0.10];
+  const labels=['β=0.01 (弱约束)','β=0.05 (平衡)','β=0.10 (强约束)'];
+  const colors=['#EF4444','#10B981','#0984E3'];
+  const barH=60, barGap=20, barW=W-120, sx=60;
+  for(let b=0;b<3;b++){
+    const delay=b*.2;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const y=topY+20+b*(barH+barGap+20);
+    ctx.globalAlpha=ap;
+    // Label
+    ctx.fillStyle=colors[b]; ctx.font='bold 13px PingFang SC'; ctx.textAlign='left';
+    ctx.fillText(labels[b],sx,y);
+    // Two distributions
+    const spread=b===0?0.7:b===1?0.4:0.15;
+    // Reference (gray)
+    ctx.strokeStyle='rgba(148,163,184,.5)'; ctx.lineWidth=2; ctx.setLineDash([4,4]);
+    ctx.beginPath();
+    for(let x=0;x<barW;x++){
+      const t=(x/barW-0.5)*6;
+      const v=Math.exp(-t*t/2)*barH*0.8;
+      x===0?ctx.moveTo(sx+x,y+20+barH-v):ctx.lineTo(sx+x,y+20+barH-v);
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    // Policy (colored, shifted)
+    ctx.strokeStyle=colors[b]; ctx.lineWidth=2.5;
+    ctx.beginPath();
+    for(let x=0;x<barW;x++){
+      const t=((x/barW-0.5-spread*0.15))*6/(1+spread*0.5);
+      const v=Math.exp(-t*t/2)*barH*0.8*(1+spread*0.3);
+      x===0?ctx.moveTo(sx+x,y+20+barH-v):ctx.lineTo(sx+x,y+20+barH-v);
+    }
+    ctx.stroke();
+    // KL arrow
+    const klVal=(spread*8).toFixed(1);
+    ctx.fillStyle=colors[b]; ctx.font='11px Courier New'; ctx.textAlign='right';
+    ctx.fillText(`KL=${klVal}`,sx+barW,y+12);
+    ctx.globalAlpha=1;
+  }
+  // Legend
+  if(p>.8){
+    ctx.globalAlpha=easeInOut((p-.8)/.2);
+    ctx.font='12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillStyle='#94A3B8';
+    ctx.fillText('虚线: 参考模型 π_ref    实线: 当前策略 π_θ',cx,H-30);
+    ctx.fillStyle='#00B894';
+    ctx.fillText('β 越大 → 策略越接近参考模型 → 越保守但稳定',cx,H-10);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: Reward Design
+function renderStep5(p) {
+  const cx=W/2, topY=15;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Response example
+  const pp=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=pp;
+  ctx.fillStyle='rgba(108,92,231,.1)'; ctx.strokeStyle='rgba(108,92,231,.4)';
+  drawRoundRect(20,topY,W-40,55,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#E2E8F0'; ctx.font='12px PingFang SC'; ctx.textAlign='left';
+  ctx.fillText('步骤1：小明有15个苹果，给了3个 → 15-3=12',30,topY+18);
+  ctx.fillText('步骤2：又买了7个 → 12+7=19',30,topY+35);
+  ctx.fillText('#### 19',30,topY+50);
+  ctx.globalAlpha=1;
+  // Three reward components
+  const rewards=[
+    {name:'正确性奖励',val:'+1.0',weight:'60%',color:'#10B981',desc:'答案19=标准答案19 ✓'},
+    {name:'格式奖励',val:'+0.6',weight:'30%',color:'#0984E3',desc:'有2个步骤+答案标记 ✓'},
+    {name:'长度惩罚',val:'0.0',weight:'10%',color:'#94A3B8',desc:'长度适中，无惩罚'},
+  ];
+  const ry=topY+80;
+  for(let i=0;i<3;i++){
+    const delay=.25+i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=ry+i*55;
+    const r=rewards[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=r.color+'15'; ctx.strokeStyle=r.color;
+    drawRoundRect(30,y,W-60,42,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=r.color; ctx.font='bold 13px PingFang SC'; ctx.textAlign='left';
+    ctx.fillText(`${r.name} (${r.weight})`,45,y+18);
+    ctx.font='12px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.6)';
+    ctx.fillText(r.desc,45,y+35);
+    ctx.font='bold 16px Courier New'; ctx.fillStyle=r.color; ctx.textAlign='right';
+    ctx.fillText(r.val,W-45,y+25);
+    ctx.globalAlpha=1;
+  }
+  // Total
+  if(p>.75){
+    const tp=easeInOut((p-.75)/.25);
+    ctx.globalAlpha=tp;
+    const ty=ry+3*55+10;
+    ctx.fillStyle='rgba(0,184,148,.15)'; ctx.strokeStyle='#00B894';
+    drawRoundRect(30,ty,W-60,38,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='bold 14px PingFang SC'; ctx.textAlign='left';
+    ctx.fillText('总奖励 = 0.6×1.0 + 0.3×0.6 + 0.1×0.0',45,ty+24);
+    ctx.font='bold 18px Courier New'; ctx.textAlign='right';
+    ctx.fillText('= 0.78',W-45,ty+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 6: Full GRPO Loop
+function renderStep6(p) {
+  const cx=W/2, topY=10;
+  const stages=[
+    {label:'Prompt x',color:'#94A3B8',t:0},
+    {label:'采样 G 个响应',color:'#6C5CE7',t:.1},
+    {label:'奖励评分 r₁...r_G',color:'#F59E0B',t:.2},
+    {label:'组内归一化 → Â₁...Â_G',color:'#10B981',t:.35},
+    {label:'PPO-Clip 策略更新',color:'#0984E3',t:.5},
+    {label:'KL 惩罚 (β·D_KL)',color:'#EF4444',t:.6},
+    {label:'更新模型参数 θ',color:'#00B894',t:.75},
+  ];
+  const bw=200, bh=32, gap=12;
+  let y=topY;
+  for(let i=0;i<stages.length;i++){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-stages[i].t)/.15)));
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=stages[i].color+'1A'; ctx.strokeStyle=stages[i].color+'99';
+    drawRoundRect(cx-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=stages[i].color; ctx.font='13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(stages[i].label,cx,y+22);
+    if(i<stages.length-1 && sp>.5){
+      ctx.strokeStyle=stages[i].color+'44'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(cx,y+bh); ctx.lineTo(cx,y+bh+gap); ctx.stroke();
+      // Arrow head
+      ctx.beginPath(); ctx.moveTo(cx-4,y+bh+gap-5); ctx.lineTo(cx,y+bh+gap); ctx.lineTo(cx+4,y+bh+gap-5); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=bh+gap;
+  }
+  // Loop arrow
+  if(p>.85){
+    const lp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=lp*.6; ctx.strokeStyle='#00B894'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
+    const bottomY=y-gap, topLoop=topY+bh/2;
+    ctx.beginPath();
+    ctx.moveTo(cx+bw/2+10,bottomY-bh/2);
+    ctx.lineTo(cx+bw/2+25,bottomY-bh/2);
+    ctx.lineTo(cx+bw/2+25,topLoop);
+    ctx.lineTo(cx+bw/2+10,topLoop);
+    ctx.stroke();
+    // Arrow head
+    ctx.beginPath(); ctx.moveTo(cx+bw/2+15,topLoop-5); ctx.lineTo(cx+bw/2+10,topLoop); ctx.lineTo(cx+bw/2+15,topLoop+5); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=lp;
+    ctx.fillStyle='#00B894'; ctx.font='12px PingFang SC';
+    ctx.fillText('循环',cx+bw/2+35,cy);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5,renderStep6];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2200;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

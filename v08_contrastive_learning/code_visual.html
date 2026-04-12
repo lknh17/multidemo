@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v08 对比学习 - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre;overflow-x:auto}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v08</span><h1>对比学习 Loss</h1><span class="tag">代码可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'InfoNCELoss.forward',desc:'InfoNCE Loss 的前向计算步骤：<br><br>1. 计算缩放后的相似度矩阵：<strong>logits = scale * emb_a @ emb_b^T</strong><br>2. 创建标签：<strong>labels = arange(N)</strong>（对角线为正样本）<br>3. 计算双向 CrossEntropy：<br>  • Image→Text: CE(logits, labels)<br>  • Text→Image: CE(logits^T, labels)<br>4. 取平均：<strong>loss = (loss_i2t + loss_t2i) / 2</strong>',formula:'def forward(self, emb_a, emb_b, logit_scale):\n  logits = logit_scale * emb_a @ emb_b.t()\n  N = logits.size(0)\n  labels = arange(N)  # [0,1,2,...,N-1]\n  loss = (\n    CE(logits, labels) +\n    CE(logits.t(), labels)\n  ) / 2\n  return loss'},
+{title:'TripletLoss.forward',desc:'Triplet Loss 的计算过程：<br><br>1. 计算 anchor-positive <strong>欧氏距离平方</strong>：<br>  d_pos = ||anchor - positive||²<br>2. 计算 anchor-negative <strong>欧氏距离平方</strong>：<br>  d_neg = ||anchor - negative||²<br>3. 应用 margin 和 ReLU：<br>  loss = <strong>relu(d_pos - d_neg + margin)</strong><br>4. 取 batch 平均<br><br>只有当 d_pos + margin > d_neg 时才产生梯度。',formula:'def forward(self, anchor, positive, negative):\n  d_pos = (anchor - positive).pow(2).sum(-1)\n  d_neg = (anchor - negative).pow(2).sum(-1)\n  loss = F.relu(d_pos - d_neg + self.margin)\n  return loss.mean()'},
+{title:'CircleLoss.forward',desc:'Circle Loss 的自适应加权计算：<br><br>1. 计算相似度矩阵：<strong>sim = emb_a @ emb_b^T</strong><br>2. 分离正负样本相似度（对角线 vs 非对角线）<br>3. 计算自适应权重：<br>  • <strong>α_p = relu(O_p - s_p)</strong>（正样本越远权重越大）<br>  • <strong>α_n = relu(s_n - O_n)</strong>（负样本越近权重越大）<br>4. 加权 logits + logsumexp + softplus<br><br>困难样本自动获得更大的训练权重。',formula:'sim = emb_a @ emb_b.t()\ns_p = sim[diag]        # 正样本\ns_n = sim[off_diag]    # 负样本\n\nalpha_p = relu(O_p - s_p.detach())\nalpha_n = relu(s_n.detach() - O_n)\n\nlogit_p = -γ * α_p * (s_p - m)\nlogit_n =  γ * α_n * (s_n + m)\n\nloss = softplus(\n  logsumexp(logit_n) + logsumexp(logit_p)\n)'},
+{title:'HardNegativeMiner 选择过程',desc:'HardNegativeMiner 提供两种负样本挖掘策略：<br><br><strong>random_negatives</strong>：<br>对每个样本，从不同标签中随机选 n_neg 个负样本。简单但可能选到太容易的样本。<br><br><strong>hardest_negatives</strong>：<br>1. 计算 anchor 与所有样本的<strong>相似度</strong><br>2. 将同标签样本的相似度设为 -inf（排除）<br>3. 取<strong>相似度最高</strong>的 n_neg 个负样本<br><br>最相似但标签不同 = 最困难的负样本。',formula:'# hardest_negatives:\nsims = anchor_emb @ all_emb.t()\n\n# 屏蔽正样本\nfor i in range(B):\n  for j in range(B):\n    if labels[i] == labels[j]:\n      sims[i,j] = -inf\n\n# 选最相似的负样本\n_, indices = sims.topk(n_neg, dim=1)'},
+{title:'DualEncoder 双塔模型',desc:'DualEncoder 是对比学习的标准模型架构：<br><br><strong>图像塔</strong>：<br>• patch_embed → pos_embed → TransformerEncoder → img_proj<br>• CLS token pooling → L2 normalize<br><br><strong>文本塔</strong>：<br>• tok_embed → pos_embed → TransformerEncoder → txt_proj<br>• Mean pooling → L2 normalize<br><br><strong>可学习温度</strong>：logit_scale = exp(log(1/τ))<br><br>两个塔独立编码，只在计算相似度时交互，适合大规模检索。',formula:'def forward(self, images, input_ids):\n  img_emb = self.encode_image(images)\n  txt_emb = self.encode_text(input_ids)\n  scale = self.logit_scale.exp()\n  return img_emb, txt_emb, scale\n\n# encode_image:\n#   patch→CLS→encoder→proj→L2norm\n# encode_text:\n#   embed→encoder→meanpool→proj→L2norm'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+  const cx=W/2,topY=10;
+  // Matrix computation steps
+  const flow=[
+    {label:'emb_a [N, D]',color:'#0984E3',t:0},
+    {label:'emb_b [N, D]',color:'#00B894',t:.05},
+    {label:'logits = scale * emb_a @ emb_b.T → [N,N]',color:'#F59E0B',t:.15},
+    {label:'labels = [0, 1, 2, ..., N-1]',color:'#6C5CE7',t:.3},
+    {label:'loss_i2t = CE(logits, labels)',color:'#0984E3',t:.45},
+    {label:'loss_t2i = CE(logits.T, labels)',color:'#00B894',t:.6},
+    {label:'loss = (loss_i2t + loss_t2i) / 2',color:'#EF4444',t:.75}
+  ];
+  const bw=260,bh=30,gap=10;
+  let y=topY;
+  for(const f of flow){
+    const fp=easeInOut(Math.max(0,Math.min(1,(p-f.t)/.12)));
+    ctx.globalAlpha=fp;
+    const isActive=animProgress>f.t&&animProgress<f.t+.12;
+    if(isActive){ctx.fillStyle=f.color+'22';ctx.fillRect(15,y,W-30,bh)}
+    ctx.fillStyle=f.color+'1A';ctx.strokeStyle=f.color+'66';ctx.lineWidth=1;
+    drawRR(cx-bw/2,y+2,bw,bh-4,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=f.color;ctx.font='11px Courier New';ctx.textAlign='center';
+    ctx.fillText(f.label,cx,y+bh/2+3);
+    ctx.globalAlpha=1;
+    y+=bh+gap;
+  }
+  // Mini matrix visualization
+  if(p>.4){
+    const mp=easeInOut((p-.4)/.3);ctx.globalAlpha=mp;
+    const N=4,sz=25,mx=20,my=y+5;
+    ctx.font='8px Courier New';ctx.textAlign='center';
+    for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+      const isDiag=i===j;
+      ctx.fillStyle=isDiag?'rgba(0,184,148,.5)':'rgba(100,116,139,.2)';
+      ctx.fillRect(mx+j*sz,my+i*sz,sz-2,sz-2);
+      ctx.fillStyle=isDiag?'#00B894':'#64748B';
+      ctx.fillText(isDiag?'.85':'.0'+Math.floor(Math.random()*9),mx+j*sz+sz/2-1,my+i*sz+sz/2+2);
+    }
+    ctx.fillStyle='#F59E0B';ctx.font='10px PingFang SC';ctx.fillText('logits',mx+N*sz/2,my-5);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=10;
+  // Visual: three points
+  const pts=[
+    {label:'anchor',x:cx,y:topY+50,color:'#6C5CE7',t:0},
+    {label:'positive',x:cx-80,y:topY+130,color:'#00B894',t:.15},
+    {label:'negative',x:cx+90,y:topY+140,color:'#EF4444',t:.3}
+  ];
+  for(const pt of pts){
+    const pp=easeInOut(Math.max(0,Math.min(1,(p-pt.t)/.15)));
+    ctx.globalAlpha=pp;ctx.fillStyle=pt.color;
+    ctx.beginPath();ctx.arc(pt.x,pt.y,12,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#E2E8F0';ctx.font='10px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(pt.label,pt.x,pt.y+24);
+    ctx.globalAlpha=1;
+  }
+  // Distance lines
+  if(p>.3){
+    const dp=easeInOut((p-.3)/.2);ctx.globalAlpha=dp;
+    ctx.strokeStyle='#00B894';ctx.lineWidth=2;ctx.setLineDash([5,5]);
+    ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);ctx.lineTo(pts[1].x,pts[1].y);ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='10px Courier New';
+    ctx.fillText('d_pos',(pts[0].x+pts[1].x)/2-15,(pts[0].y+pts[1].y)/2);
+    ctx.strokeStyle='#EF4444';
+    ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);ctx.lineTo(pts[2].x,pts[2].y);ctx.stroke();
+    ctx.fillStyle='#EF4444';ctx.fillText('d_neg',(pts[0].x+pts[2].x)/2+15,(pts[0].y+pts[2].y)/2);
+    ctx.setLineDash([]);ctx.globalAlpha=1;
+  }
+  // Code flow
+  if(p>.5){
+    const code=[
+      {text:'d_pos = (a - p).pow(2).sum(-1)',color:'#00B894'},
+      {text:'d_neg = (a - n).pow(2).sum(-1)',color:'#EF4444'},
+      {text:'loss = relu(d_pos - d_neg + 0.2)',color:'#F59E0B'},
+      {text:'return loss.mean()',color:'#6C5CE7'}
+    ];
+    const cy=topY+180,lh=28;
+    for(let i=0;i<code.length;i++){
+      const cp=easeInOut(Math.max(0,Math.min(1,(p-.5-i*.1)/.1)));
+      ctx.globalAlpha=cp;ctx.fillStyle=code[i].color+'1A';ctx.strokeStyle=code[i].color+'44';ctx.lineWidth=1;
+      drawRR(20,cy+i*lh,W-40,lh-4,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle=code[i].color;ctx.font='11px Courier New';ctx.textAlign='left';
+      ctx.fillText(code[i].text,30,cy+i*lh+lh/2+3);
+      ctx.globalAlpha=1;
+    }
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=5;
+  const code=[
+    {text:'sim = emb_a @ emb_b.t()       # [N,N]',color:'#0984E3',t:0},
+    {text:'mask_pos = eye(N).bool()       # 对角线',color:'#00B894',t:.1},
+    {text:'mask_neg = ~mask_pos           # 非对角线',color:'#EF4444',t:.18},
+    {text:'s_p = sim[mask_pos]            # 正样本',color:'#00B894',t:.26},
+    {text:'s_n = sim[mask_neg].view(N,N-1) # 负样本',color:'#EF4444',t:.34},
+    {text:'',color:'#94A3B8',t:.4},
+    {text:'# 自适应权重',color:'#64748B',t:.42},
+    {text:'α_p = relu(O_p - s_p.detach())',color:'#F59E0B',t:.48},
+    {text:'α_n = relu(s_n.detach() - O_n)',color:'#F59E0B',t:.56},
+    {text:'',color:'#94A3B8',t:.62},
+    {text:'logit_p = -γ * α_p * (s_p - m)',color:'#6C5CE7',t:.65},
+    {text:'logit_n =  γ * α_n * (s_n + m)',color:'#6C5CE7',t:.73},
+    {text:'',color:'#94A3B8',t:.8},
+    {text:'loss = softplus(lse(logit_n) + lse(logit_p))',color:'#EF4444',t:.85}
+  ];
+  const lh=24;
+  for(let i=0;i<code.length;i++){
+    if(!code[i].text)continue;
+    const cp=easeInOut(Math.max(0,Math.min(1,(p-code[i].t)/.08)));
+    const y=topY+i*lh;
+    const isActive=animProgress>code[i].t&&animProgress<code[i].t+.08;
+    ctx.globalAlpha=cp;
+    if(isActive){ctx.fillStyle=code[i].color+'22';ctx.fillRect(10,y,W-20,lh-2)}
+    ctx.fillStyle='#64748B';ctx.font='9px Courier New';ctx.textAlign='right';
+    ctx.fillText(String(i+1),10,y+lh/2+2);
+    ctx.fillStyle=code[i].color;ctx.font='11px Courier New';ctx.textAlign='left';
+    ctx.fillText(code[i].text,18,y+lh/2+3);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=10;
+  // Mining visualization
+  ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(108,92,231,${easeInOut(Math.min(1,p/.1))})`;
+  ctx.fillText('HardNegativeMiner 选择过程',cx,topY+10);
+  // Similarity scores
+  const scores=[.92,.78,.65,.45,.31,.18,.05,-.12];
+  const labels=['正','正','负','负','负','负','负','负'];
+  const barW=W-60,barH=22,barX=30,startY=topY+30;
+  for(let i=0;i<scores.length;i++){
+    const delay=.1+i*.08;const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.1)));
+    const y=startY+i*(barH+6);
+    const isPos=labels[i]==='正';
+    const isHardNeg=!isPos&&i<=3;
+    ctx.globalAlpha=sp;
+    // Score bar
+    const w=Math.max(0,(scores[i]+.2)/1.2)*barW*.6;
+    ctx.fillStyle=isPos?'rgba(0,184,148,.3)':isHardNeg?'rgba(239,68,68,.4)':'rgba(100,116,139,.2)';
+    drawRR(barX,y,w,barH,4);ctx.fill();
+    if(isHardNeg&&p>.7){ctx.strokeStyle='#EF4444';ctx.lineWidth=2;drawRR(barX,y,w,barH,4);ctx.stroke()}
+    // Label
+    ctx.fillStyle=isPos?'#00B894':isHardNeg?'#EF4444':'#64748B';
+    ctx.font='10px Courier New';ctx.textAlign='left';
+    ctx.fillText(`sim=${scores[i].toFixed(2)} [${labels[i]}]`,barX+w+8,y+barH/2+3);
+    if(isHardNeg&&p>.7){ctx.fillStyle='#F59E0B';ctx.font='bold 10px PingFang SC';ctx.fillText('← HARD',barX+w+120,y+barH/2+3)}
+    ctx.globalAlpha=1;
+  }
+  // Explanation
+  if(p>.8){
+    const ep=easeInOut((p-.8)/.2);ctx.globalAlpha=ep;
+    ctx.fillStyle='rgba(249,158,11,.1)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=1;
+    const ey=startY+scores.length*(barH+6)+10;
+    drawRR(barX,ey,barW,35,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('Hardest: 选相似度最高的负样本 (最容易混淆)',cx,ey+22);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=10;
+  // Dual tower architecture
+  const tw=110,th=200,gap=80;
+  // Image tower
+  const ip=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=ip;
+  ctx.fillStyle='rgba(9,132,227,.08)';ctx.strokeStyle='#0984E3';ctx.lineWidth=2;
+  drawRR(cx-tw-gap/2,topY+30,tw,th,10);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('图像塔',cx-tw/2-gap/2,topY+20);
+  // Layers
+  const imgLayers=['patch_embed','+ pos_embed','TransformerEnc','img_norm','CLS pool','img_proj','L2 normalize'];
+  for(let i=0;i<imgLayers.length;i++){
+    const delay=i*.03;const lp=easeInOut(Math.max(0,Math.min(1,(p-.05-delay)/.1)));
+    const y=topY+40+i*25;
+    ctx.globalAlpha=lp;ctx.fillStyle='#0984E31A';ctx.strokeStyle='#0984E366';ctx.lineWidth=1;
+    drawRR(cx-tw-gap/2+5,y,tw-10,20,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='9px Courier New';ctx.textAlign='center';
+    ctx.fillText(imgLayers[i],cx-tw/2-gap/2,y+13);
+    ctx.globalAlpha=1;
+  }
+  // Text tower
+  if(p>.3){
+    const tp=easeInOut((p-.3)/.3);ctx.globalAlpha=tp;
+    ctx.fillStyle='rgba(0,184,148,.08)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(cx+gap/2,topY+30,tw,th,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 13px PingFang SC';
+    ctx.fillText('文本塔',cx+tw/2+gap/2,topY+20);
+    const txtLayers=['tok_embed','+ pos_embed','TransformerEnc','txt_norm','Mean pool','txt_proj','L2 normalize'];
+    for(let i=0;i<txtLayers.length;i++){
+      const delay=.3+i*.03;const lp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.1)));
+      const y=topY+40+i*25;
+      ctx.globalAlpha=lp;ctx.fillStyle='#00B8941A';ctx.strokeStyle='#00B89466';ctx.lineWidth=1;
+      drawRR(cx+gap/2+5,y,tw-10,20,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#00B894';ctx.font='9px Courier New';ctx.textAlign='center';
+      ctx.fillText(txtLayers[i],cx+tw/2+gap/2,y+13);
+      ctx.globalAlpha=1;
+    }
+  }
+  // Similarity computation
+  if(p>.7){
+    const sp=easeInOut((p-.7)/.3);ctx.globalAlpha=sp;
+    const sy=topY+th+45;
+    // Output arrows
+    ctx.strokeStyle='#0984E3';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(cx-gap/2,topY+30+th);ctx.lineTo(cx-gap/2,sy);ctx.lineTo(cx-15,sy);ctx.stroke();
+    ctx.strokeStyle='#00B894';
+    ctx.beginPath();ctx.moveTo(cx+gap/2,topY+30+th);ctx.lineTo(cx+gap/2,sy);ctx.lineTo(cx+15,sy);ctx.stroke();
+    // Similarity box
+    ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(cx-70,sy-15,140,30,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 12px Courier New';ctx.textAlign='center';
+    ctx.fillText('scale * a @ b.T',cx,sy+4);
+    // Temperature
+    ctx.fillStyle='#6C5CE7';ctx.font='11px PingFang SC';
+    ctx.fillText('logit_scale = exp(log(1/τ))',cx,sy+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

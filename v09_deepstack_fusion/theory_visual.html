@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v09 DeepStack 深层融合 - 原理可视化</title>
+<style>
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v09</span>
+  <h1>DeepStack 深层融合</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/5</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: '多层特征的语义差异',
+    desc: '深度神经网络不同层提取的特征具有不同的<strong>语义层级</strong>：<br><br>• <strong>浅层</strong>（Layer 1-2）：提取纹理、颜色、边缘等<strong>底层视觉特征</strong><br>• <strong>中层</strong>（Layer 3-4）：提取物体部件、局部结构等<strong>中层语义</strong><br>• <strong>深层</strong>（Layer 5-6）：提取抽象语义、类别概念等<strong>高层语义</strong><br><br>传统方法只使用最后一层，<strong>丢失了丰富的多层信息</strong>。',
+    formula: '浅层: 纹理/颜色/边缘 → 感知特征\n中层: 部件/结构 → 物体特征\n深层: 类别/语义 → 抽象概念' },
+  { title: 'DeepStack 核心思想',
+    desc: 'DeepStack 的核心思想：<strong>从多个层提取特征，堆叠融合</strong>，获得更丰富的 embedding。<br><br>流程：<br>1. 输入经过编码器的多层 Transformer Block<br>2. 在<strong>指定层</strong>（如 Layer 2, 4, 6）提取中间特征<br>3. 将多层特征通过<strong>融合模块</strong>合并为统一 embedding<br>4. 最终 embedding 同时包含浅层感知 + 深层语义<br><br>这样的 embedding 在检索、匹配等任务中表现更好。',
+    formula: 'feat_i = Encoder.layer_i(x)  (i ∈ extract_layers)\nembedding = Fusion(feat_1, feat_2, ..., feat_n)\nembedding = L2Normalize(embedding)' },
+  { title: '4 种融合策略对比',
+    desc: '四种常用的多层特征融合策略：<br><br>1. <strong>Concat 拼接</strong>：直接拼接 + 线性投影降维，最简单<br>2. <strong>WeightedSum 加权求和</strong>：可学习权重 softmax → 加权平均<br>3. <strong>Attention 注意力</strong>：用可学习 query 对各层做注意力聚合<br>4. <strong>Gated 门控</strong>：每层有独立门控网络，选择性融合<br><br>复杂度递增，表达能力也递增。实践中 <strong>Attention 和 Gated</strong> 效果最佳。',
+    formula: 'Concat:  proj(cat(f1,f2,...,fn))\nWeighted: proj(Σ softmax(w_i)·f_i)\nAttention: proj(Attn(query, [f1..fn]))\nGated:   proj(Σ σ(g_i(f_i))·f_i)' },
+  { title: '多层 Loss：每层施加 InfoNCE',
+    desc: '仅在融合后的 embedding 上施加 Loss 不够——<strong>各层中间特征也需要监督信号</strong>。<br><br>DeepStack 在每个提取层分别施加 <strong>InfoNCE Loss</strong>：<br>• 每层的图像特征和文本特征各自投影到 embed_dim<br>• 计算各层的对比 Loss<br>• 最终 Loss = 融合层 Loss + Σ(各层 Loss × 权重)<br><br>这样每层都能学到<strong>对齐的跨模态表示</strong>，融合效果更好。',
+    formula: 'L_layer_i = InfoNCE(proj_i(img_feat_i), proj_i(txt_feat_i))\nL_fused = InfoNCE(fused_img, fused_txt)\nL_total = L_fused + Σ λ_i · L_layer_i' },
+  { title: 'DeepStack + 对比学习完整流程',
+    desc: '完整的 DeepStack 训练流程：<br><br>1. <strong>图像/文本</strong>分别进入各自编码器<br>2. 编码器逐层前向，在指定层<strong>提取中间特征</strong><br>3. 中间特征分别经过<strong>层投影头</strong>→ 各层 embedding → 各层 InfoNCE Loss<br>4. 中间特征送入<strong>融合模块</strong>（Concat/Weighted/Attention/Gated）→ 融合 embedding<br>5. 融合 embedding 做<strong>对比学习</strong>（温度缩放 + InfoNCE）<br>6. 总 Loss = 融合 Loss + 各层 Loss → 反向传播',
+    formula: 'img → PatchEmbed → [Layers] → intermediates\ntxt → TokenEmbed → [Layers] → intermediates\neach layer: proj → InfoNCE\nfusion(intermediates) → fused_emb → InfoNCE\nL = L_fused + Σ λ_i · L_layer_i' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+function drawArrow(x1,y1,x2,y2,color,alpha){
+  ctx.globalAlpha=alpha; ctx.strokeStyle=color; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  const a=Math.atan2(y2-y1,x2-x1);
+  ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a-.3),y2-8*Math.sin(a-.3)); ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a+.3),y2-8*Math.sin(a+.3)); ctx.stroke();
+  ctx.globalAlpha=1;
+}
+function drawBox(x,y,w,h,label,color,alpha,r){
+  r=r||8;
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle=color+'22'; ctx.strokeStyle=color;
+  drawRoundRect(x,y,w,h,r); ctx.fill(); ctx.stroke();
+  ctx.fillStyle=color; ctx.font='13px PingFang SC'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label,x+w/2,y+h/2);
+  ctx.globalAlpha=1;
+}
+
+// Step 0: 多层特征语义差异
+function renderStep0(p) {
+  const cx=W/2, layers=3;
+  const labels=['浅层 (Layer 1-2)', '中层 (Layer 3-4)', '深层 (Layer 5-6)'];
+  const features=['纹理 / 颜色 / 边缘', '物体部件 / 局部结构', '抽象语义 / 类别概念'];
+  const colors=['#EF4444','#F59E0B','#6C5CE7'];
+  const imgW=120, imgH=90;
+  
+  // 输入图像
+  const ip=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ip;
+  ctx.fillStyle='#1A1F2E'; ctx.strokeStyle='#94A3B8';
+  drawRoundRect(30,H/2-45,80,90,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#94A3B8'; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText('输入',70,H/2-55);
+  ctx.fillText('图像',70,H/2);
+  ctx.globalAlpha=1;
+
+  for(let i=0;i<layers;i++){
+    const delay=.15+i*.2;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=160+i*(imgW+60), y=30+i*80;
+    
+    // Layer block
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=colors[i]+'1A'; ctx.strokeStyle=colors[i]+'99';
+    drawRoundRect(x,y,imgW,imgH,10); ctx.fill(); ctx.stroke();
+    
+    // Feature visualization
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x+4,y+4,imgW-8,imgH-8); ctx.clip();
+    if(i===0){
+      // Textures - grid pattern
+      for(let gx=0;gx<6;gx++) for(let gy=0;gy<4;gy++){
+        ctx.fillStyle=`hsla(${gx*60+gy*30},70%,50%,${ap*.4})`;
+        ctx.fillRect(x+6+gx*18,y+6+gy*20,16,18);
+      }
+    } else if(i===1){
+      // Parts - circles and shapes
+      const shapes=[[20,20],[50,40],[80,25],[35,60],[70,65]];
+      shapes.forEach(([sx,sy])=>{
+        ctx.fillStyle=`rgba(245,158,11,${ap*.5})`;
+        ctx.beginPath(); ctx.arc(x+sx,y+sy,12,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle=`rgba(245,158,11,${ap*.8})`; ctx.stroke();
+      });
+    } else {
+      // Abstract - connected nodes
+      ctx.fillStyle=`rgba(108,92,231,${ap*.6})`;
+      ctx.font='bold 20px PingFang SC'; ctx.textAlign='center';
+      ctx.fillText('🏷️',x+30,y+35);
+      ctx.fillText('📦',x+60,y+55);
+      ctx.fillText('💡',x+90,y+35);
+    }
+    ctx.restore();
+    
+    // Label
+    ctx.fillStyle=colors[i]; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(labels[i],x+imgW/2,y+imgH+20);
+    ctx.fillStyle=colors[i]+'BB'; ctx.font='12px PingFang SC';
+    ctx.fillText(features[i],x+imgW/2,y+imgH+38);
+    ctx.globalAlpha=1;
+    
+    // Arrow from prev
+    if(i>0 && ap>.3){
+      const px=160+(i-1)*(imgW+60)+imgW, py=30+(i-1)*80+imgH/2;
+      drawArrow(px+5,py,x-5,y+imgH/2,colors[i],ap*.6);
+    }
+  }
+  
+  // Arrow from input
+  if(p>.15){
+    drawArrow(115,H/2,155,30+imgH/2,'#94A3B8',easeInOut((p-.15)/.15)*.5);
+  }
+  
+  // Bottom note
+  if(p>.85){
+    const np=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=np; ctx.fillStyle='var(--accent)'; ctx.font='14px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('⚠️ 传统方法只使用最后一层 → 丢失了浅层和中层的丰富信息',W/2,H-25);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: DeepStack 核心思想
+function renderStep1(p) {
+  const cx=W/2;
+  // Encoder layers
+  const layerH=30, layerW=100, gap=8, numLayers=6;
+  const startY=30;
+  const extractLayers=[1,3,5]; // 0-indexed
+  const extractColors=['#EF4444','#F59E0B','#6C5CE7'];
+  
+  // Input
+  const ip=easeInOut(Math.min(1,p/.15));
+  drawBox(cx-60,startY-5,120,30,'输入 (Image/Text)','#94A3B8',ip);
+  
+  // Draw layers
+  for(let i=0;i<numLayers;i++){
+    const delay=.1+i*.08;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=startY+35+i*(layerH+gap);
+    const isExtract=extractLayers.includes(i);
+    const color=isExtract?extractColors[extractLayers.indexOf(i)]:'#64748B';
+    
+    drawBox(cx-layerW/2,y,layerW,layerH,`Layer ${i+1}`,color,ap);
+    
+    // Extract arrow
+    if(isExtract && p>delay+.15){
+      const ep=easeInOut(Math.max(0,Math.min(1,(p-delay-.15)/.2)));
+      const ei=extractLayers.indexOf(i);
+      drawArrow(cx+layerW/2+5,y+layerH/2,cx+layerW/2+60,y+layerH/2,color,ep);
+      
+      // Feature box
+      ctx.globalAlpha=ep;
+      ctx.fillStyle=color+'22'; ctx.strokeStyle=color;
+      drawRoundRect(cx+layerW/2+65,y,80,layerH,6); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=color; ctx.font='11px PingFang SC'; ctx.textAlign='center';
+      ctx.fillText(`feat_${ei+1}`,cx+layerW/2+105,y+layerH/2+4);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Fusion module
+  if(p>.6){
+    const fp=easeInOut((p-.6)/.2);
+    const fusionX=cx+layerW/2+170, fusionY=startY+100;
+    drawBox(fusionX,fusionY,100,50,'融合模块\nFusion','#00B894',fp);
+    
+    // Arrows from features to fusion
+    for(let i=0;i<3;i++){
+      const y=startY+35+extractLayers[i]*(layerH+gap)+layerH/2;
+      drawArrow(cx+layerW/2+145,y,fusionX,fusionY+25,extractColors[i],fp*.5);
+    }
+  }
+  
+  // Output embedding
+  if(p>.8){
+    const op=easeInOut((p-.8)/.2);
+    const fusionX=cx+layerW/2+170;
+    drawBox(fusionX,startY+170,100,35,'Embedding','#00B894',op);
+    drawArrow(fusionX+50,startY+150,fusionX+50,startY+170,'#00B894',op);
+    
+    ctx.globalAlpha=op; ctx.fillStyle='#00B894'; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('浅层感知+深层语义',fusionX+50,startY+220);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: 4种融合策略
+function renderStep2(p) {
+  const methods=[
+    {name:'Concat 拼接', color:'#EF4444', desc:'直接拼接→投影'},
+    {name:'WeightedSum 加权', color:'#F59E0B', desc:'softmax权重→加权和'},
+    {name:'Attention 注意力', color:'#0984E3', desc:'query→注意力聚合'},
+    {name:'Gated 门控', color:'#6C5CE7', desc:'门控网络→选择融合'}
+  ];
+  const colW=W/4, feats=3;
+  
+  for(let m=0;m<4;m++){
+    const delay=m*.15;
+    const mp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const mx=m*colW+colW/2;
+    
+    // Title
+    ctx.globalAlpha=mp;
+    ctx.fillStyle=methods[m].color; ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(methods[m].name,mx,25);
+    ctx.fillStyle=methods[m].color+'AA'; ctx.font='11px PingFang SC';
+    ctx.fillText(methods[m].desc,mx,42);
+    ctx.globalAlpha=1;
+    
+    // Input features (3 boxes)
+    const featY=60, featH=25, featW=60;
+    for(let f=0;f<feats;f++){
+      const fp=easeInOut(Math.max(0,Math.min(1,(p-delay-.1-f*.05)/.15)));
+      const fy=featY+f*(featH+8);
+      drawBox(mx-featW/2,fy,featW,featH,`feat_${f+1}`,['#EF4444','#F59E0B','#6C5CE7'][f],fp);
+    }
+    
+    // Fusion animation per method
+    const fusionY=featY+feats*(featH+8)+20;
+    if(p>delay+.25){
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay-.25)/.3)));
+      
+      if(m===0){
+        // Concat: horizontal bars merging
+        for(let f=0;f<feats;f++){
+          const fw=featW*ap/feats;
+          ctx.globalAlpha=ap;
+          ctx.fillStyle=['#EF4444','#F59E0B','#6C5CE7'][f]+'66';
+          ctx.fillRect(mx-featW/2+f*(fw+1),fusionY,fw,20);
+          ctx.globalAlpha=1;
+        }
+        ctx.globalAlpha=ap; ctx.strokeStyle=methods[m].color;
+        drawRoundRect(mx-featW/2-2,fusionY-2,featW+4,24,4); ctx.stroke();
+        ctx.globalAlpha=1;
+      } else if(m===1){
+        // Weighted: show weights
+        const ws=[0.2,0.35,0.45];
+        for(let f=0;f<feats;f++){
+          ctx.globalAlpha=ap; ctx.fillStyle=['#EF4444','#F59E0B','#6C5CE7'][f];
+          ctx.font='11px Courier New'; ctx.textAlign='center';
+          ctx.fillText(`w=${ws[f].toFixed(2)}`,mx,fusionY+f*16);
+          ctx.globalAlpha=1;
+        }
+      } else if(m===2){
+        // Attention: query node + connections
+        ctx.globalAlpha=ap;
+        ctx.fillStyle='#0984E3'+'33'; ctx.strokeStyle='#0984E3';
+        ctx.beginPath(); ctx.arc(mx,fusionY+15,12,0,Math.PI*2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle='#0984E3'; ctx.font='10px PingFang SC'; ctx.textAlign='center';
+        ctx.fillText('Q',mx,fusionY+19);
+        for(let f=0;f<feats;f++){
+          const fy=featY+f*(featH+8)+featH;
+          ctx.strokeStyle='#0984E3'+'66'; ctx.lineWidth=1+f*.5;
+          ctx.beginPath(); ctx.moveTo(mx,fusionY+3); ctx.lineTo(mx,fy); ctx.stroke();
+        }
+        ctx.globalAlpha=1;
+      } else {
+        // Gated: gate symbols
+        for(let f=0;f<feats;f++){
+          ctx.globalAlpha=ap;
+          ctx.fillStyle=['#EF4444','#F59E0B','#6C5CE7'][f]+'88';
+          const gateV=[0.3,0.8,0.9][f];
+          ctx.fillRect(mx-25,fusionY+f*16,50*gateV*ap,12);
+          ctx.strokeStyle=['#EF4444','#F59E0B','#6C5CE7'][f]; ctx.lineWidth=1;
+          drawRoundRect(mx-25,fusionY+f*16,50,12,3); ctx.stroke();
+          ctx.fillStyle='#fff'; ctx.font='9px Courier New'; ctx.textAlign='center';
+          ctx.fillText(`σ=${gateV}`,mx,fusionY+f*16+10);
+          ctx.globalAlpha=1;
+        }
+      }
+    }
+    
+    // Output
+    if(p>delay+.5){
+      const op=easeInOut(Math.max(0,Math.min(1,(p-delay-.5)/.2)));
+      const outY=fusionY+60;
+      drawBox(mx-30,outY,60,25,'emb',methods[m].color,op);
+      drawArrow(mx,fusionY+50,mx,outY,methods[m].color,op*.5);
+    }
+  }
+}
+
+// Step 3: 多层 Loss
+function renderStep3(p) {
+  const cx=W/2;
+  const layers=3;
+  const layerNames=['Layer 2','Layer 4','Layer 6'];
+  const colors=['#EF4444','#F59E0B','#6C5CE7'];
+  
+  // Two columns: image and text
+  const imgX=cx-130, txtX=cx+130;
+  
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  const hp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=hp;
+  ctx.fillStyle='#0984E3'; ctx.fillText('图像编码器',imgX,25);
+  ctx.fillStyle='#00B894'; ctx.fillText('文本编码器',txtX,25);
+  ctx.globalAlpha=1;
+  
+  for(let i=0;i<layers;i++){
+    const delay=.1+i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=50+i*100;
+    
+    // Image layer
+    drawBox(imgX-45,y,90,30,layerNames[i],colors[i],ap);
+    // Text layer
+    drawBox(txtX-45,y,90,30,layerNames[i],colors[i],ap);
+    
+    // Projections
+    if(p>delay+.15){
+      const pp=easeInOut(Math.max(0,Math.min(1,(p-delay-.15)/.15)));
+      // img proj
+      drawBox(imgX-30,y+38,60,22,`proj_${i+1}`,'#94A3B8',pp);
+      drawArrow(imgX,y+30,imgX,y+38,'#94A3B8',pp*.5);
+      // txt proj
+      drawBox(txtX-30,y+38,60,22,`proj_${i+1}`,'#94A3B8',pp);
+      drawArrow(txtX,y+30,txtX,y+38,'#94A3B8',pp*.5);
+    }
+    
+    // InfoNCE Loss between them
+    if(p>delay+.25){
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-delay-.25)/.2)));
+      ctx.globalAlpha=lp;
+      ctx.strokeStyle=colors[i]; ctx.lineWidth=2; ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.moveTo(imgX+30,y+49); ctx.lineTo(txtX-30,y+49); ctx.stroke();
+      ctx.setLineDash([]);
+      
+      // Loss label
+      ctx.fillStyle=colors[i]; ctx.font='bold 12px PingFang SC'; ctx.textAlign='center';
+      ctx.fillText(`InfoNCE L_${i+1}`,cx,y+45);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Total loss at bottom
+  if(p>.8){
+    const tp=easeInOut((p-.8)/.2);
+    const totalY=50+layers*100+10;
+    drawBox(cx-80,totalY,160,35,'L_total = L_fused + Σλ·L_i','#00B894',tp);
+  }
+}
+
+// Step 4: 完整流程
+function renderStep4(p) {
+  const cx=W/2;
+  const stages=[
+    {label:'图像/文本输入',color:'#94A3B8',x:cx,y:15},
+    {label:'编码器逐层前向',color:'#0984E3',x:cx,y:60},
+    {label:'指定层提取中间特征',color:'#F59E0B',x:cx-100,y:110},
+    {label:'各层投影头',color:'#EF4444',x:cx-100,y:155},
+    {label:'各层 InfoNCE Loss',color:'#EF4444',x:cx-100,y:200},
+    {label:'融合模块',color:'#6C5CE7',x:cx+100,y:110},
+    {label:'融合 Embedding',color:'#6C5CE7',x:cx+100,y:155},
+    {label:'对比学习 InfoNCE',color:'#00B894',x:cx+100,y:200},
+    {label:'总 Loss = 融合Loss + Σ层Loss',color:'#00B894',x:cx,y:255},
+    {label:'反向传播更新',color:'var(--warn)',x:cx,y:300},
+  ];
+  
+  const bw=150, bh=30;
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.08;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    drawBox(s.x-bw/2,s.y,bw,bh,s.label,s.color,ap);
+  }
+  
+  // Arrows
+  const arrows=[
+    [0,1],[1,2],[1,5],[2,3],[3,4],[5,6],[6,7],[4,8],[7,8],[8,9]
+  ];
+  for(let i=0;i<arrows.length;i++){
+    const [from,to]=arrows[i];
+    const delay=Math.max(from,to)*.08+.1;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const s1=stages[from], s2=stages[to];
+    if(ap>0){
+      drawArrow(s1.x,s1.y+bh,s2.x,s2.y,s1.color,ap*.4);
+    }
+  }
+  
+  // Highlight data flow
+  if(p>.85){
+    const hp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=hp*.3;
+    ctx.strokeStyle='#00B894'; ctx.lineWidth=3;
+    ctx.setLineDash([6,4]);
+    drawRoundRect(stages[2].x-bw/2-10,stages[2].y-5,bw+20,stages[4].y+bh-stages[2].y+10,10);
+    ctx.stroke();
+    drawRoundRect(stages[5].x-bw/2-10,stages[5].y-5,bw+20,stages[7].y+bh-stages[5].y+10,10);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2500;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; } else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

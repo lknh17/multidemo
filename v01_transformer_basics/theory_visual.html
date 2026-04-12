@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v01 Transformer 基础 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+/* Header */
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+/* Main */
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; }
+/* Controls */
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v01</span>
+  <h1>Transformer 基础</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/7</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: '为什么需要 Transformer？',
+    desc: '传统 RNN 按时间步<strong>串行</strong>处理序列，无法并行且长距离依赖衰减严重。<br><br>Transformer 的核心创新：<strong>用注意力机制完全替代递归</strong>。每个位置可以直接"看到"所有其他位置，实现 O(1) 的直接连接。<br><br>右侧动画展示：RNN 的信息需要逐步传递（上方），而 Transformer 每个位置可以直接与所有位置交互（下方）。',
+    formula: 'RNN: h_t = f(h_{t-1}, x_t)  ← 串行依赖\nTransformer: Attn(Q,K,V) ← 全局并行' },
+  { title: '自注意力 (Self-Attention)',
+    desc: '每个 token 的表示被线性变换为 <strong>Query (查询)</strong>、<strong>Key (键)</strong>、<strong>Value (值)</strong> 三个向量。<br><br>Query 代表"想找什么"，Key 代表"有什么可以提供"，Value 代表"实际内容"。<br><br>通过 Q·K^T 计算所有 token 对之间的<strong>注意力分数</strong>，再用 Softmax 归一化后加权求和 Value。<br><br>动画展示：4 个 token 的 Q·K^T 注意力分数<strong>热力图</strong>。',
+    formula: 'Attention(Q,K,V) = Softmax(Q·K^T / √d_k) · V' },
+  { title: '缩放 & Softmax 归一化',
+    desc: '为什么要除以 <strong>√d_k</strong>？<br><br>假设 Q 和 K 的元素是均值 0、方差 1 的随机变量，则点积的方差为 d_k。当 d_k 很大时，点积值会很大，导致 Softmax 进入<strong>饱和区</strong>（梯度接近 0）。<br><br>除以 √d_k 将方差重新拉回 1，让 Softmax 的梯度保持健康。<br><br>动画展示：<strong>缩放前后</strong> Softmax 分布的对比——缩放前极端，缩放后平滑。',
+    formula: 'score(i,j) = Q_i · K_j^T / √d_k\nα_ij = exp(score_ij) / Σ_k exp(score_ik)' },
+  { title: '多头注意力 (Multi-Head)',
+    desc: '单一注意力头只能学一种"关注模式"。语言中存在多种关系（语法、语义、位置等），需要<strong>多个头并行</strong>学习。<br><br>将 d_model 维度拆成 h 个头，每个头的维度 d_k = d_model/h。各头独立计算注意力后<strong>拼接 + 输出投影</strong>。<br><br>关键：多头<strong>不增加参数量</strong>（4·d_model² 与单头相同），但表达能力更强。',
+    formula: 'head_i = Attention(QW_i^Q, KW_i^K, VW_i^V)\nMultiHead = Concat(head_1,...,head_h)W^O' },
+  { title: '正弦位置编码',
+    desc: '自注意力是<strong>集合操作</strong>，对输入顺序不敏感。必须显式注入位置信息。<br><br>正弦编码使用不同频率的 sin/cos 函数为每个位置生成唯一的编码向量：<br>• 低维度变化快→捕捉<strong>局部</strong>位置<br>• 高维度变化慢→捕捉<strong>全局</strong>位置<br><br>动画展示：不同维度的正弦/余弦<strong>波形</strong>随位置变化。',
+    formula: 'PE(pos, 2i) = sin(pos / 10000^(2i/d))\nPE(pos, 2i+1) = cos(pos / 10000^(2i/d))' },
+  { title: '前馈网络 (FFN)',
+    desc: 'FFN 对每个位置<strong>独立</strong>应用相同的两层全连接网络：先升维到 4·d_model，再降维回 d_model。<br><br>这是 Transformer 中<strong>参数量最大</strong>的部分（8·d_model² vs 注意力的 4·d_model²）。<br><br>SwiGLU 是现代大模型（LLaMA/Qwen）的主流 FFN：通过门控机制让网络学习"让多少信息通过"。',
+    formula: 'FFN(x) = GELU(xW₁ + b₁)W₂ + b₂\nSwiGLU(x) = (Swish(xW_gate) ⊙ xW_up)W_down' },
+  { title: '完整 Transformer Block',
+    desc: '一个 Transformer Block = <strong>多头注意力 + FFN + 残差连接 + 层归一化</strong>。<br><br><strong>残差连接</strong>：output = sublayer(x) + x，让梯度可以直接传播到底层。<br><br><strong>Pre-Norm</strong>（现代做法）：先归一化再计算，比 Post-Norm 训练更稳定，是 GPT/LLaMA/Qwen 的标准做法。<br><br>动画展示：数据在完整 Block 中的<strong>流动路径</strong>。',
+    formula: 'Pre-Norm:\n  x → LayerNorm → MultiHeadAttn → +residual\n    → LayerNorm → FFN → +residual → output' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function hsl(h,s,l){ return `hsl(${h},${s}%,${l}%)`; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: RNN vs Transformer comparison
+function renderStep0(p) {
+  const cx=W/2, cy=H/2;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // RNN (top)
+  ctx.fillStyle='rgba(148,163,184,.6)'; ctx.fillText('RNN: 串行传递',cx,40);
+  const n=6, gap=70, sx=cx-n/2*gap+gap/2, sy=80;
+  for(let i=0;i<n;i++){
+    const x=sx+i*gap, delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='#1A1F2E'; ctx.strokeStyle='var(--text-dim)';
+    drawRoundRect(x-20,sy,40,40,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#94A3B8'; ctx.font='13px PingFang SC';
+    ctx.fillText('h'+i,x,sy+25);
+    if(i<n-1){
+      const arrP=easeInOut(Math.max(0,Math.min(1,(p-delay-.1)/.2)));
+      ctx.strokeStyle=`rgba(239,68,68,${arrP})`; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(x+22,sy+20); ctx.lineTo(x+gap-22,sy+20); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x+gap-27,sy+15); ctx.lineTo(x+gap-22,sy+20); ctx.lineTo(x+gap-27,sy+25); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+  // Transformer (bottom)
+  ctx.fillStyle='rgba(148,163,184,.6)'; ctx.font='bold 14px PingFang SC';
+  ctx.fillText('Transformer: 全局并行',cx,H/2+10);
+  const sy2=H/2+40;
+  for(let i=0;i<n;i++){
+    const x=sx+i*gap;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.5)/.3)));
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='rgba(108,92,231,.2)'; ctx.strokeStyle='rgba(108,92,231,.6)';
+    drawRoundRect(x-20,sy2,40,40,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#6C5CE7'; ctx.font='13px PingFang SC';
+    ctx.fillText('x'+i,x,sy2+25);
+    ctx.globalAlpha=1;
+  }
+  // connections
+  if(p>.6){
+    const cp=easeInOut((p-.6)/.4);
+    ctx.globalAlpha=cp*.4;
+    for(let i=0;i<n;i++) for(let j=0;j<n;j++){
+      if(i===j) continue;
+      ctx.strokeStyle='rgba(0,184,148,.3)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(sx+i*gap,sy2+42); ctx.lineTo(sx+j*gap,sy2+42); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Self-Attention heatmap
+function renderStep1(p) {
+  const tokens=['我','喜欢','深度','学习'];
+  const scores=[[.7,.1,.1,.1],[.15,.5,.2,.15],[.1,.2,.5,.2],[.05,.15,.2,.6]];
+  const sz=60, pad=4, sx=W/2-tokens.length*(sz+pad)/2, sy=60;
+  // QKV labels
+  ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+  const qp=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=qp;
+  for(let i=0;i<tokens.length;i++){
+    const x=sx+i*(sz+pad)+sz/2;
+    ctx.fillStyle='#6C5CE7'; ctx.fillText(tokens[i],x,sy-10);
+  }
+  for(let i=0;i<tokens.length;i++){
+    ctx.fillStyle='#00B894'; ctx.fillText(tokens[i],sx-40,sy+i*(sz+pad)+sz/2+5);
+  }
+  ctx.globalAlpha=1;
+  // Heatmap
+  ctx.font='bold 12px Courier New';
+  for(let i=0;i<4;i++) for(let j=0;j<4;j++){
+    const delay=(i*4+j)*.03;
+    const cp=easeInOut(Math.max(0,Math.min(1,(p-.3-delay)/.4)));
+    const v=scores[i][j]*cp;
+    const x=sx+j*(sz+pad), y=sy+i*(sz+pad);
+    const h=lerp(220,0,v), s=80, l=lerp(15,55,v);
+    ctx.fillStyle=hsl(h,s,l); drawRoundRect(x,y,sz,sz,6); ctx.fill();
+    ctx.fillStyle=`rgba(255,255,255,${.3+v*.7})`; ctx.textAlign='center';
+    ctx.fillText(scores[i][j].toFixed(2),x+sz/2,y+sz/2+5);
+  }
+  // Labels
+  if(p>.8){
+    ctx.font='14px PingFang SC'; ctx.fillStyle='var(--warn)'; ctx.textAlign='left';
+    ctx.fillText('← Query (行)',sx,sy+4*(sz+pad)+25);
+    ctx.fillText('↑ Key (列)',sx+4*(sz+pad)+10,sy-10);
+    ctx.fillText('暖色=高注意力  冷色=低注意力',sx,sy+4*(sz+pad)+48);
+  }
+  // Weighted sum visualization
+  if(p>.6){
+    const wp=easeInOut((p-.6)/.4);
+    const bx=sx, by=sy+4*(sz+pad)+70;
+    ctx.font='13px PingFang SC'; ctx.fillStyle=`rgba(0,184,148,${wp})`;
+    ctx.fillText('加权求和 Value → 输出',W/2,by+10);
+    for(let j=0;j<4;j++){
+      const x=sx+j*(sz+pad)+sz/2;
+      ctx.strokeStyle=`rgba(0,184,148,${wp*.5})`; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(x,sy+3*(sz+pad)+sz); ctx.lineTo(x,by+25); ctx.stroke();
+    }
+  }
+}
+
+// Step 2: Scale & Softmax
+function renderStep2(p) {
+  const cx=W/2, topY=50;
+  ctx.font='bold 15px PingFang SC'; ctx.textAlign='center';
+  // Before scaling
+  const vals1=[12.5,-3.2,18.7,1.1];
+  const soft1=[.0002,.0000,.9998,.0000];
+  const vals2=[1.77,-.45,2.65,.16];
+  const soft2=[.19,.02,.46,.04];
+  // Left: before
+  const bx=cx-160, by=topY;
+  ctx.fillStyle=`rgba(239,68,68,${easeInOut(Math.min(1,p/.3))})`;
+  ctx.fillText('缩放前 (d_k=50)',bx,by);
+  ctx.font='13px Courier New';
+  for(let i=0;i<4;i++){
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.1-i*.05)/.3)));
+    const y=by+30+i*36;
+    ctx.fillStyle=`rgba(239,68,68,${ap})`; ctx.textAlign='right';
+    ctx.fillText(vals1[i].toFixed(1),bx+10,y);
+    // bar
+    ctx.fillStyle=`rgba(239,68,68,${ap*.6})`;
+    drawRoundRect(bx+20,y-12,soft1[i]*200,18,4); ctx.fill();
+    ctx.fillStyle=`rgba(255,255,255,${ap})`; ctx.textAlign='left';
+    ctx.fillText((soft1[i]*100).toFixed(1)+'%',bx+25+soft1[i]*200,y);
+  }
+  // Right: after
+  const ax=cx+60;
+  ctx.font='bold 15px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle=`rgba(0,184,148,${easeInOut(Math.max(0,(p-.4)/.3))})`;
+  ctx.fillText('缩放后 (÷√50)',ax+80,by);
+  ctx.font='13px Courier New';
+  for(let i=0;i<4;i++){
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.5-i*.05)/.3)));
+    const y=by+30+i*36;
+    ctx.fillStyle=`rgba(0,184,148,${ap})`; ctx.textAlign='right';
+    ctx.fillText(vals2[i].toFixed(2),ax+10,y);
+    ctx.fillStyle=`rgba(0,184,148,${ap*.6})`;
+    drawRoundRect(ax+20,y-12,soft2[i]*200,18,4); ctx.fill();
+    ctx.fillStyle=`rgba(255,255,255,${ap})`; ctx.textAlign='left';
+    ctx.fillText((soft2[i]*100).toFixed(0)+'%',ax+25+soft2[i]*200,y);
+  }
+  // Arrow
+  if(p>.4){
+    const arp=easeInOut((p-.4)/.2);
+    ctx.strokeStyle=`rgba(249,158,11,${arp})`; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(cx-30,by+80); ctx.lineTo(cx+30,by+80); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+25,by+74); ctx.lineTo(cx+32,by+80); ctx.lineTo(cx+25,by+86); ctx.stroke();
+    ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+    ctx.fillStyle=`rgba(249,158,11,${arp})`; ctx.fillText('÷ √d_k',cx,by+72);
+  }
+  // Conclusion
+  if(p>.8){
+    ctx.font='14px PingFang SC'; ctx.fillStyle=`rgba(0,184,148,${easeInOut((p-.8)/.2)})`;
+    ctx.textAlign='center';
+    ctx.fillText('缩放后分布更平滑，梯度更健康',cx,by+210);
+  }
+}
+
+// Step 3: Multi-Head Attention
+function renderStep3(p) {
+  const cx=W/2, topY=30;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Input
+  const inputW=200, inputH=35;
+  const ip=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ip;
+  ctx.fillStyle='rgba(108,92,231,.2)'; ctx.strokeStyle='rgba(108,92,231,.6)';
+  drawRoundRect(cx-inputW/2,topY,inputW,inputH,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#E2E8F0'; ctx.fillText('输入 [B, L, d_model=128]',cx,topY+23);
+  ctx.globalAlpha=1;
+  // Split into heads
+  const heads=4, headW=80, headH=30, headY=topY+70, headGap=20;
+  const totalW=heads*(headW+headGap)-headGap;
+  const hsx=cx-totalW/2;
+  const colors=['#6C5CE7','#0984E3','#00B894','#F59E0B'];
+  for(let i=0;i<heads;i++){
+    const delay=.2+i*.1;
+    const hp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=hsx+i*(headW+headGap);
+    ctx.globalAlpha=hp;
+    ctx.fillStyle=colors[i]+'33'; ctx.strokeStyle=colors[i];
+    drawRoundRect(x,headY,headW,headH,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=colors[i]; ctx.font='12px PingFang SC';
+    ctx.fillText(`Head ${i+1}`,x+headW/2,headY+20);
+    ctx.fillStyle='rgba(255,255,255,.5)'; ctx.font='10px Courier New';
+    ctx.fillText(`[B,L,${128/heads}]`,x+headW/2,headY+headH+14);
+    // Arrow from input
+    ctx.strokeStyle=colors[i]+'88'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(cx,topY+inputH); ctx.lineTo(x+headW/2,headY); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Each head does attention
+  const attnY=headY+70;
+  if(p>.5){
+    for(let i=0;i<heads;i++){
+      const delay=.5+i*.08;
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+      const x=hsx+i*(headW+headGap);
+      ctx.globalAlpha=ap;
+      ctx.fillStyle='rgba(26,31,46,.8)'; ctx.strokeStyle=colors[i]+'88';
+      drawRoundRect(x,attnY,headW,25,5); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=colors[i]; ctx.font='11px PingFang SC';
+      ctx.fillText('Attention',x+headW/2,attnY+16);
+      ctx.globalAlpha=1;
+    }
+  }
+  // Concat
+  if(p>.75){
+    const cp=easeInOut((p-.75)/.25);
+    const concatY=attnY+55;
+    ctx.globalAlpha=cp;
+    ctx.fillStyle='rgba(0,184,148,.15)'; ctx.strokeStyle='rgba(0,184,148,.6)';
+    drawRoundRect(cx-110,concatY,220,35,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='bold 13px PingFang SC';
+    ctx.fillText('Concat + W_O 投影 → [B, L, 128]',cx,concatY+22);
+    for(let i=0;i<heads;i++){
+      ctx.strokeStyle=colors[i]+'66'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(hsx+i*(headW+headGap)+headW/2,attnY+25);
+      ctx.lineTo(cx,concatY); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Positional Encoding
+function renderStep4(p) {
+  const cx=W/2, topY=30, plotH=80, plotW=W-100;
+  const sx=50;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle=`rgba(108,92,231,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.fillText('正弦位置编码 — 不同维度的频率',cx,topY);
+  // Draw multiple sine waves
+  const dims=[0,2,4,8,16,32];
+  const colors=['#EF4444','#F59E0B','#10B981','#0984E3','#6C5CE7','#94A3B8'];
+  const dModel=64;
+  for(let d=0;d<dims.length;d++){
+    const delay=.1+d*.1;
+    const wp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const y=topY+30+d*(plotH+10);
+    // axis
+    ctx.strokeStyle='rgba(255,255,255,.1)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(sx,y+plotH/2); ctx.lineTo(sx+plotW,y+plotH/2); ctx.stroke();
+    // label
+    ctx.globalAlpha=wp;
+    ctx.fillStyle=colors[d]; ctx.font='11px Courier New'; ctx.textAlign='right';
+    ctx.fillText(`dim=${dims[d]}`,sx-5,y+plotH/2+4);
+    // wave
+    ctx.strokeStyle=colors[d]; ctx.lineWidth=2;
+    ctx.beginPath();
+    const freq=1.0/Math.pow(10000,dims[d]/dModel);
+    for(let px=0;px<=plotW*wp;px++){
+      const pos=px/plotW*50;
+      const val=Math.sin(pos*freq);
+      const py=y+plotH/2-val*(plotH/2-5);
+      px===0?ctx.moveTo(sx+px,py):ctx.lineTo(sx+px,py);
+    }
+    ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Caption
+  if(p>.8){
+    ctx.font='13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillStyle=`rgba(0,184,148,${easeInOut((p-.8)/.2)})`;
+    ctx.fillText('低维度→高频率（变化快，捕捉局部）  高维度→低频率（变化慢，捕捉全局）',cx,H-20);
+  }
+}
+
+// Step 5: FFN
+function renderStep5(p) {
+  const cx=W/2, topY=50;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Input box
+  const bw=140, bh=36;
+  const drawBox=(x,y,label,color,alpha)=>{
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=color+'22'; ctx.strokeStyle=color;
+    drawRoundRect(x-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=color; ctx.font='13px PingFang SC';
+    ctx.fillText(label,x,y+22);
+    ctx.globalAlpha=1;
+  };
+  const drawArrow=(x1,y1,x2,y2,color,alpha)=>{
+    ctx.globalAlpha=alpha; ctx.strokeStyle=color; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    const angle=Math.atan2(y2-y1,x2-x1);
+    ctx.beginPath(); ctx.moveTo(x2,y2);
+    ctx.lineTo(x2-8*Math.cos(angle-0.3),y2-8*Math.sin(angle-0.3));
+    ctx.moveTo(x2,y2);
+    ctx.lineTo(x2-8*Math.cos(angle+0.3),y2-8*Math.sin(angle+0.3));
+    ctx.stroke(); ctx.globalAlpha=1;
+  };
+  const p1=easeInOut(Math.min(1,p/.2));
+  drawBox(cx,topY,'输入 [d_model=128]','#6C5CE7',p1);
+  const p2=easeInOut(Math.max(0,Math.min(1,(p-.2)/.2)));
+  drawArrow(cx,topY+bh,cx,topY+bh+30,'#F59E0B',p2);
+  drawBox(cx,topY+bh+35,'升维 W₁ → [d_ff=512]','#F59E0B',p2);
+  const p3=easeInOut(Math.max(0,Math.min(1,(p-.4)/.2)));
+  drawArrow(cx,topY+2*bh+35,cx,topY+2*bh+65,'#10B981',p3);
+  drawBox(cx,topY+2*bh+70,'GELU 激活','#10B981',p3);
+  const p4=easeInOut(Math.max(0,Math.min(1,(p-.6)/.2)));
+  drawArrow(cx,topY+3*bh+70,cx,topY+3*bh+100,'#0984E3',p4);
+  drawBox(cx,topY+3*bh+105,'降维 W₂ → [d_model=128]','#0984E3',p4);
+  // Parameter count
+  if(p>.8){
+    const pp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=pp; ctx.font='13px PingFang SC'; ctx.fillStyle='var(--warn)'; ctx.textAlign='left';
+    ctx.fillText(`参数量: 2 × 128 × 512 = 131,072`,cx+100,topY+2*bh+90);
+    ctx.fillText(`(占 Transformer 层的 ~67%)`,cx+100,topY+2*bh+112);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 6: Full Transformer Block
+function renderStep6(p) {
+  const cx=W/2, topY=20;
+  const bw=180, bh=32, gap=15;
+  const drawModule=(x,y,label,color,alpha)=>{
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=color+'1A'; ctx.strokeStyle=color+'99';
+    drawRoundRect(x-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=color; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(label,x,y+21);
+    ctx.globalAlpha=1;
+  };
+  let y=topY;
+  const stages=[
+    {label:'输入 x',color:'#94A3B8',t:0},
+    {label:'LayerNorm',color:'#F59E0B',t:.1},
+    {label:'Multi-Head Attention',color:'#6C5CE7',t:.2},
+    {label:'+ 残差连接',color:'#EF4444',t:.35},
+    {label:'LayerNorm',color:'#F59E0B',t:.45},
+    {label:'FFN (SwiGLU)',color:'#0984E3',t:.55},
+    {label:'+ 残差连接',color:'#EF4444',t:.65},
+    {label:'输出',color:'#00B894',t:.8},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-stages[i].t)/.15)));
+    drawModule(cx,y,stages[i].label,stages[i].color,sp);
+    if(i<stages.length-1 && sp>.5){
+      ctx.strokeStyle=stages[i].color+'44'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(cx,y+bh); ctx.lineTo(cx,y+bh+gap); ctx.stroke();
+    }
+    y+=bh+gap;
+  }
+  // Residual connection arcs
+  if(p>.35){
+    const rp=easeInOut((p-.35)/.15);
+    ctx.globalAlpha=rp*.6; ctx.strokeStyle='#EF4444'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
+    // First residual: from input(0) to +residual(3)
+    const y0=topY+bh/2, y3=topY+3*(bh+gap)+bh/2;
+    ctx.beginPath(); ctx.moveTo(cx-bw/2-10,y0); ctx.lineTo(cx-bw/2-20,y0);
+    ctx.lineTo(cx-bw/2-20,y3); ctx.lineTo(cx-bw/2-10,y3); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+  }
+  if(p>.65){
+    const rp=easeInOut((p-.65)/.15);
+    ctx.globalAlpha=rp*.6; ctx.strokeStyle='#EF4444'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
+    const y3=topY+3*(bh+gap)+bh/2, y6=topY+6*(bh+gap)+bh/2;
+    ctx.beginPath(); ctx.moveTo(cx+bw/2+10,y3); ctx.lineTo(cx+bw/2+20,y3);
+    ctx.lineTo(cx+bw/2+20,y6); ctx.lineTo(cx+bw/2+10,y6); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5,renderStep6];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2000;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  // dots
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

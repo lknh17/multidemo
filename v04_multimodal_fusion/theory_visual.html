@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v04 CLIP - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:center;line-height:1.8}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05)}.btn:active{transform:scale(.97)}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v04</span><h1>Multimodal Fusion (CLIP)</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+<div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'CLIP 双塔架构',desc:'CLIP 采用<strong>双塔架构</strong>：图像和文本各有独立的编码器。<br><br><strong>图像塔</strong>：ViT 编码器，输入图像 → [CLS] 表示 → 线性投影<br><strong>文本塔</strong>：Transformer 编码器，输入 token → 平均池化 → 线性投影<br><br>两个编码器的输出都投影到同一个<strong>共享嵌入空间</strong>（embed_dim 维）。<br><br>训练目标：让匹配的图文对在共享空间中<strong>距离近</strong>，不匹配的<strong>距离远</strong>。',formula:'img_emb = ImageEncoder(image)   # [B, embed_dim]\ntxt_emb = TextEncoder(text)     # [B, embed_dim]\n# 两者在同一空间，可直接计算相似度'},
+{title:'InfoNCE Loss — N×N 相似度矩阵',desc:'一个 batch 有 N 个图文对，构建 <strong>N×N 相似度矩阵</strong>。<br><br>矩阵中 S[i][j] = img_emb[i] · txt_emb[j]（余弦相似度 × τ）。<br><br><strong>对角线</strong>是正例（匹配的图文对），其他是负例。<br><br>损失函数：对每一行和每一列做 <strong>CrossEntropy</strong>，标签是对角线索引。<br><br>对称 Loss = (image→text + text→image) / 2',formula:'S = τ × img_emb @ txt_emb.T    # [N, N]\nlabels = [0, 1, 2, ..., N-1]\nloss_i2t = CrossEntropy(S, labels)     # 行\nloss_t2i = CrossEntropy(S.T, labels)   # 列\nloss = (loss_i2t + loss_t2i) / 2'},
+{title:'温度系数 τ 的影响',desc:'温度系数 τ 控制 Softmax 的<strong>锐度</strong>：<br><br>• <strong>τ 小</strong>（如 0.01）：Softmax 非常"尖锐"，概率集中在最相似的样本上。容易学习，但可能过于自信。<br><br>• <strong>τ 大</strong>（如 1.0）：Softmax 非常"平缓"，概率分散。难以区分正负例。<br><br>CLIP 使用<strong>可学习的 τ</strong>（初始 1/0.07 ≈ 14.3），让模型自适应调整。<br><br>动画展示：不同 τ 下的 Softmax 分布变化。',formula:'logit_scale = nn.Parameter(log(1/0.07))\nτ = logit_scale.exp()  ≈ 14.3\n\nSoftmax(S/τ) — τ↓ → 更尖锐\nSoftmax(S/τ) — τ↑ → 更平缓'},
+{title:'Cross-Attention 融合',desc:'双塔模型的局限：两个模态<strong>没有直接交互</strong>。<br><br>Cross-Attention 解决方案：<br>• <strong>Query</strong> 来自模态 A（如图像）<br>• <strong>Key/Value</strong> 来自模态 B（如文本）<br><br>这让模态 A 可以"查询"模态 B 中的相关信息，实现深层的语义融合。<br><br>结构：Norm → CrossAttn → 残差 → Norm → FFN → 残差',formula:'# Q 来自图像, K/V 来自文本\nh = LayerNorm(image_features)\nc = LayerNorm(text_features)\nattn_out = MultiHeadAttn(Q=h, K=c, V=c)\nimage_features = image_features + attn_out\nimage_features = image_features + FFN(Norm(image_features))'},
+{title:'L2 归一化 → 单位球面',desc:'对 embedding 做 <strong>L2 归一化</strong>后，所有向量的模长为 1，位于<strong>单位超球面</strong>上。<br><br>此时：<strong>内积 = 余弦相似度</strong>（范围 [-1, 1]）。<br><br>好处：<br>• 消除模长的影响，只关注<strong>方向</strong><br>• 相似度有统一的尺度<br>• 配合温度系数更容易控制分布<br><br>这是对比学习的标准做法。',formula:'img_emb = F.normalize(img_emb, dim=-1)\ntxt_emb = F.normalize(txt_emb, dim=-1)\n# ||emb|| = 1\n# dot(a, b) = cos(θ) ∈ [-1, 1]'},
+{title:'双塔 vs 融合模型对比',desc:'<strong>双塔模型</strong>（CLIP）：<br>• 图像和文本独立编码<br>• 可以<strong>预计算</strong>并缓存 embedding<br>• 检索效率高（向量近似搜索）<br>• 交互较浅<br><br><strong>融合模型</strong>（Cross-Attention）：<br>• 两个模态深度交互<br>• 每次都需要<strong>联合计算</strong><br>• 理解能力更强<br>• 推理速度慢<br><br>实践中常结合两者：先用双塔粗召回，再用融合模型精排。',formula:'双塔: 编码一次，检索 O(1)\n  → 适合大规模检索\n\n融合: 每对都要联合编码\n  → 适合精细理解/排序'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function ease(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function rrect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+function hsl(h,s,l){return`hsl(${h},${s}%,${l}%)`}
+
+function renderStep0(p){
+  const cx=W/2,topY=15;
+  // Image tower - left
+  const tw=110,th=30,gap=10;const lx=cx/2,rx=cx+cx/2;
+  const p1=ease(Math.min(1,p/.35));ctx.globalAlpha=p1;
+  ctx.font='bold 15px PingFang SC';ctx.textAlign='center';ctx.fillStyle='#6C5CE7';
+  ctx.fillText('图像编码器',lx,topY);
+  const imgStages=[{l:'输入图像',c:'#94A3B8'},{l:'ViT Encoder',c:'#6C5CE7'},{l:'[CLS] 输出',c:'#00B894'},{l:'Linear → embed_dim',c:'#F59E0B'}];
+  let y=topY+15;
+  for(const s of imgStages){
+    ctx.fillStyle=s.c+'1A';ctx.strokeStyle=s.c;ctx.lineWidth=1.5;
+    rrect(lx-tw/2,y,tw,th,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.c;ctx.font='11px PingFang SC';ctx.fillText(s.l,lx,y+20);
+    y+=th+gap;
+  }
+  ctx.globalAlpha=1;
+  // Text tower - right
+  const p2=ease(Math.max(0,Math.min(1,(p-.2)/.35)));ctx.globalAlpha=p2;
+  ctx.font='bold 15px PingFang SC';ctx.fillStyle='#0984E3';ctx.fillText('文本编码器',rx,topY);
+  const txtStages=[{l:'输入 Token',c:'#94A3B8'},{l:'Transformer',c:'#0984E3'},{l:'Mean Pooling',c:'#00B894'},{l:'Linear → embed_dim',c:'#F59E0B'}];
+  y=topY+15;
+  for(const s of txtStages){
+    ctx.fillStyle=s.c+'1A';ctx.strokeStyle=s.c;ctx.lineWidth=1.5;
+    rrect(rx-tw/2,y,tw,th,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.c;ctx.font='11px PingFang SC';ctx.fillText(s.l,rx,y+20);
+    y+=th+gap;
+  }
+  ctx.globalAlpha=1;
+  // Shared space
+  if(p>.55){
+    const sp=ease((p-.55)/.25);ctx.globalAlpha=sp;
+    const sy2=topY+15+4*(th+gap)+15;
+    ctx.fillStyle='rgba(249,158,11,.1)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;ctx.setLineDash([5,5]);
+    rrect(cx-150,sy2,300,40,12);ctx.fill();ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#F59E0B';ctx.font='bold 14px PingFang SC';
+    ctx.fillText('共享嵌入空间 (embed_dim)',cx,sy2+25);
+    // Arrows down
+    ctx.strokeStyle='#F59E0B88';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(lx,topY+15+4*(th+gap)-5);ctx.lineTo(lx,sy2);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(rx,topY+15+4*(th+gap)-5);ctx.lineTo(rx,sy2);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=15,n=5;
+  const sz=Math.min(45,(Math.min(W,H)-80)/n);
+  const sx=cx-n*sz/2,sy=topY+30;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('InfoNCE: N×N 相似度矩阵热力图',cx,topY);
+  // Labels
+  const imgLabels=['猫','狗','车','花','鸟'];
+  const txtLabels=['一只猫','小狗','汽车','花朵','飞鸟'];
+  const scores=[[.92,.15,.08,.12,.10],[.13,.88,.11,.09,.14],[.07,.10,.91,.06,.08],[.11,.08,.05,.89,.13],[.09,.12,.10,.14,.90]];
+  // Row/col labels
+  for(let i=0;i<n;i++){
+    const ap=ease(Math.max(0,Math.min(1,(p-.05)/.15)));ctx.globalAlpha=ap;
+    ctx.fillStyle='#6C5CE7';ctx.font='11px PingFang SC';ctx.textAlign='right';
+    ctx.fillText(imgLabels[i],sx-8,sy+i*sz+sz/2+4);
+    ctx.fillStyle='#0984E3';ctx.textAlign='center';
+    ctx.fillText(txtLabels[i],sx+i*sz+sz/2,sy-8);ctx.globalAlpha=1;
+  }
+  // Heatmap cells
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){
+    const delay=(i*n+j)*.015+.15;const cp=ease(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const v=scores[i][j]*cp;const x=sx+j*sz,y2=sy+i*sz;
+    const isDiag=i===j;
+    const h=isDiag?140:220,s=80,l=15+v*45;
+    ctx.fillStyle=hsl(h,s,l);ctx.fillRect(x+1,y2+1,sz-2,sz-2);
+    if(isDiag&&cp>.5){ctx.strokeStyle='#00B894';ctx.lineWidth=2;ctx.strokeRect(x,y2,sz,sz)}
+    ctx.fillStyle=`rgba(255,255,255,${.3+v*.7})`;ctx.font='bold 11px Courier New';ctx.textAlign='center';
+    ctx.fillText(scores[i][j].toFixed(2),x+sz/2,y2+sz/2+4);
+  }
+  if(p>.8){
+    const lp=ease((p-.8)/.2);ctx.globalAlpha=lp;ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('对角线 = 正例(高分)    其他 = 负例(低分)',cx,sy+n*sz+20);ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('温度系数 τ 对 Softmax 分布的影响',cx,topY);
+  // Draw three distributions with different temperatures
+  const temps=[{t:0.05,label:'τ=0.05 (尖锐)',color:'#EF4444'},{t:0.3,label:'τ=0.3 (适中)',color:'#00B894'},{t:1.0,label:'τ=1.0 (平缓)',color:'#0984E3'}];
+  const rawScores=[3.0,1.5,0.5,0.2,-0.5];
+  const barW=35,bh=100;
+  temps.forEach((tmp,ti)=>{
+    const delay=ti*.2;const tp=ease(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const bx=30+ti*(W/3),by=topY+40;
+    ctx.globalAlpha=tp;ctx.font='12px PingFang SC';ctx.fillStyle=tmp.color;
+    ctx.fillText(tmp.label,bx+rawScores.length*barW/2,by-8);
+    // Compute softmax
+    const scaled=rawScores.map(s=>s/tmp.t);
+    const maxS=Math.max(...scaled);
+    const exps=scaled.map(s=>Math.exp(s-maxS));
+    const sumE=exps.reduce((a,b)=>a+b,0);
+    const probs=exps.map(e=>e/sumE);
+    for(let i=0;i<probs.length;i++){
+      const h=probs[i]*bh*2;
+      ctx.fillStyle=tmp.color+'55';
+      ctx.fillRect(bx+i*barW+3,by+bh-h,barW-6,h);
+      ctx.strokeStyle=tmp.color;ctx.lineWidth=1;
+      ctx.strokeRect(bx+i*barW+3,by+bh-h,barW-6,h);
+      ctx.fillStyle='#E2E8F0';ctx.font='9px Courier New';ctx.textAlign='center';
+      ctx.fillText((probs[i]*100).toFixed(1)+'%',bx+i*barW+barW/2,by+bh-h-5);
+    }
+    ctx.globalAlpha=1;
+  });
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=15;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('Cross-Attention: 跨模态融合',cx,topY);
+  const bw=130,bh=32;
+  // Modality A (Image)
+  const p1=ease(Math.max(0,Math.min(1,(p-.1)/.2)));ctx.globalAlpha=p1;
+  const ax=cx/3,ay=topY+25;
+  ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=1.5;
+  rrect(ax-bw/2,ay,bw,bh,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='12px PingFang SC';ctx.fillText('图像特征 (Q)',ax,ay+21);
+  // Modality B (Text)
+  const bx2=cx*2/3+cx/3,by2=topY+25;
+  ctx.fillStyle='rgba(9,132,227,.15)';ctx.strokeStyle='#0984E3';
+  rrect(bx2-bw/2,by2,bw,bh,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.fillText('文本特征 (K,V)',bx2,by2+21);
+  ctx.globalAlpha=1;
+  // Cross attention box
+  const p2=ease(Math.max(0,Math.min(1,(p-.35)/.2)));
+  if(p2>0){
+    ctx.globalAlpha=p2;const cay=ay+bh+50;
+    ctx.fillStyle='rgba(249,158,11,.1)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    rrect(cx-bw/2-10,cay,bw+20,bh+5,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 12px PingFang SC';ctx.fillText('Cross-Attention',cx,cay+23);
+    // Arrows
+    ctx.strokeStyle='#6C5CE788';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(ax,ay+bh);ctx.lineTo(cx-20,cay);ctx.stroke();
+    ctx.strokeStyle='#0984E388';
+    ctx.beginPath();ctx.moveTo(bx2,by2+bh);ctx.lineTo(cx+20,cay);ctx.stroke();
+    ctx.font='10px PingFang SC';ctx.fillStyle='#6C5CE7';ctx.fillText('Q',ax+20,ay+bh+25);
+    ctx.fillStyle='#0984E3';ctx.fillText('K, V',bx2-20,by2+bh+25);
+    ctx.globalAlpha=1;
+  }
+  // Residual + FFN
+  if(p>.6){
+    const rp=ease((p-.6)/.2);ctx.globalAlpha=rp;
+    const ry=ay+bh+50+bh+20;
+    ctx.fillStyle='rgba(239,68,68,.1)';ctx.strokeStyle='#EF4444';ctx.lineWidth=1;
+    rrect(cx-60,ry,120,28,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#EF4444';ctx.font='11px PingFang SC';ctx.fillText('+ 残差连接',cx,ry+18);
+    const fy=ry+38;
+    ctx.fillStyle='rgba(16,185,129,.1)';ctx.strokeStyle='#10B981';
+    rrect(cx-60,fy,120,28,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#10B981';ctx.fillText('Norm → FFN → + 残差',cx,fy+18);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('L2 归一化 → 单位球面',cx,topY);
+  // Draw circle (unit sphere projection)
+  const R=Math.min(100,H/2-50);const cy=topY+R+40;
+  const p1=ease(Math.max(0,Math.min(1,(p-.1)/.25)));
+  ctx.globalAlpha=p1;ctx.strokeStyle='rgba(100,116,139,.3)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);ctx.stroke();
+  // Axes
+  ctx.beginPath();ctx.moveTo(cx-R-15,cy);ctx.lineTo(cx+R+15,cy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx,cy-R-15);ctx.lineTo(cx,cy+R+15);ctx.stroke();
+  ctx.globalAlpha=1;
+  // Before normalization - scattered points
+  const points=[{x:30,y:-50,c:'#6C5CE7',l:'img1'},{x:-60,y:20,c:'#6C5CE7',l:'img2'},{x:80,y:40,c:'#0984E3',l:'txt1'},{x:-40,y:-70,c:'#0984E3',l:'txt2'}];
+  const p2=ease(Math.max(0,Math.min(1,(p-.2)/.2)));
+  for(const pt of points){
+    ctx.globalAlpha=p2;ctx.fillStyle=pt.c;ctx.beginPath();
+    ctx.arc(cx+pt.x,cy+pt.y,5,0,Math.PI*2);ctx.fill();
+    ctx.font='10px PingFang SC';ctx.fillText(pt.l,cx+pt.x+8,cy+pt.y-8);ctx.globalAlpha=1;
+  }
+  // After normalization - on circle
+  if(p>.45){
+    const np=ease((p-.45)/.3);
+    for(const pt of points){
+      const mag=Math.sqrt(pt.x*pt.x+pt.y*pt.y);
+      const nx=pt.x/mag*R,ny=pt.y/mag*R;
+      const px2=cx+pt.x+(nx-pt.x)*np,py2=cy+pt.y+(ny-pt.y)*np;
+      // Trail
+      ctx.globalAlpha=np*.3;ctx.strokeStyle=pt.c;ctx.lineWidth=1;ctx.setLineDash([3,3]);
+      ctx.beginPath();ctx.moveTo(cx+pt.x,cy+pt.y);ctx.lineTo(px2,py2);ctx.stroke();ctx.setLineDash([]);
+      ctx.globalAlpha=np;ctx.fillStyle=pt.c;ctx.beginPath();ctx.arc(px2,py2,6,0,Math.PI*2);ctx.fill();
+      ctx.font='10px PingFang SC';ctx.fillText(pt.l,px2+10,py2-8);ctx.globalAlpha=1;
+    }
+  }
+  if(p>.8){
+    const lp=ease((p-.8)/.2);ctx.globalAlpha=lp;ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('归一化后: ||emb||=1, 内积=余弦相似度',cx,cy+R+30);ctx.globalAlpha=1;
+  }
+}
+
+function renderStep5(p){
+  const cx=W/2,topY=20;
+  // Dual tower - left
+  const lx=cx/2-20,rx=cx+cx/2+20;
+  const p1=ease(Math.min(1,p/.4));ctx.globalAlpha=p1;
+  ctx.font='bold 15px PingFang SC';ctx.textAlign='center';ctx.fillStyle='#6C5CE7';
+  ctx.fillText('双塔模型 (CLIP)',lx,topY);
+  const bw=120,bh=28,gap=8;let y=topY+15;
+  const dualStages=[{l:'Image Encoder',c:'#6C5CE7'},{l:'Text Encoder',c:'#0984E3'},{l:'独立编码',c:'#94A3B8'},{l:'向量检索 O(1)',c:'#00B894'}];
+  for(const s of dualStages){
+    ctx.fillStyle=s.c+'1A';ctx.strokeStyle=s.c;ctx.lineWidth=1;
+    rrect(lx-bw/2,y,bw,bh,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.c;ctx.font='11px PingFang SC';ctx.fillText(s.l,lx,y+18);y+=bh+gap;
+  }
+  ctx.font='12px PingFang SC';ctx.fillStyle='#00B894';
+  ctx.fillText('适合：大规模检索',lx,y+10);
+  ctx.fillText('交互：浅（只在最后比较）',lx,y+28);
+  ctx.globalAlpha=1;
+  // Fusion model - right
+  const p2=ease(Math.max(0,Math.min(1,(p-.35)/.4)));ctx.globalAlpha=p2;
+  ctx.font='bold 15px PingFang SC';ctx.fillStyle='#F59E0B';ctx.fillText('融合模型 (Cross-Attn)',rx,topY);
+  y=topY+15;
+  const fusionStages=[{l:'Image Features',c:'#6C5CE7'},{l:'Text Features',c:'#0984E3'},{l:'Cross-Attention ×N',c:'#F59E0B'},{l:'联合编码',c:'#EF4444'}];
+  for(const s of fusionStages){
+    ctx.fillStyle=s.c+'1A';ctx.strokeStyle=s.c;ctx.lineWidth=1;
+    rrect(rx-bw/2,y,bw,bh,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.c;ctx.font='11px PingFang SC';ctx.fillText(s.l,rx,y+18);y+=bh+gap;
+  }
+  ctx.font='12px PingFang SC';ctx.fillStyle='#F59E0B';
+  ctx.fillText('适合：精细理解/排序',rx,y+10);
+  ctx.fillText('交互：深（每层都交互）',rx,y+28);
+  ctx.globalAlpha=1;
+  // VS
+  if(p>.4){
+    const vp=ease((p-.4)/.15);ctx.globalAlpha=vp;
+    ctx.font='bold 24px PingFang SC';ctx.fillStyle='#F59E0B';ctx.fillText('VS',cx,topY+80);ctx.globalAlpha=1;
+  }
+  // Combination note
+  if(p>.8){
+    const np=ease((p-.8)/.2);ctx.globalAlpha=np;
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('实践：双塔粗召回 → 融合模型精排',cx,H-25);ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const s2=document.createElement('span');if(i===currentStep)s2.className='active';s2.onclick=(idx=>()=>{currentStep=idx;updateUI();startAnim()})(i);d.appendChild(s2)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v10 商业概念重构 - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}
+.header h1{font-size:20px;font-weight:700}
+.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}
+.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}
+.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}
+.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:13px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre-wrap}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}
+.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v10</span><h1>商业概念重构 Loss</h1><span class="tag">代码可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'ConceptReconstructionHead 四头并行',desc:'<strong>ConceptReconstructionHead</strong> 接收 embedding，通过四个独立 MLP 头并行预测：<br><br>每个头结构: <strong>Linear(D→D) → ReLU → Linear(D→num_classes)</strong><br>• industry_head → num_industries 维输出<br>• brand_head → num_brands 维输出<br>• attr_head → num_attributes 维输出<br>• intent_head → num_intents 维输出<br><br>forward 返回包含四个预测结果的字典。',
+formula:'class ConceptReconstructionHead(nn.Module):\n  def __init__(self, embed_dim, n_ind, n_brand, n_attr, n_int):\n    self.industry_head = Sequential(Linear,ReLU,Linear)\n    self.brand_head = Sequential(Linear,ReLU,Linear)\n    self.attr_head = Sequential(Linear,ReLU,Linear)\n    self.intent_head = Sequential(Linear,ReLU,Linear)\n\n  def forward(self, embeddings):\n    return {"industry": ..., "brand": ...,\n            "attributes": ..., "intent": ...}'},
+{title:'ConceptReconLoss（CE + BCE 混合）',desc:'<strong>ConceptReconLoss</strong> 混合使用两种分类 Loss：<br><br>• <strong>CrossEntropyLoss</strong>：用于单标签分类<br>  - 行业 (industry)：一个广告只属于一个行业<br>  - 品牌 (brand)：一个广告只属于一个品牌<br>  - 意图 (intent)：一个广告只有一个主要意图<br><br>• <strong>BCEWithLogitsLoss</strong>：用于多标签分类<br>  - 属性 (attributes)：一个广告可以同时具有多个属性',
+formula:'class ConceptReconLoss(nn.Module):\n  self.ce = CrossEntropyLoss()\n  self.bce = BCEWithLogitsLoss()\n\n  def forward(predictions, targets):\n    loss = 0\n    loss += ce(pred["industry"], gt["industry"])\n    loss += ce(pred["brand"], gt["brand"])\n    loss += bce(pred["attributes"], gt["attributes"])\n    loss += ce(pred["intent"], gt["intent"])\n    return loss, details_dict'},
+{title:'ConceptModel.forward 完整数据流',desc:'<strong>ConceptModel</strong> 整合了 DeepStack 编码 + 对比学习 + 概念重构：<br><br>1. 图像: PatchEmbed → +CLS → +Pos → Encoder → intermediates<br>2. 文本: TokenEmbed → +Pos → Encoder → intermediates → mean pooling<br>3. 各层特征送入 <strong>Fusion Module</strong> → L2 Normalize → fused_img/fused_txt<br>4. fused embedding 送入 <strong>ConceptReconstructionHead</strong> → 四头预测<br>5. 图像和文本 embedding <strong>都做概念重构预测</strong>',
+formula:'def forward(images, input_ids):\n  # 编码\n  img → patch_embed → +cls → +pos → encoder\n  txt → tok_embed → +pos → encoder → mean\n  # 融合\n  fused_img = normalize(fusion_img(img_feats))\n  fused_txt = normalize(fusion_txt(txt_feats))\n  # 概念重构 (图像+文本都预测)\n  img_concepts = concept_head(fused_img)\n  txt_concepts = concept_head(fused_txt)\n  return {fused_img, fused_txt, concepts, log_sigma}'},
+{title:'联合训练：Uncertainty Weighting',desc:'训练循环中使用 <strong>Uncertainty Weighting</strong> 平衡两种 Loss：<br><br>1. 前向传播得到 fused_img, fused_txt, concepts, log_sigma<br>2. 计算 <strong>L_contrastive</strong> = InfoNCE(fused_img, fused_txt)<br>3. 计算 <strong>L_recon</strong> = ConceptReconLoss(concepts, targets)<br>4. 加权: L = L_c/(2σ_c²) + log(σ_c) + L_r/(2σ_r²) + log(σ_r)<br>5. <strong>log_sigma 作为 nn.Parameter 参与梯度更新</strong><br>6. 训练过程中 σ 自动调整各 Loss 权重',
+formula:'# 训练循环\nout = model(images, input_ids)\nL_c = infonce(out["fused_img"], out["fused_txt"])\nL_r = recon_loss(out["img_concepts"], targets)\n\n# Uncertainty Weighting\nlog_s_c = out["log_sigma_c"]\nlog_s_r = out["log_sigma_r"]\nL = L_c / (2*exp(2*log_s_c)) + log_s_c\n  + L_r / (2*exp(2*log_s_r)) + log_s_r\n\nL.backward()  # log_sigma 也会更新'}
+];
+
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+function drawBox(x,y,w,h,label,color,alpha){ctx.globalAlpha=alpha;ctx.fillStyle=color+'22';ctx.strokeStyle=color;drawRR(x,y,w,h,8);ctx.fill();ctx.stroke();ctx.fillStyle=color;ctx.font='11px PingFang SC';ctx.textAlign='center';ctx.textBaseline='middle';const ls=label.split('\n');ls.forEach((l,i)=>ctx.fillText(l,x+w/2,y+h/2+(i-(ls.length-1)/2)*13));ctx.globalAlpha=1}
+function drawArrow(x1,y1,x2,y2,color,alpha){ctx.globalAlpha=alpha;ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a-.3),y2-7*Math.sin(a-.3));ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a+.3),y2-7*Math.sin(a+.3));ctx.stroke();ctx.globalAlpha=1}
+
+function renderStep0(p){
+  const cx=W/2;
+  const ip=easeInOut(Math.min(1,p/.15));
+  drawBox(cx-50,15,100,26,'embedding [B,D]','#6C5CE7',ip);
+  
+  const heads=[{n:'industry_head',c:'#EF4444',out:'n_industries'},{n:'brand_head',c:'#F59E0B',out:'n_brands'},{n:'attr_head',c:'#0984E3',out:'n_attributes'},{n:'intent_head',c:'#6C5CE7',out:'n_intents'}];
+  const colW=W/4;
+  for(let i=0;i<4;i++){
+    const d=.1+i*.08,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.2)));
+    const mx=colW/2+i*colW;
+    drawArrow(cx,41,mx,55,heads[i].c,ap*.4);
+    drawBox(mx-38,60,76,22,'Linear(D,D)',heads[i].c,ap);
+    if(p>d+.08){const rp=easeInOut(Math.max(0,Math.min(1,(p-d-.08)/.1)));drawBox(mx-25,90,50,18,'ReLU',heads[i].c,rp);drawArrow(mx,82,mx,90,heads[i].c,rp*.3)}
+    if(p>d+.15){const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.15)/.1)));drawBox(mx-38,116,76,22,`Linear(D,${heads[i].out})`,heads[i].c,lp);drawArrow(mx,108,mx,116,heads[i].c,lp*.3)}
+    if(p>d+.22){const op=easeInOut(Math.max(0,Math.min(1,(p-d-.22)/.12)));drawBox(mx-32,148,64,22,`logits`,heads[i].c,op);drawArrow(mx,138,mx,148,heads[i].c,op*.3);
+    ctx.globalAlpha=op;ctx.fillStyle=heads[i].c;ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText(heads[i].n,mx,180);ctx.globalAlpha=1}
+  }
+  if(p>.85){const np=easeInOut((p-.85)/.15);drawBox(cx-70,200,140,26,'return dict of 4 preds','#00B894',np)}
+}
+
+function renderStep1(p){
+  const cx=W/2;
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=tp;ctx.fillStyle='#F59E0B';ctx.font='bold 15px PingFang SC';ctx.textAlign='center';ctx.fillText('ConceptReconLoss 数据流',cx,20);ctx.globalAlpha=1;
+  
+  const items=[
+    {name:'industry',loss:'CE',color:'#EF4444',type:'单标签'},
+    {name:'brand',loss:'CE',color:'#F59E0B',type:'单标签'},
+    {name:'attributes',loss:'BCE',color:'#0984E3',type:'多标签'},
+    {name:'intent',loss:'CE',color:'#6C5CE7',type:'单标签'}
+  ];
+  const colW=W/4;
+  for(let i=0;i<4;i++){
+    const d=.1+i*.1,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.2)));
+    const mx=colW/2+i*colW;
+    drawBox(mx-35,40,70,22,`pred_${items[i].name}`,items[i].color,ap);
+    drawBox(mx-35,75,70,22,`gt_${items[i].name}`,'#00B894',ap);
+    if(p>d+.12){
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.12)/.15)));
+      drawBox(mx-30,110,60,22,`${items[i].loss} Loss`,items[i].color,lp);
+      drawArrow(mx,62,mx,110,items[i].color,lp*.3);
+      drawArrow(mx,97,mx,110,'#00B894',lp*.3);
+      ctx.globalAlpha=lp;ctx.fillStyle=items[i].color;ctx.font='10px PingFang SC';ctx.textAlign='center';ctx.fillText(items[i].type,mx,145);ctx.globalAlpha=1;
+    }
+  }
+  if(p>.7){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-.7)/.15)));
+    drawBox(cx-55,165,110,26,'loss = Σ all','#F59E0B',sp);
+    for(let i=0;i<4;i++){const mx=colW/2+i*colW;drawArrow(mx,132,cx,165,items[i].color,sp*.3)}
+  }
+  if(p>.85){
+    const rp=easeInOut((p-.85)/.15);
+    drawBox(cx-65,205,130,26,'return loss, details','#00B894',rp);
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,imgX=cx-100,txtX=cx+100;
+  const stages=[
+    {l:'images',x:imgX,y:10,c:'#0984E3',t:0},{l:'input_ids',x:txtX,y:10,c:'#00B894',t:0},
+    {l:'PatchEmbed+CLS+Pos',x:imgX,y:45,c:'#0984E3',t:.08},{l:'TokenEmbed+Pos',x:txtX,y:45,c:'#00B894',t:.08},
+    {l:'Encoder→inters',x:imgX,y:80,c:'#6C5CE7',t:.16},{l:'Encoder→inters(mean)',x:txtX,y:80,c:'#6C5CE7',t:.16},
+    {l:'Fusion→L2Norm',x:imgX,y:115,c:'#6C5CE7',t:.24},{l:'Fusion→L2Norm',x:txtX,y:115,c:'#6C5CE7',t:.24},
+    {l:'fused_img',x:imgX,y:150,c:'#0984E3',t:.32},{l:'fused_txt',x:txtX,y:150,c:'#00B894',t:.32},
+    {l:'concept_head(img)',x:imgX,y:190,c:'#F59E0B',t:.42},{l:'concept_head(txt)',x:txtX,y:190,c:'#F59E0B',t:.42},
+    {l:'img_concepts',x:imgX,y:225,c:'#EF4444',t:.52},{l:'txt_concepts',x:txtX,y:225,c:'#EF4444',t:.52},
+    {l:'return all outputs',x:cx,y:270,c:'#00B894',t:.7}
+  ];
+  const bw=120,bh=26;
+  for(const s of stages){const ap=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.15)));drawBox(s.x-bw/2,s.y,bw,bh,s.l,s.c,ap)}
+  const pairs=[[0,2],[1,3],[2,4],[3,5],[4,6],[5,7],[6,8],[7,9],[8,10],[9,11],[10,12],[11,13]];
+  for(const[a,b]of pairs){const sa=stages[a],sb=stages[b];const ap=easeInOut(Math.max(0,Math.min(1,(p-sb.t)/.1)));if(ap>0)drawArrow(sa.x,sa.y+bh,sb.x,sb.y,sa.c,ap*.3)}
+  if(p>.7){const fp=easeInOut(Math.max(0,Math.min(1,(p-.7)/.15)));for(const i of[12,13])drawArrow(stages[i].x,stages[i].y+bh,cx,270,stages[i].c,fp*.3)}
+}
+
+function renderStep3(p){
+  const cx=W/2;
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=tp;ctx.fillStyle='#00B894';ctx.font='bold 15px PingFang SC';ctx.textAlign='center';ctx.fillText('联合训练 + Uncertainty Weighting',cx,18);ctx.globalAlpha=1;
+  
+  // Forward
+  const fp=easeInOut(Math.max(0,Math.min(1,(p-.1)/.15)));
+  drawBox(cx-60,35,120,25,'model(img, txt)','#6C5CE7',fp);
+  
+  // Two branches
+  if(p>.2){
+    const bp=easeInOut(Math.max(0,Math.min(1,(p-.2)/.15)));
+    drawBox(cx-130,80,100,25,'L_contrastive','#EF4444',bp);
+    drawBox(cx+30,80,100,25,'L_reconstruction','#F59E0B',bp);
+    drawArrow(cx-30,60,cx-80,80,'#EF4444',bp*.4);
+    drawArrow(cx+30,60,cx+80,80,'#F59E0B',bp*.4);
+  }
+  
+  // log_sigma parameters
+  if(p>.35){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-.35)/.15)));
+    ctx.globalAlpha=sp;
+    ctx.fillStyle='#6C5CE7'+'33';ctx.strokeStyle='#6C5CE7';
+    ctx.beginPath();ctx.arc(cx-80,135,14,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.beginPath();ctx.arc(cx+80,135,14,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='10px Courier New';ctx.textAlign='center';
+    ctx.fillText('log_σ_c',cx-80,139);ctx.fillText('log_σ_r',cx+80,139);
+    ctx.globalAlpha=1;
+  }
+  
+  // Weighting formula
+  if(p>.5){
+    const wp=easeInOut(Math.max(0,Math.min(1,(p-.5)/.2)));
+    drawBox(cx-90,160,180,28,'L/(2σ²) + log(σ)','#F59E0B',wp);
+    drawArrow(cx-80,149,cx-30,160,'#EF4444',wp*.3);
+    drawArrow(cx+80,149,cx+30,160,'#F59E0B',wp*.3);
+  }
+  
+  // Total loss + backward
+  if(p>.7){
+    const lp=easeInOut(Math.max(0,Math.min(1,(p-.7)/.15)));
+    drawBox(cx-55,205,110,25,'L_total','#00B894',lp);
+    drawArrow(cx,188,cx,205,'#F59E0B',lp*.3);
+  }
+  if(p>.8){
+    const bp=easeInOut(Math.max(0,Math.min(1,(p-.8)/.1)));
+    drawBox(cx-55,245,110,25,'backward()','#EF4444',bp);
+    drawArrow(cx,230,cx,245,'#00B894',bp*.3);
+    
+    // Backward arrows to log_sigma
+    if(p>.88){
+      const rp=easeInOut(Math.max(0,Math.min(1,(p-.88)/.12)));
+      ctx.globalAlpha=rp*.5;ctx.strokeStyle='#EF4444';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);
+      ctx.beginPath();ctx.moveTo(cx-55,257);ctx.lineTo(cx-80,149);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(cx+55,257);ctx.lineTo(cx+80,149);ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#EF4444';ctx.font='11px PingFang SC';ctx.textAlign='center';
+      ctx.fillText('log_σ 也参与梯度更新！',cx,285);
+      ctx.globalAlpha=1;
+    }
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const s=performance.now(),d=2500;function t(n){animProgress=Math.min(1,(n-s)/d);render();if(animProgress<1)animId=requestAnimationFrame(t)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(t)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(idx=>()=>{currentStep=idx;updateUI();startAnim()})(i);d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

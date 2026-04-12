@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v08 对比学习 - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:15px;color:var(--warn);text-align:center;line-height:1.8}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v08</span><h1>对比学习 Loss</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'对比学习核心思想',desc:'对比学习的目标：在向量空间中<strong>拉近正例、推远负例</strong>。<br><br>给定一个 anchor（锚点），对比学习让：<br>• <strong>正例</strong>（相似样本）的向量距离<strong>更近</strong><br>• <strong>负例</strong>（不同样本）的向量距离<strong>更远</strong><br><br>在广告场景中：<br>• 正例 = 相关的广告图文对<br>• 负例 = 不相关的广告图文对<br><br>动画展示向量空间中样本的移动过程。',formula:'目标: maximize sim(anchor, positive)\n      minimize sim(anchor, negative)\n\nsim(a, b) = a·b / (|a|·|b|)  (余弦相似度)'},
+{title:'InfoNCE Loss 详解',desc:'<strong>InfoNCE</strong> 是最常用的对比学习损失（CLIP 使用）。<br><br>将问题转化为 <strong>N 分类</strong>：在 N 个样本中，识别出唯一的正样本。<br><br>构建 N×N 相似度矩阵，<strong>对角线</strong>为正样本对。每一行做 Softmax + CrossEntropy。<br><br>对称版本同时优化两个方向（I→T 和 T→I），确保双向对齐。<br><br>温度系数 τ 控制分布锐利度。',formula:'L_InfoNCE = -1/N Σᵢ log[\nexp(sim(aᵢ,bᵢ)/τ) /\nΣⱼ exp(sim(aᵢ,bⱼ)/τ)\n]\n\n对称版本: L = (L_a→b + L_b→a) / 2'},
+{title:'Triplet Loss',desc:'<strong>Triplet Loss</strong> 使用三元组 (anchor, positive, negative)：<br><br>目标：正样本距离 < 负样本距离 - margin<br><br><strong>d(a,p) + margin < d(a,n)</strong><br><br>margin 是"安全距离"，防止模型学到 trivial 解（所有点聚到一起）。<br><br>动画展示三角关系：anchor 与 positive 之间的距离应该比 anchor 与 negative 之间的距离小至少 margin。',formula:'L_triplet = max(0, d(a,p) - d(a,n) + margin)\n\nd(a,b) = ||a - b||²\nmargin 通常设为 0.2'},
+{title:'Circle Loss',desc:'<strong>Circle Loss</strong> 引入了<strong>自适应加权</strong>机制：<br><br>关键洞察：不是所有样本对同等重要<br>• <strong>困难正样本</strong>（距离远的正例）→ 给更大权重<br>• <strong>困难负样本</strong>（距离近的负例）→ 给更大权重<br><br>权重公式：<br>• α_p = relu(O_p - s_p)：正样本离最优值越远，权重越大<br>• α_n = relu(s_n - O_n)：负样本离最优值越近，权重越大<br><br>这使得训练聚焦于最有价值的样本对。',formula:'α_p = relu(1+m - s_p)  (正样本权重)\nα_n = relu(s_n + m)    (负样本权重)\n\nL_circle = log[1 +\n  Σ exp(γ·αₙ·(sₙ+m)) ·\n  Σ exp(-γ·αₚ·(sₚ-m))]'},
+{title:'温度系数 τ',desc:'温度系数 τ 是对比学习中的关键超参数。<br><br><strong>小 τ (如 0.01)</strong>：<br>• Softmax 分布非常<strong>尖锐</strong><br>• 模型对困难样本更敏感<br>• 梯度集中在最困难的负样本上<br><br><strong>大 τ (如 1.0)</strong>：<br>• Softmax 分布非常<strong>平滑</strong><br>• 所有负样本获得相似的梯度<br>• 训练更稳定但收敛较慢<br><br>实践中 τ=0.07 是常见选择（CLIP 使用可学习的 τ）。',formula:'Softmax_τ(sᵢ) = exp(sᵢ/τ) / Σⱼ exp(sⱼ/τ)\n\nτ → 0: one-hot (极端)\nτ → ∞: uniform (均匀)\nτ = 0.07: 常见默认值'},
+{title:'Hard Negative Mining',desc:'<strong>Hard Negative Mining</strong> 选择最有价值的负样本进行训练。<br><br>三种策略对比：<br><br>1. <strong>Random</strong>：随机选择负样本<br>  • 简单但效率低<br>  • 大部分负样本太"简单"<br><br>2. <strong>Semi-Hard</strong>：选择 d(a,p) < d(a,n) < d(a,p)+margin<br>  • 不太难也不太简单<br>  • 训练最稳定<br><br>3. <strong>Hardest</strong>：选择距 anchor 最近的负样本<br>  • 学习效率最高<br>  • 但可能导致训练不稳定',formula:'Random: 随机采样 → 大部分太简单\nSemi-Hard: d(a,p) < d(a,n) < d(a,p)+m\nHardest: argmin_n d(a,n), label_n ≠ label_a\n\n推荐: 先 Random warmup → 逐步切换到 Hardest'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+// Step 0: Core idea - pull close / push apart
+function renderStep0(p){
+  const cx=W/2,cy=H/2-10;
+  // Anchor
+  const ap=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ap;ctx.fillStyle='#6C5CE7';
+  ctx.beginPath();ctx.arc(cx,cy,12,0,Math.PI*2);ctx.fill();
+  ctx.font='bold 12px PingFang SC';ctx.textAlign='center';ctx.fillText('Anchor',cx,cy-20);
+  ctx.globalAlpha=1;
+  // Positive (moves closer)
+  if(p>.2){
+    const pp=easeInOut((p-.2)/.4);
+    const posStartX=cx+120,posStartY=cy-60;
+    const posEndX=cx+40,posEndY=cy-20;
+    const px2=lerp(posStartX,posEndX,pp),py=lerp(posStartY,posEndY,pp);
+    ctx.globalAlpha=Math.min(1,(p-.2)/.15);
+    ctx.fillStyle='#00B894';ctx.beginPath();ctx.arc(px2,py,10,0,Math.PI*2);ctx.fill();
+    ctx.font='11px PingFang SC';ctx.fillText('正例',px2,py-16);
+    // Arrow showing pull
+    if(pp>.1&&pp<.9){ctx.strokeStyle='rgba(0,184,148,.5)';ctx.lineWidth=1.5;ctx.setLineDash([4,4]);
+      ctx.beginPath();ctx.moveTo(px2,py);ctx.lineTo(cx,cy);ctx.stroke();ctx.setLineDash([])}
+    ctx.globalAlpha=1;
+  }
+  // Negatives (move further)
+  const negs=[{sx:cx+80,sy:cy+40,ex:cx+160,ey:cy+80},{sx:cx-60,sy:cy+70,ex:cx-130,ey:cy+120},{sx:cx+30,sy:cy+90,ex:cx+60,ey:cy+150}];
+  for(let i=0;i<negs.length;i++){
+    const delay=.25+i*.1;
+    if(p>delay){
+      const np=easeInOut((p-delay)/.4);
+      const n=negs[i];
+      const nx=lerp(n.sx,n.ex,np),ny=lerp(n.sy,n.ey,np);
+      ctx.globalAlpha=Math.min(1,(p-delay)/.1);
+      ctx.fillStyle='#EF4444';ctx.beginPath();ctx.arc(nx,ny,8,0,Math.PI*2);ctx.fill();
+      ctx.font='10px PingFang SC';ctx.fillStyle='#EF4444';ctx.fillText('负例',nx,ny-14);
+      if(np>.1&&np<.9){ctx.strokeStyle='rgba(239,68,68,.3)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+        ctx.beginPath();ctx.moveTo(nx,ny);ctx.lineTo(cx,cy);ctx.stroke();ctx.setLineDash([])}
+      ctx.globalAlpha=1;
+    }
+  }
+  // Labels
+  if(p>.7){const lp=easeInOut((p-.7)/.3);ctx.globalAlpha=lp;ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';ctx.textAlign='center';
+    ctx.fillText('← 拉近正例',cx+60,cy-55);ctx.fillStyle='#EF4444';ctx.fillText('推远负例 →',cx+80,cy+60);ctx.globalAlpha=1}
+}
+
+// Step 1: InfoNCE matrix
+function renderStep1(p){
+  const cx=W/2,N=5,sz=45,pad=4,sx=cx-N*(sz+pad)/2,sy=30;
+  ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+  const lp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=lp;
+  for(let i=0;i<N;i++){ctx.fillStyle='#0984E3';ctx.fillText('a'+i,sx+i*(sz+pad)+sz/2,sy-8);ctx.fillStyle='#00B894';ctx.fillText('b'+i,sx-28,sy+i*(sz+pad)+sz/2+4)}
+  ctx.globalAlpha=1;
+  // Matrix
+  ctx.font='bold 10px Courier New';
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const delay=(i*N+j)*.015;const cp=easeInOut(Math.max(0,Math.min(1,(p-.15-delay)/.3)));
+    const isDiag=i===j;const v=isDiag?.85:Math.random()*.12+.03;
+    const x=sx+j*(sz+pad),y=sy+i*(sz+pad);
+    ctx.fillStyle=isDiag?`rgba(0,184,148,${cp*.6})`:`rgba(239,68,68,${cp*.2})`;
+    drawRR(x,y,sz,sz,5);ctx.fill();
+    if(isDiag&&cp>.5){ctx.strokeStyle='#00B894';ctx.lineWidth=2;drawRR(x,y,sz,sz,5);ctx.stroke()}
+    ctx.fillStyle=`rgba(255,255,255,${.3+cp*.7})`;ctx.textAlign='center';
+    ctx.fillText(v.toFixed(2),x+sz/2,y+sz/2+4);
+  }
+  // Softmax arrow
+  if(p>.6){const sp=easeInOut((p-.6)/.2);ctx.globalAlpha=sp;
+    ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';
+    ctx.fillText('每行 Softmax → CrossEntropy',cx,sy+N*(sz+pad)+20);
+    ctx.fillText('对角线 = 正样本 (label)',cx,sy+N*(sz+pad)+40);ctx.globalAlpha=1}
+}
+
+// Step 2: Triplet Loss
+function renderStep2(p){
+  const cx=W/2,cy=H/2-20;
+  // Three points forming triangle
+  const pts={a:{x:cx,y:cy-60},p:{x:cx-80,y:cy+40},n:{x:cx+100,y:cy+50}};
+  // Anchor
+  const ap=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ap;ctx.fillStyle='#6C5CE7';ctx.beginPath();ctx.arc(pts.a.x,pts.a.y,14,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#E2E8F0';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';ctx.fillText('A',pts.a.x,pts.a.y+4);
+  ctx.fillStyle='#6C5CE7';ctx.fillText('Anchor',pts.a.x,pts.a.y-22);ctx.globalAlpha=1;
+  // Positive
+  if(p>.2){const pp=easeInOut((p-.2)/.2);ctx.globalAlpha=pp;
+    ctx.fillStyle='#00B894';ctx.beginPath();ctx.arc(pts.p.x,pts.p.y,14,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#E2E8F0';ctx.font='bold 12px PingFang SC';ctx.fillText('P',pts.p.x,pts.p.y+4);
+    ctx.fillStyle='#00B894';ctx.fillText('Positive',pts.p.x,pts.p.y+28);
+    // d(a,p) line
+    ctx.strokeStyle='#00B894';ctx.lineWidth=2;ctx.setLineDash([6,4]);
+    ctx.beginPath();ctx.moveTo(pts.a.x,pts.a.y);ctx.lineTo(pts.p.x,pts.p.y);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#00B894';ctx.font='11px Courier New';
+    ctx.fillText('d(a,p)',(pts.a.x+pts.p.x)/2-15,(pts.a.y+pts.p.y)/2);
+    ctx.globalAlpha=1}
+  // Negative
+  if(p>.4){const np=easeInOut((p-.4)/.2);ctx.globalAlpha=np;
+    ctx.fillStyle='#EF4444';ctx.beginPath();ctx.arc(pts.n.x,pts.n.y,14,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#E2E8F0';ctx.font='bold 12px PingFang SC';ctx.fillText('N',pts.n.x,pts.n.y+4);
+    ctx.fillStyle='#EF4444';ctx.fillText('Negative',pts.n.x,pts.n.y+28);
+    ctx.strokeStyle='#EF4444';ctx.lineWidth=2;ctx.setLineDash([6,4]);
+    ctx.beginPath();ctx.moveTo(pts.a.x,pts.a.y);ctx.lineTo(pts.n.x,pts.n.y);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#EF4444';ctx.font='11px Courier New';
+    ctx.fillText('d(a,n)',(pts.a.x+pts.n.x)/2+15,(pts.a.y+pts.n.y)/2);
+    ctx.globalAlpha=1}
+  // Margin
+  if(p>.65){const mp=easeInOut((p-.65)/.2);ctx.globalAlpha=mp;
+    ctx.fillStyle='#F59E0B';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('目标: d(a,p) + margin < d(a,n)',cx,cy+90);
+    ctx.font='12px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText('Loss = max(0, d(a,p) - d(a,n) + margin)',cx,cy+112);ctx.globalAlpha=1}
+}
+
+// Step 3: Circle Loss
+function renderStep3(p){
+  const cx=W/2,topY=15;
+  // Similarity axis
+  const axW=W-80,axX=40,axY=topY+50;
+  const ap=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ap;
+  ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(axX,axY);ctx.lineTo(axX+axW,axY);ctx.stroke();
+  ctx.fillStyle='#94A3B8';ctx.font='11px Courier New';ctx.textAlign='center';
+  ctx.fillText('相似度 →',axX+axW/2,axY+18);ctx.fillText('-1',axX,axY+18);ctx.fillText('+1',axX+axW,axY+18);ctx.globalAlpha=1;
+  // Positive samples (should be high similarity)
+  const posS=[.4,.6,.85];
+  if(p>.25){for(let i=0;i<posS.length;i++){
+    const delay=.25+i*.08;const pp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const x=axX+(posS[i]+1)/2*axW;
+    ctx.globalAlpha=pp;ctx.fillStyle='#00B894';ctx.beginPath();ctx.arc(x,axY-15,8,0,Math.PI*2);ctx.fill();
+    ctx.font='9px Courier New';ctx.fillText(posS[i].toFixed(1),x,axY-28);ctx.globalAlpha=1;
+  }}
+  // Negative samples (should be low)
+  const negS=[-.1,.05,.2,.35];
+  if(p>.35){for(let i=0;i<negS.length;i++){
+    const delay=.35+i*.06;const np=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const x=axX+(negS[i]+1)/2*axW;
+    ctx.globalAlpha=np;ctx.fillStyle='#EF4444';ctx.beginPath();ctx.arc(x,axY+15,7,0,Math.PI*2);ctx.fill();
+    ctx.font='9px Courier New';ctx.fillText(negS[i].toFixed(1),x,axY+30);ctx.globalAlpha=1;
+  }}
+  // Weight visualization
+  if(p>.55){
+    const wp=easeInOut((p-.55)/.3);ctx.globalAlpha=wp;
+    const wy=axY+55;
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='#F59E0B';ctx.fillText('自适应权重',cx,wy);
+    // Far positive = high weight
+    ctx.fillStyle='#00B894';ctx.font='11px PingFang SC';
+    ctx.fillText('远正样本(0.4) → 大权重 α_p',cx-80,wy+25);
+    ctx.fillText('近正样本(0.85) → 小权重 α_p',cx-80,wy+45);
+    ctx.fillStyle='#EF4444';
+    ctx.fillText('近负样本(0.35) → 大权重 α_n',cx+80,wy+25);
+    ctx.fillText('远负样本(-0.1) → 小权重 α_n',cx+80,wy+45);
+    // Weight bars
+    const barX=cx-140,barW2=120;
+    ctx.fillStyle='rgba(0,184,148,.4)';drawRR(barX,wy+55,barW2*.8,12,3);ctx.fill();
+    ctx.fillStyle='rgba(0,184,148,.2)';drawRR(barX,wy+70,barW2*.2,12,3);ctx.fill();
+    ctx.fillStyle='rgba(239,68,68,.4)';drawRR(barX+barW2+40,wy+55,barW2*.7,12,3);ctx.fill();
+    ctx.fillStyle='rgba(239,68,68,.2)';drawRR(barX+barW2+40,wy+70,barW2*.15,12,3);ctx.fill();
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Temperature
+function renderStep4(p){
+  const cx=W/2,topY=10;
+  const temps=[{tau:.01,label:'τ=0.01 (尖锐)',color:'#EF4444'},{tau:.07,label:'τ=0.07 (适中)',color:'#F59E0B'},{tau:1.0,label:'τ=1.0 (平滑)',color:'#0984E3'}];
+  const plotW=W-60,plotH=60,plotX=30;
+  for(let t=0;t<temps.length;t++){
+    const delay=t*.25;const tp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const temp=temps[t],py=topY+20+t*(plotH+40);
+    ctx.globalAlpha=tp;
+    ctx.fillStyle=temp.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(temp.label,plotX,py-5);
+    // Axis
+    ctx.strokeStyle='rgba(255,255,255,.1)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(plotX,py+plotH);ctx.lineTo(plotX+plotW,py+plotH);ctx.stroke();
+    // Softmax distribution
+    ctx.strokeStyle=temp.color;ctx.lineWidth=2;ctx.beginPath();
+    const N=20;const scores=[];
+    for(let i=0;i<N;i++)scores.push(i===5?1.0:Math.random()*.3);
+    // Compute softmax
+    const expS=scores.map(s=>Math.exp(s/temp.tau));
+    const sumE=expS.reduce((a,b)=>a+b,0);
+    const probs=expS.map(e=>e/sumE);
+    const maxP=Math.max(...probs);
+    for(let i=0;i<N;i++){
+      const x=plotX+i*(plotW/N)+plotW/N/2;
+      const h=(probs[i]/maxP)*plotH*tp;
+      ctx.fillStyle=i===5?temp.color+'88':temp.color+'33';
+      ctx.fillRect(x-plotW/N/2+2,py+plotH-h,plotW/N-4,h);
+    }
+    ctx.globalAlpha=1;
+  }
+  // Labels
+  if(p>.8){const lp=easeInOut((p-.8)/.2);ctx.globalAlpha=lp;ctx.font='12px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('小τ: 梯度集中在最难负样本 | 大τ: 梯度均匀分布',cx,H-15);ctx.globalAlpha=1}
+}
+
+// Step 5: Hard Negative Mining
+function renderStep5(p){
+  const cx=W/2,topY=15;
+  // Anchor in center
+  const ap=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=ap;ctx.fillStyle='#6C5CE7';ctx.beginPath();ctx.arc(cx,topY+35,14,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#E2E8F0';ctx.font='bold 11px PingFang SC';ctx.textAlign='center';ctx.fillText('A',cx,topY+39);
+  ctx.globalAlpha=1;
+  // Three strategies side by side
+  const strategies=[
+    {name:'Random',color:'#94A3B8',desc:'随机采样',negDists:[.3,.6,.5,.8,.9],selIdx:[0,2]},
+    {name:'Semi-Hard',color:'#F59E0B',desc:'适中难度',negDists:[.3,.6,.5,.8,.9],selIdx:[1,2]},
+    {name:'Hardest',color:'#EF4444',desc:'最困难',negDists:[.3,.6,.5,.8,.9],selIdx:[0]}
+  ];
+  const sw=W/3-15,sy=topY+70;
+  for(let s=0;s<3;s++){
+    const delay=.15+s*.25;const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const st=strategies[s],sx2=10+s*(sw+10);
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=st.color+'11';ctx.strokeStyle=st.color+'44';ctx.lineWidth=1;
+    drawRR(sx2,sy,sw,H-sy-20,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=st.color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(st.name,sx2+sw/2,sy+20);
+    ctx.font='11px PingFang SC';ctx.fillStyle='#94A3B8';ctx.fillText(st.desc,sx2+sw/2,sy+38);
+    // Draw negative points
+    const ncx=sx2+sw/2,ncy=sy+80;
+    // Positive point
+    ctx.fillStyle='#00B894';ctx.beginPath();ctx.arc(ncx-20,ncy-10,6,0,Math.PI*2);ctx.fill();
+    ctx.font='9px PingFang SC';ctx.fillText('P',ncx-20,ncy-20);
+    // Negative points at different distances
+    for(let i=0;i<st.negDists.length;i++){
+      const angle=-Math.PI/2+i*Math.PI/4-Math.PI/8;
+      const dist=st.negDists[i]*50+20;
+      const nx=ncx+Math.cos(angle)*dist,ny=ncy+Math.sin(angle)*dist;
+      const isSel=st.selIdx.includes(i);
+      ctx.fillStyle=isSel?st.color:'rgba(239,68,68,.3)';
+      ctx.beginPath();ctx.arc(nx,ny,isSel?7:5,0,Math.PI*2);ctx.fill();
+      if(isSel){ctx.strokeStyle=st.color;ctx.lineWidth=2;ctx.beginPath();ctx.arc(nx,ny,10,0,Math.PI*2);ctx.stroke()}
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

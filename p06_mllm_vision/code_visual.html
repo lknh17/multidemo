@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p06 MLLM 多模态微调 - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre;overflow-x:auto}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">p06</span><h1>MLLM 多模态微调</h1><span class="tag">代码可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'config.py — 三层配置设计',desc:'配置文件包含三个 dataclass：<br><br>1. <strong>MLLMConfig</strong>：模型、数据、训练超参数，以及关键的 freeze_strategy 字段（freeze_vision / partial_unfreeze / full）<br><br>2. <strong>LoRAConfig</strong>：LoRA 参数（r=16, alpha=32），target_modules 指定 LLM 层的线性投影<br><br>3. <strong>ImageConfig</strong>：图像处理参数（min/max_pixels 控制动态分辨率，均值方差做归一化）',formula:'@dataclass\nclass MLLMConfig:\n  model_name = "Qwen/Qwen2.5-VL-2B-Instruct"\n  freeze_strategy = "freeze_vision"\n\n@dataclass\nclass LoRAConfig:\n  lora_r = 16\n  lora_alpha = 32\n  target_modules = [q,k,v,o,gate,up,down]\n\n@dataclass\nclass ImageConfig:\n  min_pixels = 256 * 28 * 28\n  max_pixels = 1280 * 28 * 28'},
+{title:'dataset.py — 多模态数据处理',desc:'数据处理包含三个关键组件：<br><br><strong>ImageProcessor</strong>：动态分辨率处理<br>• 保持宽高比等比缩放<br>• 对齐到 28 的倍数（patch size）<br>• ImageNet 标准归一化<br><br><strong>MLLMDataset</strong>：多模态数据集<br>• 加载图像并预处理<br>• 将 LLaVA 格式转为 Qwen2.5-VL messages<br>• Tokenize 并构造 labels（只对 assistant 计算 loss）<br><br><strong>create_mllm_dataset</strong>：统一创建函数，自动划分训练/验证集',formula:'# ImageProcessor\npixels = w * h\nif pixels > max_pixels:\n  scale = (max_pixels / pixels) ** 0.5\nw = (w // 28) * 28  # 对齐 patch\n\n# Labels: 只对 assistant 计算 loss\nlabels = input_ids.clone()\nlabels[user_part] = -100\nlabels[padding] = -100'},
+{title:'train.py — 冻结策略与 LoRA',desc:'训练脚本的核心是<strong>冻结策略</strong>和<strong>LoRA 应用</strong>：<br><br><strong>apply_freeze_strategy</strong>：<br>• 遍历 model.named_parameters()<br>• 通过参数名匹配 "visual"/"vision" 关键字<br>• 设置 requires_grad = False 冻结参数<br><br><strong>apply_lora</strong>：<br>• 使用 peft 的 LoraConfig + get_peft_model<br>• task_type=CAUSAL_LM<br>• 仅作用于 LLM 部分的 target_modules<br><br>训练使用 HuggingFace Trainer，支持 gradient checkpointing 和断点续训。',formula:'# 冻结策略\nfor name, param in model.named_parameters():\n  if "visual" in name:\n    param.requires_grad = False\n\n# LoRA\npeft_config = LoraConfig(\n  task_type=CAUSAL_LM,\n  r=16, lora_alpha=32,\n  target_modules=[q,k,v,o,...]\n)\nmodel = get_peft_model(model, peft_config)'},
+{title:'train.py — 训练循环与参数统计',desc:'训练配置的关键参数和 Trainer 初始化：<br><br><strong>学习率选择</strong>：<br>• LoRA 模式: lr=2e-4（参数少，需要更大步幅）<br>• 全参模式: lr=1e-5（避免遗忘）<br><br><strong>显存优化</strong>：<br>• gradient_checkpointing: 用时间换空间<br>• gradient_accumulation: 2×8=16 等效 batch<br>• bf16 混合精度<br><br><strong>参数统计</strong>：<br>• freeze_vision + LoRA: ~20M 可训练（~1%）<br>• partial_unfreeze: ~200M（~10%）<br>• full: ~2B（100%）',formula:'# LoRA 参数统计\ntrainable: 19,922,944  (0.90%)\ntotal:     2,207,843,328\n\n# Trainer\nTrainingArguments(\n  per_device_batch_size=2,\n  gradient_accumulation_steps=8,\n  learning_rate=2e-4,  # LoRA\n  gradient_checkpointing=True,\n  bf16=True,\n)'},
+{title:'inference.py — 多模态推理流水线',desc:'推理流程展示 Qwen2.5-VL 的端到端推理：<br><br><strong>输入构造</strong>：<br>1. 加载图像 → PIL Image → RGB<br>2. 构造消息：[{"type":"image"}, {"type":"text"}]<br>3. apply_chat_template → prompt 文本<br>4. processor 同时处理图像和文本<br><br><strong>生成回答</strong>：<br>• model.generate() 自回归生成<br>• temperature=0.7, top_p=0.9<br>• 只解码新生成部分<br><br><strong>测试覆盖</strong>：图像描述、VQA、OCR、空间推理、细粒度识别',formula:'# 推理流水线\nmessages = [{"role": "user", "content": [\n  {"type": "image", "image": path},\n  {"type": "text", "text": question}\n]}]\n\ntext = processor.apply_chat_template(...)\ninputs = processor(text, images)\noutputs = model.generate(**inputs)\nresponse = tokenizer.decode(outputs)'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+// Step 0: Config structure
+function renderStep0(p){
+  const cx=W/2,topY=10;
+  const configs=[
+    {name:'MLLMConfig',fields:['model_name','freeze_strategy','learning_rate','max_seq_length'],color:'#0984E3',icon:'⚙'},
+    {name:'LoRAConfig',fields:['lora_r=16','lora_alpha=32','target_modules','learning_rate'],color:'#6C5CE7',icon:'🔧'},
+    {name:'ImageConfig',fields:['min_pixels','max_pixels','mean / std','center_crop'],color:'#00B894',icon:'🖼'},
+  ];
+  const cw=W/3-15,ch=H-20;
+  for(let i=0;i<3;i++){
+    const delay=i*.15;const cp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const c=configs[i],x=10+i*(cw+10);
+    ctx.globalAlpha=cp;
+    ctx.fillStyle=c.color+'0D';ctx.strokeStyle=c.color;ctx.lineWidth=1.5;
+    drawRR(x,topY,cw,ch,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=c.color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(c.icon+' '+c.name,x+cw/2,topY+22);
+    // Fields
+    ctx.font='11px Courier New';ctx.textAlign='left';
+    for(let j=0;j<c.fields.length;j++){
+      const fd=delay+.1+j*.05;const fp=easeInOut(Math.max(0,Math.min(1,(p-fd)/.1)));
+      ctx.globalAlpha=fp;
+      const fy=topY+38+j*28;
+      ctx.fillStyle=c.color+'15';ctx.strokeStyle=c.color+'44';ctx.lineWidth=1;
+      drawRR(x+8,fy,cw-16,22,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#E2E8F0';
+      ctx.fillText(c.fields[j],x+15,fy+16);
+    }
+    ctx.globalAlpha=1;
+  }
+  // Connection lines
+  if(p>.7){
+    const lp=easeInOut((p-.7)/.15);
+    ctx.globalAlpha=lp;ctx.strokeStyle='#F59E0B44';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+    const y1=topY+ch/2;
+    ctx.beginPath();ctx.moveTo(10+cw,y1);ctx.lineTo(10+cw+10,y1);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(10+2*cw+10,y1);ctx.lineTo(10+2*cw+20,y1);ctx.stroke();
+    ctx.setLineDash([]);ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Dataset processing pipeline
+function renderStep1(p){
+  const cx=W/2,topY=10;
+  const pipeline=[
+    {label:'JSON 数据加载',code:'load_json_data(path)',color:'#94A3B8',y:topY},
+    {label:'图像预处理',code:'ImageProcessor(image)',color:'#0984E3',y:topY+50},
+    {label:'动态分辨率',code:'resize → align 28 → normalize',color:'#F59E0B',y:topY+100},
+    {label:'对话格式化',code:'<image> → <|image_pad|>',color:'#6C5CE7',y:topY+150},
+    {label:'Tokenize + Labels',code:'labels[user] = -100',color:'#00B894',y:topY+200},
+  ];
+  for(let i=0;i<pipeline.length;i++){
+    const delay=i*.12;const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.18)));
+    const s=pipeline[i];
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=s.color+'15';ctx.strokeStyle=s.color;ctx.lineWidth=1.5;
+    drawRR(20,s.y,W-40,40,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText((i+1)+'. '+s.label,30,s.y+16);
+    ctx.font='11px Courier New';ctx.fillStyle='#E2E8F0';ctx.textAlign='right';
+    ctx.fillText(s.code,W-30,s.y+30);
+    // Arrow
+    if(i>0){
+      ctx.strokeStyle=s.color+'66';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(cx,s.y-10);ctx.lineTo(cx,s.y);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(cx-4,s.y-3);ctx.lineTo(cx,s.y+1);ctx.lineTo(cx+4,s.y-3);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Freeze strategy implementation
+function renderStep2(p){
+  const cx=W/2,topY=5;
+  // Code lines with highlighting
+  const codeLines=[
+    {code:'def apply_freeze_strategy(model, strategy):',color:'#94A3B8',indent:0},
+    {code:'  if strategy == "freeze_vision":',color:'#00B894',indent:0},
+    {code:'    for name, param in model.named_parameters():',color:'#E2E8F0',indent:1},
+    {code:'      if "visual" in name:',color:'#F59E0B',indent:2},
+    {code:'        param.requires_grad = False',color:'#EF4444',indent:2},
+    {code:'',color:'#94A3B8',indent:0},
+    {code:'def apply_lora(model, lora_cfg):',color:'#94A3B8',indent:0},
+    {code:'  peft_config = LoraConfig(',color:'#6C5CE7',indent:1},
+    {code:'    task_type=CAUSAL_LM, r=16,',color:'#6C5CE7',indent:2},
+    {code:'    target_modules=[q,k,v,o,gate,up,down]',color:'#6C5CE7',indent:2},
+    {code:'  )',color:'#6C5CE7',indent:1},
+    {code:'  model = get_peft_model(model, peft_config)',color:'#00B894',indent:1},
+  ];
+  const lineH=22;
+  for(let i=0;i<codeLines.length;i++){
+    const delay=i*.06;const lp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.1)));
+    const l=codeLines[i];
+    ctx.globalAlpha=lp;
+    // Line number
+    ctx.fillStyle='#64748B';ctx.font='10px Courier New';ctx.textAlign='right';
+    ctx.fillText(String(i+1),18,topY+i*lineH+15);
+    // Highlight active line
+    const isActive=animProgress>delay&&animProgress<delay+.1;
+    if(isActive&&l.code){
+      ctx.fillStyle=l.color+'15';ctx.fillRect(22,topY+i*lineH+2,W-44,lineH-2);
+    }
+    // Code text
+    ctx.fillStyle=isActive?'#FFFFFF':l.color;ctx.font='11px Courier New';ctx.textAlign='left';
+    ctx.fillText(l.code,28+l.indent*12,topY+i*lineH+15);
+    ctx.globalAlpha=1;
+  }
+  // Visual annotation
+  if(p>.6){
+    const ap=easeInOut((p-.6)/.2);
+    ctx.globalAlpha=ap;
+    const ay=topY+codeLines.length*lineH+10;
+    // Freeze visualization
+    ctx.fillStyle='rgba(239,68,68,.1)';ctx.strokeStyle='#EF4444';ctx.lineWidth=1.5;
+    drawRR(20,ay,W/2-30,50,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#EF4444';ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('🧊 冻结视觉参数',W/4-5,ay+16);
+    ctx.font='10px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText('requires_grad = False',W/4-5,ay+35);
+    // LoRA visualization
+    ctx.fillStyle='rgba(108,92,231,.1)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=1.5;
+    drawRR(W/2+10,ay,W/2-30,50,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('🔧 LoRA 注入 LLM',3*W/4+5,ay+16);
+    ctx.font='10px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText('get_peft_model()',3*W/4+5,ay+35);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Training loop
+function renderStep3(p){
+  const cx=W/2,topY=5;
+  const flowSteps=[
+    {label:'model = load(Qwen2.5-VL-2B)',color:'#6C5CE7',indent:0},
+    {label:'apply_freeze_strategy(model)',color:'#EF4444',indent:0},
+    {label:'model = apply_lora(model)',color:'#6C5CE7',indent:0},
+    {label:'trainer = Trainer(model, args, data)',color:'#0984E3',indent:0},
+    {label:'trainer.train()',color:'#00B894',indent:0},
+    {label:'trainer.save_model(final_dir)',color:'#F59E0B',indent:0},
+  ];
+  const lineH=34;
+  for(let i=0;i<flowSteps.length;i++){
+    const delay=i*.1;const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const s=flowSteps[i],y=topY+i*lineH;
+    ctx.globalAlpha=sp;
+    const isActive=animProgress>delay&&animProgress<delay+.15;
+    if(isActive){ctx.fillStyle=s.color+'22';ctx.fillRect(20,y,W-40,lineH-4)}
+    ctx.fillStyle=s.color+'15';ctx.strokeStyle=s.color+'55';ctx.lineWidth=1;
+    drawRR(25+s.indent*15,y+2,W-55,lineH-6,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#64748B';ctx.font='10px Courier New';ctx.textAlign='right';
+    ctx.fillText(String(i+1),20,y+lineH/2+3);
+    ctx.fillStyle=isActive?'#FFFFFF':s.color;ctx.font='12px Courier New';ctx.textAlign='left';
+    ctx.fillText(s.label,35,y+lineH/2+4);
+    ctx.globalAlpha=1;
+  }
+  // Parameter comparison table
+  if(p>.65){
+    const tp=easeInOut((p-.65)/.35);
+    ctx.globalAlpha=tp;
+    const ty=topY+flowSteps.length*lineH+15;
+    ctx.fillStyle='rgba(108,92,231,.08)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=1;
+    drawRR(20,ty,W-40,H-ty-10,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('参数统计对比',cx,ty+16);
+    const rows=[
+      {name:'freeze + LoRA',params:'20M',pct:'0.9%',mem:'~10GB',color:'#00B894'},
+      {name:'partial_unfreeze',params:'200M',pct:'10%',mem:'~18GB',color:'#F59E0B'},
+      {name:'full',params:'2B',pct:'100%',mem:'~30GB',color:'#EF4444'},
+    ];
+    const colW=W/4-10;
+    // Header
+    ctx.font='10px PingFang SC';ctx.fillStyle='#64748B';
+    const headers=['策略','参数量','占比','显存'];
+    for(let j=0;j<4;j++){
+      ctx.fillText(headers[j],30+j*colW+colW/2,ty+33);
+    }
+    // Rows
+    for(let i=0;i<rows.length;i++){
+      const r=rows[i],ry=ty+45+i*22;
+      const rd=.7+i*.08;const rp=easeInOut(Math.max(0,Math.min(1,(p-rd)/.1)));
+      ctx.globalAlpha=rp;
+      ctx.fillStyle=r.color;ctx.font='11px Courier New';ctx.textAlign='center';
+      ctx.fillText(r.name,30+0*colW+colW/2,ry);
+      ctx.fillStyle='#E2E8F0';
+      ctx.fillText(r.params,30+1*colW+colW/2,ry);
+      ctx.fillText(r.pct,30+2*colW+colW/2,ry);
+      ctx.fillText(r.mem,30+3*colW+colW/2,ry);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Inference pipeline
+function renderStep4(p){
+  const cx=W/2,topY=10;
+  const pipeline=[
+    {label:'加载图像',code:'Image.open(path).convert("RGB")',icon:'🖼',color:'#0984E3'},
+    {label:'构造消息',code:'[{"type":"image"}, {"type":"text"}]',icon:'💬',color:'#6C5CE7'},
+    {label:'模板编码',code:'processor.apply_chat_template()',icon:'📝',color:'#F59E0B'},
+    {label:'处理输入',code:'processor(text, images) → tensors',icon:'⚡',color:'#00B894'},
+    {label:'生成回答',code:'model.generate(**inputs)',icon:'🤖',color:'#EF4444'},
+    {label:'解码输出',code:'tokenizer.decode(new_tokens)',icon:'✅',color:'#10B981'},
+  ];
+  const stepH=32,stepGap=5;
+  for(let i=0;i<pipeline.length;i++){
+    const delay=i*.1;const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const s=pipeline[i],y=topY+i*(stepH+stepGap);
+    ctx.globalAlpha=sp;
+    const isActive=animProgress>delay&&animProgress<delay+.15;
+    ctx.fillStyle=s.color+(isActive?'22':'0D');ctx.strokeStyle=s.color;ctx.lineWidth=isActive?2:1;
+    drawRR(20,y,W-40,stepH,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(s.icon+' '+s.label,30,y+14);
+    ctx.font='10px Courier New';ctx.fillStyle='#E2E8F0';ctx.textAlign='right';
+    ctx.fillText(s.code,W-30,y+24);
+    // Arrow
+    if(i>0&&sp>.5){
+      ctx.strokeStyle=s.color+'44';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(cx,y-stepGap);ctx.lineTo(cx,y);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+  // Test cases
+  if(p>.7){
+    const tp=easeInOut((p-.7)/.3);
+    ctx.globalAlpha=tp;
+    const ty=topY+pipeline.length*(stepH+stepGap)+10;
+    ctx.fillStyle='rgba(249,158,11,.08)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=1;
+    drawRR(20,ty,W-40,H-ty-10,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('测试覆盖',cx,ty+14);
+    const tests=['图像描述','VQA 问答','OCR 识别','空间推理','细粒度识别'];
+    const tw=60,tgap=8;const tsx=cx-tests.length*(tw+tgap)/2;
+    for(let i=0;i<tests.length;i++){
+      const tx=tsx+i*(tw+tgap);
+      const td=.75+i*.04;const tip=easeInOut(Math.max(0,Math.min(1,(p-td)/.08)));
+      ctx.globalAlpha=tip;
+      ctx.fillStyle='#F59E0B22';ctx.strokeStyle='#F59E0B66';ctx.lineWidth=1;
+      drawRR(tx,ty+22,tw,22,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#F59E0B';ctx.font='9px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(tests[i],tx+tw/2,ty+36);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>V18 - 商品理解：原理可视化</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,sans-serif;overflow-x:hidden}.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}.badge{background:linear-gradient(135deg,#ff6b35,#f7c948);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px}.title{font-size:18px;font-weight:600;flex:1}.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}.dots{display:flex;gap:6px;margin-left:16px}.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}.dot.active{background:#ff6b35;box-shadow:0 0 8px #ff6b35}.dot.done{background:#f7c948}.main{display:flex;height:calc(100vh - 136px)}.canvas-area{flex:6;background:#0d1117;display:flex;align-items:center;justify-content:center}canvas{border-radius:8px}.info-panel{flex:4;padding:24px;overflow-y:auto;background:#111827;border-left:1px solid #222}.step-title{font-size:20px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,#ff6b35,#f7c948);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.8;color:#ccc}.formula{background:#1a1e2e;border:1px solid #333;border-radius:8px;padding:12px;font-family:monospace;font-size:14px;color:#7dd3fc;margin:12px 0;white-space:pre-wrap}.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}.btn:hover{border-color:#ff6b35;box-shadow:0 0 12px rgba(255,107,53,.3)}.btn:disabled{opacity:.3}.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}.hl{color:#ff6b35}.hl2{color:#f7c948}.hl3{color:#00e5ff}</style></head>
+<body>
+<div class="header"><span class="badge">V18</span><span class="title">商品理解与细粒度视觉</span><span class="page-type">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div></div></div>
+<div class="controls"><button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button><div class="step-counter" id="stepCounter"></div><button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button><button class="btn" onclick="replay()">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-40}window.addEventListener('resize',resize);resize();
+function RR(x,y,w,h,r,f,s){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(f){ctx.fillStyle=f;ctx.fill()}if(s){ctx.strokeStyle=s;ctx.stroke()}}
+function arr(x1,y1,x2,y2,c='#555'){const a=Math.atan2(y2-y1,x2-x1),l=7;ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.fillStyle=c;ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-l*Math.cos(a-.3),y2-l*Math.sin(a-.3));ctx.lineTo(x2-l*Math.cos(a+.3),y2-l*Math.sin(a+.3));ctx.fill()}
+function txt(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+const steps=[
+{title:"细粒度识别：注意力裁剪",desc:`<p><span class="hl">注意力裁剪</span>通过 ViT 的注意力权重定位判别性区域。</p><p>步骤：ViT 编码 → CLS-Patch 注意力 → 阈值化 → BBox → 裁剪 → 重编码</p><div class="formula">attn_map = softmax(CLS · Patches^T / √d)
+bbox = BoundingBox({(i,j) : attn > θ·max})
+f_local = Encoder(Crop(Image, bbox))</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-20;
+RR(40,cy-80,120,160,4,'#1a1e2e','#555');txt('原图',100,cy-90,'#aaa');
+for(let i=0;i<8;i++)for(let j=0;j<8;j++){const v=Math.exp(-((i-3)**2+(j-4)**2)/4)*Math.min(1,p*2);ctx.fillStyle=`rgba(255,107,53,${v*0.8})`;ctx.fillRect(45+j*14,cy-75+i*19,12,17)}
+if(p>0.4){ctx.strokeStyle='#00e5ff';ctx.lineWidth=2;ctx.setLineDash([4,4]);ctx.strokeRect(45+2*14,cy-75+1*19,4*14,4*19);ctx.setLineDash([])}
+if(p>0.6){arr(165,cy,220,cy,'#ff6b35');RR(225,cy-50,100,100,4,'#1a1e2e','#00e5ff');txt('裁剪区域',275,cy-60,'#00e5ff');txt('Resize→224',275,cy,'#888',10)}
+if(p>0.8){arr(330,cy,380,cy,'#ff6b35');RR(385,cy-25,100,50,6,'#1a1e2e','#ff6b35');txt('ViT重编码',435,cy+5,'#ff6b35');txt('f_local',435,cy+40,'#f7c948',13)}}},
+
+{title:"多零件检测 (Part Detector)",desc:`<p>使用 <span class="hl">K 个可学习 Query</span> 从 patch 特征中检测不同判别性区域。</p><div class="formula">Part Query: Q ∈ R^{K×D}  (K=4个零件)
+Cross-Attn: A = softmax(Q·F^T/√d)  ∈ R^{K×N}
+Part Feat: P = A · F  ∈ R^{K×D}
+
+多样性正则: L_div = ||A^T·A - I||²_F
+确保不同 part 关注不同区域</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('Patch Features [N=196]',cx-150,25,'#aaa',13);
+for(let i=0;i<14;i++)for(let j=0;j<14;j++){ctx.fillStyle=`rgba(100,100,100,${Math.min(1,p*3)*0.5})`;ctx.fillRect(cx-250+j*16,35+i*16,14,14)}
+if(p>0.3){const colors=['#ff6b35','#f7c948','#00e5ff','#e040fb'];
+for(let k=0;k<4;k++){const qy=35+k*60;RR(cx+60,qy,80,25,4,colors[k]+'33',colors[k]);txt(`Part${k}`,cx+100,qy+17,colors[k],11)}
+txt('Part Queries',cx+100,30,'#aaa',11)}
+if(p>0.6){const colors=['#ff6b35','#f7c948','#00e5ff','#e040fb'];
+const regions=[[3,2,5,4],[8,7,4,3],[2,9,4,4],[10,3,3,5]];
+regions.forEach((r,k)=>{ctx.strokeStyle=colors[k];ctx.lineWidth=2;ctx.strokeRect(cx-250+r[0]*16,35+r[1]*16,r[2]*16,r[3]*16)})}
+}},
+
+{title:"ArcFace 度量学习",desc:`<p><span class="hl">ArcFace</span> 在角度空间加 margin，使类内更紧凑、类间更分散。</p><div class="formula">L = -log[e^(s·cos(θ_yi+m)) / (e^(s·cos(θ_yi+m)) + Σ e^(s·cos θ_j))]
+
+s = 30 (缩放因子)
+m = 0.5 (角度 margin)
+
+效果：正确类的决策边界向内收缩 m 弧度
+→ 类内角距离更小，类间分离更大</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2;
+ctx.strokeStyle='#333';ctx.lineWidth=1;ctx.beginPath();ctx.arc(cx,cy,120,0,Math.PI*2);ctx.stroke();
+txt('单位球面 (L2归一化)',cx,cy-140,'#aaa',13);
+const classes=[[0.3,'#ff6b35','A'],[1.5,'#f7c948','B'],[2.8,'#00e5ff','C'],[4.2,'#e040fb','D']];
+classes.forEach(([angle,color,name])=>{const margin=0.5*Math.min(1,p);
+for(let i=0;i<6;i++){const a=angle+(Math.random()-.5)*0.3*(1-margin*0.5);const r=115+Math.random()*10;const x=cx+r*Math.cos(a),y=cy+r*Math.sin(a);ctx.fillStyle=color;ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fill()}
+const wx=cx+130*Math.cos(angle),wy=cy+130*Math.sin(angle);txt(name,wx,wy,color,14);
+if(p>0.5){ctx.strokeStyle=color+'88';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.beginPath();ctx.arc(cx,cy,120,angle-0.2+margin*0.1,angle+0.2-margin*0.1);ctx.stroke();ctx.setLineDash([])}});
+if(p>0.7){txt(`margin=${(0.5*p).toFixed(1)} → 类间距离↑`,cx,cy+160,'#f7c948',13)}}},
+
+{title:"多维度质量评估",desc:`<p><span class="hl">商品图像质量</span>从 5 个维度评估：清晰度、曝光、构图、美感、合规。</p><div class="formula">每个维度独立评分: q_k = sigmoid(MLP_k(features))
+整体质量: q_overall = MLP([features; q_1,...,q_5])
+
+排序学习 (Ranking Loss):
+L_rank = max(0, ε - (q_i - q_j))  if I_i > I_j</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+const dims=['清晰度','曝光','构图','美感','合规'];const scores=[0.9,0.85,0.7,0.8,0.95];
+txt('商品图像质量评估',cx,30,'#aaa',14);
+dims.forEach((d,i)=>{const y=60+i*40;const w=scores[i]*300*Math.min(1,p*2);
+RR(cx-200,y,300,25,4,'#1a1e2e','#333');
+const hue=scores[i]*120;ctx.fillStyle=`hsl(${hue},70%,50%)`;RR(cx-200,y,w,25,4,`hsl(${hue},70%,50%)`);
+txt(d,cx-240,y+17,'#aaa',12);ctx.textAlign='left';
+txt(`${(scores[i]*100).toFixed(0)}%`,cx+110,y+17,'#fff',12);ctx.textAlign='center'});
+if(p>0.7){const oy=280;RR(cx-80,oy,160,35,6,'#ff6b3544','#ff6b35');txt('Overall: 84%',cx,oy+22,'#ff6b35',14)}}},
+
+{title:"跨域商品匹配",desc:`<p><span class="hl">同款商品</span>在不同拍摄条件下外观差异大，需要度量学习。</p><div class="formula">距离: d(xi, xj) = ||f(xi) - f(xj)||₂
+
+同款匹配策略:
+1. ArcFace: 角度margin使同款更近
+2. Triplet Loss: d(a,p) + m < d(a,n)
+3. 跨域增强: 同SKU不同图作为正例
+
+应用: 以图搜商品、同款推荐</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-20;
+// Query
+RR(30,cy-40,80,80,4,'#ff6b3533','#ff6b35');txt('查询图',70,cy-50,'#ff6b35',12);txt('SKU-A',70,cy+5,'#fff',10);
+if(p>0.3){arr(115,cy,180,cy,'#ff6b35');RR(185,cy-20,80,40,6,'#1a1e2e','#ff6b35');txt('编码器',225,cy+5,'#ff6b35',11)}
+if(p>0.5){arr(270,cy,320,cy,'#ff6b35');
+const results=[{y:cy-80,c:'#00e5ff',s:'0.95',n:'同款-正面'},{y:cy-20,c:'#00e5ff',s:'0.91',n:'同款-侧面'},{y:cy+40,c:'#f7c948',s:'0.72',n:'相似款'},{y:cy+100,c:'#ff4444',s:'0.35',n:'不同商品'}];
+results.forEach((r,i)=>{const alpha=Math.min(1,(p-0.5)*4-i*0.3);if(alpha<=0)return;ctx.globalAlpha=alpha;RR(325,r.y,180,35,4,'#1a1e2e',r.c);txt(r.n,380,r.y+15,r.c,10);txt(r.s,480,r.y+22,'#fff',11);ctx.globalAlpha=1})}}}
+];
+
+function animate(){animProgress+=.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}
+function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('stepTitle').innerHTML=steps[currentStep].title;document.getElementById('stepDesc').innerHTML=steps[currentStep].desc;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))})}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});init();
+</script></body></html>

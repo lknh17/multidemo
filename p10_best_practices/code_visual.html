@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p10 最佳实践总结 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(108,92,231,.25);border-left:3px solid var(--primary);}
+.code-line .kw{color:#C792EA;}.code-line .fn{color:#82AAFF;}.code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;}.code-line .cm{color:#546E7A;font-style:italic;}.code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(9,132,227,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(9,132,227,.5);background:rgba(9,132,227,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(9,132,227,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(9,132,227,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p10</span>
+  <h1>最佳实践总结</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'config.py — 分阶段推荐配置',
+   desc:'每个训练阶段独立的 dataclass 配置。学习率从预训练到 RL 逐步递减，越后面越"精细"。',
+   code:[
+     {text:'<span class="kw">@dataclass</span>',hl:false},
+     {text:'<span class="kw">class</span> <span class="fn">PretrainBestConfig</span>:',hl:false},
+     {text:'    learning_rate: <span class="kw">float</span> = <span class="num">2e-5</span>  <span class="cm"># 最大</span>',hl:true},
+     {text:'    packing: <span class="kw">bool</span> = <span class="kw">True</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="kw">@dataclass</span>',hl:false},
+     {text:'<span class="kw">class</span> <span class="fn">SFTBestConfig</span>:',hl:false},
+     {text:'    learning_rate: <span class="kw">float</span> = <span class="num">2e-5</span>  <span class="cm"># 中等</span>',hl:true},
+     {text:'    lora_r: <span class="kw">int</span> = <span class="num">16</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="kw">@dataclass</span>',hl:false},
+     {text:'<span class="kw">class</span> <span class="fn">DPOBestConfig</span>:',hl:false},
+     {text:'    learning_rate: <span class="kw">float</span> = <span class="num">5e-6</span>  <span class="cm"># 较小</span>',hl:true},
+     {text:'    beta: <span class="kw">float</span> = <span class="num">0.1</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="kw">@dataclass</span>',hl:false},
+     {text:'<span class="kw">class</span> <span class="fn">RLBestConfig</span>:',hl:false},
+     {text:'    learning_rate: <span class="kw">float</span> = <span class="num">1e-6</span>  <span class="cm"># 最小</span>',hl:true},
+   ],highlightLines:[2,7,12,17]},
+  {title:'troubleshooting.py — GPU 显存诊断',
+   desc:'自动检测 GPU 状态，评估 OOM 风险。使用率超过 95% 时给出紧急建议：开启 GC、减小 batch。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">check_gpu</span>():',hl:false},
+     {text:'    <span class="kw">for</span> i <span class="kw">in</span> range(torch.cuda.device_count()):',hl:false},
+     {text:'        props = torch.cuda.get_device_properties(i)',hl:false},
+     {text:'        total = props.total_mem / <span class="num">1024</span>**<span class="num">3</span>',hl:true},
+     {text:'        reserved = torch.cuda.memory_reserved(i) / <span class="num">1024</span>**<span class="num">3</span>',hl:true},
+     {text:'',hl:false},
+     {text:'        usage = reserved / total',hl:true},
+     {text:'        <span class="kw">if</span> usage > <span class="num">0.95</span>:  <span class="cm"># 临界 OOM</span>',hl:true},
+     {text:'            suggest(<span class="str">"gradient_checkpointing=True"</span>)',hl:false},
+     {text:'            suggest(<span class="str">"减小 batch_size"</span>)',hl:false},
+   ],highlightLines:[3,4,6,7]},
+  {title:'troubleshooting.py — Loss 异常检测',
+   desc:'四级诊断：NaN → 飙升 → 不下降 → 震荡。每种异常给出不同的修复建议。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">check_loss</span>(losses):',hl:false},
+     {text:'    <span class="cm"># 1. NaN 检测</span>',hl:false},
+     {text:'    nan_idx = [i <span class="kw">for</span> i,l <span class="kw">in</span> enumerate(losses)',hl:true},
+     {text:'              <span class="kw">if</span> math.isnan(l)]',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 2. 不下降检测</span>',hl:false},
+     {text:'    first_q = avg(losses[:len//4])',hl:false},
+     {text:'    last_q = avg(losses[-len//4:])',hl:false},
+     {text:'    <span class="kw">if</span> last_q >= first_q * <span class="num">0.98</span>:',hl:true},
+     {text:'        suggest(<span class="str">"增大学习率 2-5 倍"</span>)',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 3. 震荡检测</span>',hl:false},
+     {text:'    volatility = avg_diff / avg_loss',hl:true},
+     {text:'    <span class="kw">if</span> volatility > <span class="num">0.3</span>:',hl:true},
+     {text:'        suggest(<span class="str">"增大 batch_size"</span>)',hl:false},
+   ],highlightLines:[2,3,8,12,13]},
+  {title:'pipeline_runner.py — 断点恢复',
+   desc:'进度持久化到 JSON 文件。失败时记录当前阶段，下次运行自动跳过已完成阶段。',
+   code:[
+     {text:'PROGRESS_FILE = <span class="str">"pipeline_progress.json"</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="kw">def</span> <span class="fn">run_pipeline</span>(resume_from=<span class="kw">None</span>):',hl:false},
+     {text:'    progress = load_progress()  <span class="cm"># 加载已完成列表</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="kw">for</span> stage <span class="kw">in</span> PIPELINE_STAGES:',hl:false},
+     {text:'        <span class="kw">if</span> stage[<span class="str">"id"</span>] <span class="kw">in</span> progress[<span class="str">"completed"</span>]:',hl:true},
+     {text:'            <span class="kw">continue</span>  <span class="cm"># 跳过已完成</span>',hl:true},
+     {text:'',hl:false},
+     {text:'        success = run_stage(stage)  <span class="cm"># 子进程执行</span>',hl:true},
+     {text:'        <span class="kw">if</span> success:',hl:false},
+     {text:'            progress[<span class="str">"completed"</span>].append(stage[<span class="str">"id"</span>])',hl:true},
+     {text:'            save_progress(progress)',hl:true},
+     {text:'        <span class="kw">else</span>:',hl:false},
+     {text:'            print(f<span class="str">"--resume-from {stage[\'id\']}"</span>)',hl:false},
+     {text:'            <span class="kw">return</span>  <span class="cm"># 失败时停止</span>',hl:false},
+   ],highlightLines:[3,6,7,9,11,12]},
+  {title:'pipeline_runner.py — 子进程隔离',
+   desc:'每个阶段在 subprocess 中执行，内存完全隔离。超时限制防止单阶段卡死整个流水线。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">run_stage</span>(stage, dry_run=<span class="kw">False</span>):',hl:false},
+     {text:'    script_path = os.path.join(root, stage[<span class="str">"script"</span>])',hl:false},
+     {text:'',hl:false},
+     {text:'    result = subprocess.run(',hl:true},
+     {text:'        [sys.executable, script_path],',hl:true},
+     {text:'        cwd=os.path.dirname(script_path),',hl:false},
+     {text:'        timeout=<span class="num">7200</span>,  <span class="cm"># 2小时超时</span>',hl:true},
+     {text:'    )',hl:false},
+     {text:'    <span class="kw">return</span> result.returncode == <span class="num">0</span>',hl:true},
+   ],highlightLines:[3,4,6,8]},
+];
+
+function resize(){const r=window.devicePixelRatio||1;const rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0);}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+function renderStep0(p){
+  const cx=W/2,topY=20;
+  const lrs=[{stage:'Pretrain',lr:2e-5,color:'#F59E0B'},{stage:'SFT',lr:2e-5,color:'#0984E3'},{stage:'DPO',lr:5e-6,color:'#6C5CE7'},{stage:'RL',lr:1e-6,color:'#00B894'}];
+  const maxLr=2e-5;
+  const barW=60,gap=30,bh=120;
+  const total=lrs.length*(barW+gap)-gap;
+  const sx=cx-total/2;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(108,92,231,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.fillText('各阶段推荐学习率',cx,topY);
+  for(let i=0;i<lrs.length;i++){
+    const delay=.15+i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=sx+i*(barW+gap);
+    const h=(lrs[i].lr/maxLr)*bh*ap;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=lrs[i].color+'44';ctx.strokeStyle=lrs[i].color;ctx.lineWidth=2;
+    drawRoundRect(x,topY+30+bh-h,barW,h,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=lrs[i].color;ctx.font='bold 12px PingFang SC';
+    ctx.fillText(lrs[i].stage,x+barW/2,topY+bh+50);
+    ctx.font='11px Courier New';
+    ctx.fillText(lrs[i].lr.toExponential(0),x+barW/2,topY+25+bh-h);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=15;
+  const levels=[
+    {pct:50,label:'安全 (<50%)',color:'#10B981'},
+    {pct:75,label:'正常 (50-85%)',color:'#0984E3'},
+    {pct:90,label:'偏高 (85-95%)',color:'#F59E0B'},
+    {pct:98,label:'临界 OOM (>95%)',color:'#EF4444'},
+  ];
+  const barH=30,gap=12;
+  let y=topY+10;
+  for(let i=0;i<levels.length;i++){
+    const delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const l=levels[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='rgba(255,255,255,.04)';
+    drawRoundRect(30,y,W-60,barH,6);ctx.fill();
+    const w=(W-60)*(l.pct/100)*ap;
+    ctx.fillStyle=l.color+'44';ctx.strokeStyle=l.color;ctx.lineWidth=1.5;
+    drawRoundRect(30,y,w,barH,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=l.color;ctx.font='12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(l.label,40,y+barH/2+4);
+    ctx.textAlign='right';ctx.font='bold 12px Courier New';
+    ctx.fillText(l.pct+'%',W-40,y+barH/2+4);
+    ctx.globalAlpha=1;
+    y+=barH+gap;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=10;
+  const anomalies=[
+    {type:'NaN',severity:'严重',fix:'降低 lr / 用 bf16',color:'#EF4444'},
+    {type:'飙升',severity:'警告',fix:'加强梯度裁剪',color:'#F59E0B'},
+    {type:'不下降',severity:'警告',fix:'增大 lr / 检查数据',color:'#0984E3'},
+    {type:'震荡',severity:'提示',fix:'增大 batch',color:'#6C5CE7'},
+  ];
+  let y=topY;
+  for(let i=0;i<anomalies.length;i++){
+    const delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const a=anomalies[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=a.color+'15';ctx.strokeStyle=a.color+'88';ctx.lineWidth=1.5;
+    drawRoundRect(20,y,W-40,45,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=a.color;ctx.font='bold 14px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(a.type+' ('+a.severity+')',35,y+20);
+    ctx.fillStyle='rgba(255,255,255,.5)';ctx.font='12px PingFang SC';
+    ctx.fillText('修复: '+a.fix,35,y+37);
+    ctx.globalAlpha=1;
+    y+=55;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=15;
+  const stages=[
+    {id:'p02',status:'done',color:'#10B981'},
+    {id:'p03',status:'done',color:'#10B981'},
+    {id:'p04',status:'fail',color:'#EF4444'},
+    {id:'p05',status:'skip',color:'#64748B'},
+  ];
+  const icons={done:'✅',fail:'❌',skip:'⏳'};
+  let y=topY;
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'15';ctx.strokeStyle=s.color;ctx.lineWidth=1.5;
+    drawRoundRect(cx-100,y,200,35,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(icons[s.status]+' '+s.id,cx,y+23);
+    if(i>0){ctx.strokeStyle=s.color+'44';ctx.beginPath();ctx.moveTo(cx,y-5);ctx.lineTo(cx,y);ctx.stroke();}
+    ctx.globalAlpha=1;
+    y+=48;
+  }
+  if(p>.7){
+    ctx.globalAlpha=easeInOut((p-.7)/.3);
+    ctx.fillStyle='#F59E0B';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('→ resume-from p04 恢复执行',cx,y+10);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=15;
+  const items=[
+    {text:'子进程执行',sub:'内存隔离',color:'#6C5CE7'},
+    {text:'超时限制',sub:'timeout=7200s',color:'#0984E3'},
+    {text:'returncode 检测',sub:'成功=0 失败≠0',color:'#00B894'},
+  ];
+  let y=topY+10;
+  for(let i=0;i<items.length;i++){
+    const delay=i*.2;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=items[i].color+'15';ctx.strokeStyle=items[i].color;ctx.lineWidth=2;
+    drawRoundRect(cx-120,y,240,50,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=items[i].color;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(items[i].text,cx,y+22);
+    ctx.fillStyle='rgba(255,255,255,.5)';ctx.font='11px PingFang SC';
+    ctx.fillText(items[i].sub,cx,y+40);
+    ctx.globalAlpha=1;
+    y+=65;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function updateCodePanel(){
+  const panel=document.getElementById('codePanel');
+  const s=steps[currentStep];
+  panel.innerHTML=s.code.map((line,i)=>{
+    const cls=s.highlightLines.includes(i)?'code-line highlight':'code-line';
+    return `<div class="${cls}">${line.text||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress);}
+function startAnim(){animProgress=0;const start=performance.now(),duration=2000;function tick(now){animProgress=Math.min(1,(now-start)/duration);render();if(animProgress<1)animId=requestAnimationFrame(tick);}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick);}
+
+function updateUI(){
+  const s=steps[currentStep];
+  document.getElementById('infoTitle').textContent=s.title;
+  document.getElementById('infoDesc').innerHTML=s.desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCodePanel();
+  const dotsEl=document.getElementById('dots');dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){const d=document.createElement('span');if(i===currentStep)d.className='active';d.onclick=()=>{currentStep=i;updateUI();startAnim();};dotsEl.appendChild(d);}
+}
+
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim();}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim();}}
+function replay(){startAnim();}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep();});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

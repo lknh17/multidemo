@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v13 高级注意力机制 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v13</span>
+  <h1>高级注意力机制</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/7</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'MHA → GQA → MQA 演进',
+    desc: '标准 <strong>MHA</strong> 中每个 Q head 有自己的 K/V head（参数多、KV Cache 大）。<br><br><strong>GQA</strong>（Qwen2/LLaMA2）让每组 Q heads 共享一对 K/V head：n_heads=32, n_kv_heads=8 → 每 4 个 Q head 共享 1 对 KV。<br><br><strong>MQA</strong> 是 GQA 的极端情况：所有 Q heads 共享 <strong>同一对</strong> K/V head（n_kv_heads=1）。<br><br>KV Cache 从 2·L·d_model 降到 2·L·d_model·(n_kv_heads/n_heads)。',
+    formula: 'MHA: KV Cache = 2 × L × n_heads × d_k\nGQA: KV Cache = 2 × L × n_kv_heads × d_k\nMQA: KV Cache = 2 × L × 1 × d_k' },
+  { title: 'GQA 的 KV Head 扩展机制',
+    desc: 'GQA 的关键实现：通过 <strong>unsqueeze + expand + reshape</strong> 将少量 KV head 广播到全部 Q head。<br><br>以 n_heads=8, n_kv_heads=2 为例：<br>K: [B, 2, L, dk] → unsqueeze(2) → [B, 2, <strong>1</strong>, L, dk]<br>→ expand → [B, 2, <strong>4</strong>, L, dk]<br>→ reshape → [B, <strong>8</strong>, L, dk]<br><br>expand 不复制内存，只创建视图；每 4 个 Q head 看到的是同一份 KV 数据。',
+    formula: 'K: [B, n_kv, L, dk]\n→ unsqueeze(2): [B, n_kv, 1, L, dk]\n→ expand: [B, n_kv, n_groups, L, dk]\n→ reshape: [B, n_heads, L, dk]' },
+  { title: '滑动窗口注意力 (Sliding Window)',
+    desc: 'Mistral 模型的核心创新：每个 token 只关注前 <strong>W</strong> 个 token，而非全部。<br><br>优势：<br>• 注意力复杂度从 O(L²) 降到 O(L·W)<br>• 多层叠加后，第 n 层的有效感受野为 <strong>n × W</strong><br><br>实现：构造<strong>带状因果掩码</strong> mask[i,j]=True 当 j≤i 且 i-j<W。<br><br>动画展示：全局注意力 vs 滑动窗口注意力的掩码对比。',
+    formula: 'mask[i, j] = (j ≤ i) ∧ (i - j < W)\n有效感受野(第n层) = n × W\nMistral-7B: W=4096, 32层 → 理论131K' },
+  { title: 'Flash Attention 核心思想',
+    desc: 'GPU 的 <strong>HBM</strong>（显存，大但慢）和 <strong>SRAM</strong>（片上缓存，小但快 10×）是瓶颈。<br><br>标准注意力：Q·K^T 写入 HBM → 读出做 Softmax → 写回 → 与 V 相乘。<strong>3 次 HBM 往返</strong>。<br><br>Flash Attention 使用 <strong>Tiling</strong>：将 Q/K/V 分成适合 SRAM 的小块，在 SRAM 内完成所有计算，只写最终结果到 HBM。<strong>IO 复杂度从 O(N²) 降到 O(N²d/M)</strong>。<br><br>关键难点：Softmax 需要全局 max，用 <strong>Online Softmax</strong> 解决。',
+    formula: 'Standard: O(N² + Nd) HBM 访问\nFlash Attention: O(N²d / M) HBM 访问\n(M = SRAM 大小, d = head dim)\n\n节省 = N / (d·M) 倍 IO' },
+  { title: 'Online Softmax 算法',
+    desc: '传统 Softmax 需要<strong>两遍</strong>扫描：第一遍求 max，第二遍计算 exp/sum。Flash Attention 用 <strong>Online Softmax</strong> 实现单遍计算。<br><br>核心思想：维护三个累积量：<br>• <strong>m_i</strong>: 目前见过的最大值<br>• <strong>l_i</strong>: exp(s - m_i) 的累积和<br>• <strong>O_i</strong>: 加权 V 的累积<br><br>每见到新块时，用 <strong>correction = exp(m_old - m_new)</strong> 修正旧累积量，保证数值等价。',
+    formula: 'm_new = max(m_old, max(S_block))\ncorrection = exp(m_old - m_new)\nl_new = l_old × correction + Σ exp(S_block - m_new)\nO_new = O_old × correction + exp(S_block - m_new) · V' },
+  { title: 'RoPE 与长上下文扩展',
+    desc: '<strong>RoPE</strong>（旋转位置编码）是现代 LLM 的标准：对 Q/K 施加与位置相关的旋转，使内积自然包含相对位置信息。<br><br>问题：训练长度 4K，推理想用 32K 怎么办？<br><br><strong>NTK-aware RoPE</strong>：动态调整频率基数 θ，相当于在频率空间进行"内插"。低频（编码全局位置）被压缩，高频（编码局部位置）保持不变。<br><br><strong>YaRN</strong>：在 NTK 基础上增加注意力温度缩放，进一步减少外推误差。',
+    formula: 'RoPE: f(x, pos) = x·cos(pos·θ) + rot(x)·sin(pos·θ)\n\nNTK: θ_new = θ × α^(d/(d-2))\nα = target_len / train_len\n\nYaRN: Attn_scale = 0.1·ln(s) + 1' },
+  { title: 'Attention Sink 与 StreamingLLM',
+    desc: '实验发现：LLM 的<strong>第一个 token 始终获得异常高的注意力权重</strong>（Attention Sink），即使它是无意义的 BOS token。<br><br>原因：Softmax 的数学特性要求注意力权重和为 1。当模型不需要关注任何信息时，多余的概率质量被"倒"进第一个 token。<br><br><strong>StreamingLLM</strong> 利用这一现象：推理时只保留 <strong>前几个 sink tokens + 最近 W 个 token</strong> 的 KV Cache，实现<strong>无限长度</strong>推理，PPL 几乎不变。',
+    formula: 'StreamingLLM KV Cache:\n[sink_0, sink_1, ..., sink_k, t_{n-W}, ..., t_n]\n\n保留 k 个 sink + W 个最近 token\n总 Cache = (k + W) × d  (常数，与长度无关)' },
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function hsl(h,s,l){ return `hsl(${h},${s}%,${l}%)`; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: MHA → GQA → MQA
+function renderStep0(p) {
+  const cx = W/2, topY = 30;
+  ctx.font = 'bold 14px PingFang SC'; ctx.textAlign = 'center';
+
+  const configs = [
+    { label: 'MHA (n_kv=8)', nQ: 8, nKV: 8, color: '#EF4444', x: cx - 180 },
+    { label: 'GQA (n_kv=2)', nQ: 8, nKV: 2, color: '#F59E0B', x: cx },
+    { label: 'MQA (n_kv=1)', nQ: 8, nKV: 1, color: '#10B981', x: cx + 180 },
+  ];
+
+  for (let ci = 0; ci < configs.length; ci++) {
+    const c = configs[ci];
+    const delay = ci * 0.25;
+    const ap = easeInOut(Math.max(0, Math.min(1, (p - delay) / 0.3)));
+    ctx.globalAlpha = ap;
+
+    // Title
+    ctx.fillStyle = c.color; ctx.font = 'bold 13px PingFang SC';
+    ctx.fillText(c.label, c.x, topY);
+
+    // Q heads
+    const qY = topY + 25, kvY = topY + 130;
+    const headW = 16, headGap = 4;
+    const totalQW = c.nQ * (headW + headGap) - headGap;
+    const qsx = c.x - totalQW / 2;
+
+    ctx.fillStyle = 'rgba(108,92,231,.5)'; ctx.font = '10px PingFang SC';
+    ctx.fillText('Q heads', c.x, qY - 5);
+    for (let i = 0; i < c.nQ; i++) {
+      const x = qsx + i * (headW + headGap);
+      ctx.fillStyle = 'rgba(108,92,231,.3)'; ctx.strokeStyle = 'rgba(108,92,231,.7)';
+      drawRoundRect(x, qY, headW, 30, 4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#6C5CE7'; ctx.font = '9px Courier New';
+      ctx.fillText('Q', x + headW / 2, qY + 19);
+    }
+
+    // KV heads
+    const totalKVW = c.nKV * (headW + headGap) - headGap;
+    const kvsx = c.x - totalKVW / 2;
+    ctx.fillStyle = 'rgba(0,184,148,.5)'; ctx.font = '10px PingFang SC';
+    ctx.fillText('KV heads', c.x, kvY - 5);
+    for (let i = 0; i < c.nKV; i++) {
+      const x = kvsx + i * (headW + headGap);
+      ctx.fillStyle = 'rgba(0,184,148,.3)'; ctx.strokeStyle = 'rgba(0,184,148,.7)';
+      drawRoundRect(x, kvY, headW, 30, 4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#00B894'; ctx.font = '9px Courier New';
+      ctx.fillText('KV', x + headW / 2, kvY + 19);
+    }
+
+    // Connection lines
+    const groupSize = c.nQ / c.nKV;
+    ctx.lineWidth = 1;
+    for (let qi = 0; qi < c.nQ; qi++) {
+      const kvI = Math.floor(qi / groupSize);
+      const qx = qsx + qi * (headW + headGap) + headW / 2;
+      const kvx = kvsx + kvI * (headW + headGap) + headW / 2;
+      ctx.strokeStyle = c.color + '66';
+      ctx.beginPath(); ctx.moveTo(qx, qY + 30); ctx.lineTo(kvx, kvY); ctx.stroke();
+    }
+
+    // Cache size
+    ctx.fillStyle = c.color; ctx.font = '11px PingFang SC';
+    ctx.fillText(`Cache: ${c.nKV}/${c.nQ} = ${(c.nKV/c.nQ*100).toFixed(0)}%`, c.x, kvY + 55);
+    ctx.globalAlpha = 1;
+  }
+
+  // Bottom comparison
+  if (p > 0.8) {
+    const bp = easeInOut((p - 0.8) / 0.2);
+    ctx.globalAlpha = bp; ctx.font = '13px PingFang SC'; ctx.fillStyle = '#F59E0B';
+    ctx.fillText('GQA 在质量和效率间取得最佳平衡，是 Qwen2/LLaMA2 的选择', cx, H - 30);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Step 1: GQA expand mechanism
+function renderStep1(p) {
+  const cx = W / 2, topY = 20;
+  ctx.textAlign = 'center';
+
+  const stages = [
+    { label: 'K: [B, 2, L, dk]', sub: '原始 KV heads (n_kv=2)', color: '#00B894', y: topY },
+    { label: 'unsqueeze(2): [B, 2, 1, L, dk]', sub: '插入 group 维度', color: '#0984E3', y: topY + 65 },
+    { label: 'expand: [B, 2, 4, L, dk]', sub: '沿 group 维广播 (不复制内存)', color: '#F59E0B', y: topY + 130 },
+    { label: 'reshape: [B, 8, L, dk]', sub: '合并成 n_heads 个 head', color: '#6C5CE7', y: topY + 195 },
+  ];
+
+  for (let i = 0; i < stages.length; i++) {
+    const delay = i * 0.2;
+    const ap = easeInOut(Math.max(0, Math.min(1, (p - delay) / 0.25)));
+    const s = stages[i];
+    ctx.globalAlpha = ap;
+    ctx.fillStyle = s.color + '1A'; ctx.strokeStyle = s.color;
+    drawRoundRect(cx - 170, s.y, 340, 45, 10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = s.color; ctx.font = 'bold 13px Courier New';
+    ctx.fillText(s.label, cx, s.y + 20);
+    ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.font = '11px PingFang SC';
+    ctx.fillText(s.sub, cx, s.y + 37);
+    if (i > 0) {
+      ctx.strokeStyle = s.color + '66'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(cx, stages[i-1].y + 45); ctx.lineTo(cx, s.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - 5, s.y - 5); ctx.lineTo(cx, s.y); ctx.lineTo(cx + 5, s.y - 5); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Visual representation of expand
+  if (p > 0.6) {
+    const ep = easeInOut((p - 0.6) / 0.3);
+    const bx = cx - 160, by = topY + 275;
+    ctx.globalAlpha = ep;
+    ctx.font = '12px PingFang SC'; ctx.fillStyle = '#F59E0B';
+    ctx.fillText('expand 的视觉表示 (n_groups = 4)', cx, by - 10);
+    const colors = ['#00B894', '#0984E3'];
+    const labels = ['KV₀', 'KV₁'];
+    for (let kv = 0; kv < 2; kv++) {
+      for (let g = 0; g < 4; g++) {
+        const x = bx + (kv * 4 + g) * 40;
+        ctx.fillStyle = colors[kv] + '33'; ctx.strokeStyle = colors[kv];
+        drawRoundRect(x, by, 35, 30, 5); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = colors[kv]; ctx.font = '10px Courier New';
+        ctx.fillText(labels[kv], x + 17, by + 19);
+      }
+    }
+    ctx.fillStyle = '#94A3B8'; ctx.font = '11px PingFang SC';
+    ctx.fillText('Q₀ Q₁ Q₂ Q₃  共享 KV₀          Q₄ Q₅ Q₆ Q₇  共享 KV₁', cx, by + 50);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Step 2: Sliding Window Attention
+function renderStep2(p) {
+  const cx = W / 2, topY = 20, sz = 28, pad = 2;
+  const n = 10, windowSize = 4;
+  ctx.textAlign = 'center';
+
+  // Full causal (left)
+  const leftX = cx - 180, labelY = topY;
+  const p1 = easeInOut(Math.min(1, p / 0.4));
+  ctx.globalAlpha = p1;
+  ctx.fillStyle = '#EF4444'; ctx.font = 'bold 13px PingFang SC';
+  ctx.fillText('全局因果注意力', leftX + n * (sz + pad) / 2, labelY);
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const x = leftX + j * (sz + pad), y = labelY + 20 + i * (sz + pad);
+    const attend = j <= i;
+    ctx.fillStyle = attend ? 'rgba(239,68,68,.4)' : 'rgba(255,255,255,.03)';
+    ctx.strokeStyle = attend ? 'rgba(239,68,68,.6)' : 'rgba(255,255,255,.05)';
+    drawRoundRect(x, y, sz, sz, 3); ctx.fill(); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Sliding window (right)
+  const rightX = cx + 30;
+  const p2 = easeInOut(Math.max(0, Math.min(1, (p - 0.3) / 0.4)));
+  ctx.globalAlpha = p2;
+  ctx.fillStyle = '#10B981'; ctx.font = 'bold 13px PingFang SC';
+  ctx.fillText('滑动窗口 (W=4)', rightX + n * (sz + pad) / 2, labelY);
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const x = rightX + j * (sz + pad), y = labelY + 20 + i * (sz + pad);
+    const attend = j <= i && (i - j) < windowSize;
+    ctx.fillStyle = attend ? 'rgba(16,185,129,.4)' : 'rgba(255,255,255,.03)';
+    ctx.strokeStyle = attend ? 'rgba(16,185,129,.6)' : 'rgba(255,255,255,.05)';
+    drawRoundRect(x, y, sz, sz, 3); ctx.fill(); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Complexity comparison
+  if (p > 0.7) {
+    const cp = easeInOut((p - 0.7) / 0.3);
+    ctx.globalAlpha = cp; ctx.font = '13px PingFang SC';
+    const by = labelY + 20 + n * (sz + pad) + 20;
+    ctx.fillStyle = '#EF4444'; ctx.fillText('O(L²) 复杂度', leftX + n * (sz + pad) / 2, by);
+    ctx.fillStyle = '#10B981'; ctx.fillText('O(L × W) 复杂度', rightX + n * (sz + pad) / 2, by);
+    ctx.fillStyle = '#F59E0B';
+    ctx.fillText('多层叠加：Layer × W 扩大有效感受野', cx, by + 30);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Step 3: Flash Attention tiling
+function renderStep3(p) {
+  const cx = W / 2, topY = 20;
+  ctx.textAlign = 'center';
+
+  // Memory hierarchy
+  const p1 = easeInOut(Math.min(1, p / 0.3));
+  ctx.globalAlpha = p1;
+
+  // HBM
+  ctx.fillStyle = 'rgba(239,68,68,.15)'; ctx.strokeStyle = '#EF4444';
+  drawRoundRect(20, topY, W - 40, 70, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#EF4444'; ctx.font = 'bold 14px PingFang SC';
+  ctx.fillText('HBM (显存) — 大但慢 ~1.5 TB/s', cx, topY + 22);
+  ctx.fillStyle = '#94A3B8'; ctx.font = '12px PingFang SC';
+  ctx.fillText('存储完整的 Q, K, V, O 矩阵', cx, topY + 48);
+
+  // SRAM
+  const sramY = topY + 90;
+  ctx.fillStyle = 'rgba(16,185,129,.15)'; ctx.strokeStyle = '#10B981';
+  drawRoundRect(cx - 120, sramY, 240, 55, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#10B981'; ctx.font = 'bold 14px PingFang SC';
+  ctx.fillText('SRAM (片上缓存) — 小但快 ~19 TB/s', cx, sramY + 22);
+  ctx.fillStyle = '#94A3B8'; ctx.font = '11px PingFang SC';
+  ctx.fillText('只放一个 tile 的 Q_block, K_block, V_block', cx, sramY + 42);
+  ctx.globalAlpha = 1;
+
+  // Tiling visualization
+  if (p > 0.3) {
+    const tp = easeInOut((p - 0.3) / 0.4);
+    ctx.globalAlpha = tp;
+    const tileY = sramY + 80;
+    const gridSize = 6, cellSize = 22, gap = 2;
+    const gridW = gridSize * (cellSize + gap);
+    const gx = cx - gridW / 2, gy = tileY + 20;
+
+    ctx.fillStyle = '#F59E0B'; ctx.font = 'bold 13px PingFang SC';
+    ctx.fillText('Tiling: 将 N×N 注意力矩阵分成小块逐块处理', cx, tileY);
+
+    const activeQ = Math.floor(tp * gridSize);
+    const activeK = Math.floor((tp * 3) % gridSize);
+    for (let i = 0; i < gridSize; i++) for (let j = 0; j < gridSize; j++) {
+      const x = gx + j * (cellSize + gap), y = gy + i * (cellSize + gap);
+      const isActive = (i === activeQ && j === activeK);
+      const isProcessed = (i < activeQ || (i === activeQ && j < activeK));
+      if (isActive) {
+        ctx.fillStyle = 'rgba(249,158,11,.5)'; ctx.strokeStyle = '#F59E0B'; ctx.lineWidth = 2;
+      } else if (isProcessed) {
+        ctx.fillStyle = 'rgba(16,185,129,.2)'; ctx.strokeStyle = 'rgba(16,185,129,.4)'; ctx.lineWidth = 1;
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,.03)'; ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
+      }
+      drawRoundRect(x, y, cellSize, cellSize, 3); ctx.fill(); ctx.stroke();
+    }
+
+    // Arrow from active tile to SRAM
+    if (tp > 0.3) {
+      ctx.strokeStyle = '#F59E0B88'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+      const ax = gx + activeK * (cellSize + gap) + cellSize / 2;
+      const ay = gy + activeQ * (cellSize + gap);
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(cx, sramY + 55); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    ctx.fillStyle = '#94A3B8'; ctx.font = '11px PingFang SC';
+    ctx.fillText('黄色=当前处理   绿色=已完成', cx, gy + gridSize * (cellSize + gap) + 15);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Step 4: Online Softmax
+function renderStep4(p) {
+  const cx = W / 2, topY = 20;
+  ctx.textAlign = 'center';
+
+  // Title
+  const tp = easeInOut(Math.min(1, p / 0.2));
+  ctx.globalAlpha = tp;
+  ctx.fillStyle = '#F59E0B'; ctx.font = 'bold 15px PingFang SC';
+  ctx.fillText('Online Softmax — 逐块更新全局统计', cx, topY);
+  ctx.globalAlpha = 1;
+
+  // Show 4 blocks being processed
+  const blocks = [
+    { scores: [2.1, 0.5, 1.3], maxS: 2.1 },
+    { scores: [0.8, 3.2, 1.1], maxS: 3.2 },
+    { scores: [1.5, 0.3, 2.8], maxS: 2.8 },
+    { scores: [0.9, 1.7, 0.4], maxS: 1.7 },
+  ];
+
+  const bw = 100, bh = 80, gap = 20;
+  const totalW = blocks.length * (bw + gap) - gap;
+  const sx = cx - totalW / 2;
+  const by = topY + 40;
+
+  let runningMax = -Infinity;
+  for (let i = 0; i < blocks.length; i++) {
+    const delay = 0.15 + i * 0.18;
+    const ap = easeInOut(Math.max(0, Math.min(1, (p - delay) / 0.2)));
+    const x = sx + i * (bw + gap);
+    ctx.globalAlpha = ap;
+
+    const prevMax = runningMax;
+    runningMax = Math.max(runningMax, blocks[i].maxS);
+
+    // Block box
+    ctx.fillStyle = 'rgba(108,92,231,.15)'; ctx.strokeStyle = 'rgba(108,92,231,.6)';
+    drawRoundRect(x, by, bw, bh, 8); ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = '#6C5CE7'; ctx.font = 'bold 11px PingFang SC';
+    ctx.fillText(`Block ${i}`, x + bw / 2, by + 16);
+
+    ctx.font = '10px Courier New'; ctx.fillStyle = '#E2E8F0';
+    ctx.fillText(`[${blocks[i].scores.join(', ')}]`, x + bw / 2, by + 35);
+
+    ctx.fillStyle = '#F59E0B'; ctx.font = '10px PingFang SC';
+    ctx.fillText(`local max=${blocks[i].maxS}`, x + bw / 2, by + 52);
+
+    // Running stats below
+    ctx.fillStyle = '#10B981'; ctx.font = '10px PingFang SC';
+    ctx.fillText(`m=${runningMax.toFixed(1)}`, x + bw / 2, by + bh + 18);
+
+    // Correction arrow
+    if (i > 0 && prevMax < runningMax) {
+      ctx.fillStyle = '#EF4444'; ctx.font = '9px PingFang SC';
+      ctx.fillText(`×e^(${prevMax.toFixed(1)}-${runningMax.toFixed(1)})`, x + bw / 2, by + bh + 35);
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  // Summary
+  if (p > 0.8) {
+    const sp = easeInOut((p - 0.8) / 0.2);
+    ctx.globalAlpha = sp;
+    ctx.fillStyle = '#00B894'; ctx.font = '13px PingFang SC';
+    ctx.fillText('每块处理后修正旧累积量，最终结果与标准 Softmax 数值等价', cx, H - 40);
+    ctx.fillStyle = '#F59E0B'; ctx.font = '12px PingFang SC';
+    ctx.fillText('关键：correction = exp(m_old - m_new) 保证数值精度', cx, H - 18);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Step 5: RoPE & NTK Extension
+function renderStep5(p) {
+  const cx = W / 2, topY = 15;
+  ctx.textAlign = 'center';
+
+  // Draw RoPE as rotation in 2D
+  const p1 = easeInOut(Math.min(1, p / 0.35));
+  ctx.globalAlpha = p1;
+  ctx.fillStyle = '#6C5CE7'; ctx.font = 'bold 14px PingFang SC';
+  ctx.fillText('RoPE: 不同位置 → 不同旋转角度', cx - 130, topY + 10);
+
+  // Draw circles showing rotation
+  const circR = 50, circY = topY + 80, positions = [0, 1, 2, 3];
+  const colors = ['#EF4444', '#F59E0B', '#10B981', '#0984E3'];
+  for (let i = 0; i < positions.length; i++) {
+    const circX = cx - 200 + i * 100;
+    ctx.strokeStyle = 'rgba(255,255,255,.1)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(circX, circY, circR, 0, Math.PI * 2); ctx.stroke();
+
+    const angle = positions[i] * 0.8;
+    const vx = Math.cos(angle) * circR * 0.8;
+    const vy = -Math.sin(angle) * circR * 0.8;
+    ctx.strokeStyle = colors[i]; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(circX, circY); ctx.lineTo(circX + vx, circY + vy); ctx.stroke();
+    ctx.beginPath(); ctx.arc(circX + vx, circY + vy, 3, 0, Math.PI * 2); ctx.fillStyle = colors[i]; ctx.fill();
+
+    ctx.fillStyle = colors[i]; ctx.font = '11px PingFang SC';
+    ctx.fillText(`pos=${i}`, circX, circY + circR + 16);
+  }
+  ctx.globalAlpha = 1;
+
+  // NTK scaling visualization
+  if (p > 0.35) {
+    const np = easeInOut((p - 0.35) / 0.35);
+    ctx.globalAlpha = np;
+    const freqY = topY + 180;
+    ctx.fillStyle = '#F59E0B'; ctx.font = 'bold 13px PingFang SC';
+    ctx.fillText('NTK-aware: 频率缩放示意', cx, freqY);
+
+    // Original vs scaled frequencies
+    const barX = 40, barW = W - 80, barH = 20;
+    const dims = ['dim 0\n(高频)', 'dim 16\n(中频)', 'dim 32\n(低频)', 'dim 48\n(极低频)'];
+    const origFreq = [1.0, 0.3, 0.05, 0.003];
+    const scaledFreq = [0.95, 0.22, 0.02, 0.0008];
+
+    for (let d = 0; d < dims.length; d++) {
+      const y = freqY + 25 + d * 45;
+      const x = barX + d * (barW / 4);
+
+      ctx.fillStyle = '#94A3B8'; ctx.font = '10px PingFang SC';
+      ctx.fillText(dims[d].split('\n')[0], x + 40, y - 3);
+
+      // Original
+      ctx.fillStyle = 'rgba(108,92,231,.4)';
+      drawRoundRect(x, y, origFreq[d] * 120, barH / 2, 3); ctx.fill();
+
+      // Scaled
+      ctx.fillStyle = 'rgba(249,158,11,.4)';
+      drawRoundRect(x, y + barH / 2 + 2, scaledFreq[d] * 120, barH / 2, 3); ctx.fill();
+    }
+
+    ctx.fillStyle = '#6C5CE7'; ctx.font = '10px PingFang SC';
+    ctx.fillText('原始 θ', barX + 10, freqY + 25 + 4 * 45);
+    ctx.fillStyle = '#F59E0B';
+    ctx.fillText('NTK θ (低频压缩更多)', barX + 80, freqY + 25 + 4 * 45);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Step 6: Attention Sink & StreamingLLM
+function renderStep6(p) {
+  const cx = W / 2, topY = 20;
+  ctx.textAlign = 'center';
+
+  // Attention weight bar chart showing sink
+  const p1 = easeInOut(Math.min(1, p / 0.4));
+  ctx.globalAlpha = p1;
+  ctx.fillStyle = '#EF4444'; ctx.font = 'bold 14px PingFang SC';
+  ctx.fillText('Attention Sink: 第一个 token 吸收大量注意力', cx, topY);
+
+  const tokens = ['BOS', 't₁', 't₂', 't₃', 't₄', 't₅', 't₆', 't₇', 't₈', 't₉'];
+  const weights = [0.35, 0.02, 0.03, 0.05, 0.04, 0.08, 0.12, 0.15, 0.09, 0.07];
+  const barW = 30, barGap = 8, maxBarH = 120;
+  const totalBW = tokens.length * (barW + barGap) - barGap;
+  const bsx = cx - totalBW / 2, bsy = topY + 160;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const x = bsx + i * (barW + barGap);
+    const h = weights[i] * maxBarH / 0.35;
+    const isSink = i === 0;
+    ctx.fillStyle = isSink ? 'rgba(239,68,68,.6)' : 'rgba(108,92,231,.3)';
+    ctx.strokeStyle = isSink ? '#EF4444' : 'rgba(108,92,231,.5)';
+    drawRoundRect(x, bsy - h, barW, h, 4); ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = isSink ? '#EF4444' : '#94A3B8';
+    ctx.font = '10px PingFang SC';
+    ctx.fillText(tokens[i], x + barW / 2, bsy + 14);
+    ctx.fillText((weights[i] * 100).toFixed(0) + '%', x + barW / 2, bsy - h - 6);
+  }
+  ctx.globalAlpha = 1;
+
+  // StreamingLLM mask
+  if (p > 0.45) {
+    const sp = easeInOut((p - 0.45) / 0.4);
+    ctx.globalAlpha = sp;
+    const maskY = bsy + 35;
+    ctx.fillStyle = '#10B981'; ctx.font = 'bold 13px PingFang SC';
+    ctx.fillText('StreamingLLM: 只保留 Sink + 最近 Window', cx, maskY);
+
+    const mSz = 18, mPad = 2, mN = 12;
+    const mW = mN * (mSz + mPad);
+    const mx = cx - mW / 2, my = maskY + 15;
+    const sinkSize = 2, windowSize = 4;
+
+    for (let i = 0; i < mN; i++) for (let j = 0; j < mN; j++) {
+      const x = mx + j * (mSz + mPad), y = my + i * (mSz + mPad);
+      const isSink = j < sinkSize && j <= i;
+      const isWindow = j <= i && (i - j) < windowSize && j >= sinkSize;
+      const keep = isSink || isWindow;
+      if (isSink) {
+        ctx.fillStyle = 'rgba(239,68,68,.4)'; ctx.strokeStyle = 'rgba(239,68,68,.5)';
+      } else if (isWindow) {
+        ctx.fillStyle = 'rgba(16,185,129,.3)'; ctx.strokeStyle = 'rgba(16,185,129,.5)';
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,.02)'; ctx.strokeStyle = 'rgba(255,255,255,.05)';
+      }
+      drawRoundRect(x, y, mSz, mSz, 2); ctx.fill(); ctx.stroke();
+    }
+
+    ctx.font = '10px PingFang SC';
+    ctx.fillStyle = '#EF4444'; ctx.fillText('红色 = Sink tokens', cx - 80, my + mN * (mSz + mPad) + 15);
+    ctx.fillStyle = '#10B981'; ctx.fillText('绿色 = 最近 Window', cx + 80, my + mN * (mSz + mPad) + 15);
+    ctx.globalAlpha = 1;
+  }
+}
+
+const renderers = [renderStep0, renderStep1, renderStep2, renderStep3, renderStep4, renderStep5, renderStep6];
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress = 0;
+  const start = performance.now(), duration = 2500;
+  function tick(now) {
+    animProgress = Math.min(1, (now - start) / duration);
+    render();
+    if (animProgress < 1) animId = requestAnimationFrame(tick);
+  }
+  if (animId) cancelAnimationFrame(animId);
+  animId = requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s = steps[currentStep];
+  document.getElementById('stepTitle').textContent = s.title;
+  document.getElementById('stepDesc').innerHTML = s.desc;
+  const fb = document.getElementById('formulaBox');
+  if (s.formula) { fb.style.display = 'block'; fb.textContent = s.formula; }
+  else fb.style.display = 'none';
+  document.getElementById('counter').textContent = `Step ${currentStep + 1}/${steps.length}`;
+  const dotsEl = document.getElementById('dots');
+  dotsEl.innerHTML = '';
+  for (let i = 0; i < steps.length; i++) {
+    const d = document.createElement('span');
+    if (i === currentStep) d.className = 'active';
+    d.onclick = () => { currentStep = i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep() { if (currentStep < steps.length - 1) { currentStep++; updateUI(); startAnim(); } }
+function prevStep() { if (currentStep > 0) { currentStep--; updateUI(); startAnim(); } }
+function replay() { startAnim(); }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') nextStep();
+  else if (e.key === 'ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

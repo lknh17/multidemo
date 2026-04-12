@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教程 — 多模态大模型学习工程</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/languages/python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/languages/json.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a1f35;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #2a3050;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            min-height: 100vh;
+        }
+
+        /* Top bar */
+        .top-bar {
+            position: sticky; top: 0; z-index: 100;
+            background: rgba(10,14,26,.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .top-bar .back {
+            color: var(--accent-blue);
+            text-decoration: none;
+            font-size: .85rem;
+            flex-shrink: 0;
+        }
+        .top-bar .back:hover { text-decoration: underline; }
+        .top-bar .title {
+            font-weight: 700;
+            font-size: 1.05rem;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .anim-links {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .anim-link {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: .8rem;
+            font-weight: 600;
+            text-decoration: none;
+            border: 1px solid;
+            transition: all .2s;
+        }
+        .anim-link.theory { color: #818cf8; border-color: rgba(129,140,248,.3); background: rgba(129,140,248,.08); }
+        .anim-link.theory:hover { background: rgba(129,140,248,.2); }
+        .anim-link.code { color: #34d399; border-color: rgba(52,211,153,.3); background: rgba(52,211,153,.08); }
+        .anim-link.code:hover { background: rgba(52,211,153,.2); }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            padding: 8px 24px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+        .tab {
+            padding: 10px 20px;
+            border-radius: 8px 8px 0 0;
+            font-size: .88rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all .2s;
+            border: 1px solid transparent;
+            border-bottom: none;
+        }
+        .tab:hover { color: var(--text-primary); background: var(--bg-card); }
+        .tab.active {
+            color: #fff;
+            background: var(--bg-primary);
+            border-color: var(--border);
+        }
+
+        /* Content */
+        .container {
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 32px 24px 80px;
+        }
+
+        /* Reuse docs.html styles for Markdown */
+        .md-content h1 { font-size: 1.8rem; font-weight: 800; margin: 0 0 16px; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .md-content h2 { font-size: 1.4rem; font-weight: 700; margin: 36px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+        .md-content h3 { font-size: 1.15rem; font-weight: 600; margin: 24px 0 10px; color: var(--text-primary); }
+        .md-content h4 { font-size: 1rem; font-weight: 600; margin: 18px 0 8px; color: var(--text-secondary); }
+        .md-content p { margin: 0 0 14px; color: var(--text-secondary); }
+        .md-content a { color: var(--accent-blue); text-decoration: none; }
+        .md-content a:hover { text-decoration: underline; }
+        .md-content ul, .md-content ol { margin: 0 0 14px; padding-left: 24px; color: var(--text-secondary); }
+        .md-content li { margin-bottom: 4px; }
+        .md-content strong { color: var(--text-primary); }
+        .md-content em { color: #a78bfa; }
+        .md-content hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+
+        .md-content pre { position: relative; margin: 0 0 18px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+        .md-content pre code { display: block; padding: 14px 18px; font-size: .84rem; line-height: 1.6; overflow-x: auto; background: #0d1117 !important; }
+        .md-content code { font-family: 'SF Mono','Fira Code',monospace; font-size: .88em; background: rgba(59,130,246,.1); padding: 2px 6px; border-radius: 4px; color: #93c5fd; }
+        .md-content pre code { background: transparent !important; padding: 0; color: inherit; }
+
+        .copy-btn { position: absolute; top: 8px; right: 8px; padding: 4px 10px; font-size: .72rem; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.1); border-radius: 4px; color: var(--text-muted); cursor: pointer; opacity: 0; transition: opacity .2s; }
+        .md-content pre:hover .copy-btn { opacity: 1; }
+
+        .md-content table { width: 100%; border-collapse: collapse; margin: 0 0 18px; font-size: .87rem; }
+        .md-content th { background: var(--bg-card); padding: 10px 14px; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); color: var(--text-primary); }
+        .md-content td { padding: 8px 14px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+        .md-content tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+        .md-content tr:hover td { background: rgba(59,130,246,.05); }
+
+        .md-content blockquote { margin: 0 0 18px; padding: 12px 18px; border-radius: 8px; border-left: 4px solid; font-size: .9rem; }
+        .md-content blockquote.tip { border-color: #10b981; background: rgba(16,185,129,.06); }
+        .md-content blockquote.warning { border-color: #f59e0b; background: rgba(245,158,11,.06); }
+        .md-content blockquote.danger { border-color: #ef4444; background: rgba(239,68,68,.06); }
+        .md-content blockquote.info { border-color: #3b82f6; background: rgba(59,130,246,.06); }
+        .md-content blockquote:not(.tip):not(.warning):not(.danger):not(.info) { border-color: var(--border); background: var(--bg-card); }
+
+        .md-content .katex-display { margin: 18px 0; overflow-x: auto; }
+        .md-content img { max-width: 100%; border-radius: 8px; margin: 10px auto; display: block; }
+
+        .loading { text-align: center; padding: 80px; color: var(--text-muted); }
+        .loading::after { content: ''; display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent-blue); border-radius: 50%; animation: spin .6s linear infinite; margin-left: 8px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        @media (max-width: 600px) {
+            .top-bar { padding: 10px 14px; gap: 10px; }
+            .anim-links { width: 100%; justify-content: center; }
+            .tabs { padding: 6px 14px; }
+            .tab { padding: 8px 14px; font-size: .82rem; }
+            .container { padding: 20px 14px 60px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="top-bar">
+    <a class="back" href="../index.html">← 返回导览</a>
+    <span class="title" id="pageTitle">教程</span>
+    <div class="anim-links">
+        <a class="anim-link theory" href="./theory_visual.html">🔬 原理动画</a>
+        <a class="anim-link code" href="./code_visual.html">💻 代码动画</a>
+    </div>
+</div>
+
+<div class="tabs">
+    <div class="tab active" data-file="README.md">📖 手把手教程</div>
+    <div class="tab" data-file="theory.md">🔬 原理详解</div>
+    <div class="tab" data-file="code_explained.md">💻 代码详解</div>
+</div>
+
+<main class="container">
+    <div id="mdContent" class="md-content">
+        <div class="loading">加载文档中</div>
+    </div>
+</main>
+
+<script>
+// Module title mapping
+const TITLES = {
+    p01_env_setup: 'P01 环境搭建与显存估算',
+    p02_continual_pretrain: 'P02 继续预训练',
+    p03_sft_finetuning: 'P03 SFT 指令微调',
+    p04_dpo_alignment: 'P04 DPO 偏好对齐',
+    p05_rl_grpo: 'P05 RL 强化学习 GRPO',
+    p06_mllm_vision: 'P06 MLLM 多模态微调',
+    p07_quantization: 'P07 模型量化',
+    p08_serving_deploy: 'P08 推理部署',
+    p09_evaluation: 'P09 评测体系',
+    p10_best_practices: 'P10 全流程总结',
+};
+
+// Detect current module from URL path
+const pathParts = window.location.pathname.split('/');
+const moduleDir = pathParts[pathParts.length - 2] || '';
+const title = TITLES[moduleDir] || moduleDir;
+document.getElementById('pageTitle').textContent = title;
+document.title = `${title} — 教程`;
+
+// Markdown rendering
+function renderMath(text) {
+    text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
+        try { return '<div class="katex-display">' + katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false }) + '</div>'; }
+        catch { return `<div class="katex-display">${tex}</div>`; }
+    });
+    text = text.replace(/\$([^\$\n]+?)\$/g, (_, tex) => {
+        try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false }); }
+        catch { return `<code>${tex}</code>`; }
+    });
+    return text;
+}
+
+function styleCallouts(html) {
+    return html.replace(/<blockquote>([\s\S]*?)<\/blockquote>/g, (match, inner) => {
+        if (inner.includes('💡') || inner.includes('提示')) return `<blockquote class="tip">${inner}</blockquote>`;
+        if (inner.includes('⚠️') || inner.includes('注意')) return `<blockquote class="warning">${inner}</blockquote>`;
+        if (inner.includes('❌') || inner.includes('错误')) return `<blockquote class="danger">${inner}</blockquote>`;
+        if (inner.includes('📝') || inner.includes('说明')) return `<blockquote class="info">${inner}</blockquote>`;
+        return match;
+    });
+}
+
+function renderMarkdown(md) {
+    const mathProcessed = renderMath(md);
+    marked.setOptions({
+        highlight: (code, lang) => {
+            if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+            return hljs.highlightAuto(code).value;
+        },
+        gfm: true,
+        breaks: false,
+    });
+    let html = marked.parse(mathProcessed);
+    html = styleCallouts(html);
+    html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">复制</button><code');
+    return html;
+}
+
+async function loadFile(file) {
+    const container = document.getElementById('mdContent');
+    container.innerHTML = '<div class="loading">加载文档中</div>';
+    try {
+        const resp = await fetch(`./${file}`);
+        if (!resp.ok) throw new Error(`${resp.status}`);
+        const md = await resp.text();
+        container.innerHTML = renderMarkdown(md);
+        window.scrollTo(0, 0);
+    } catch (e) {
+        container.innerHTML = `<div style="text-align:center;padding:80px;color:var(--text-muted)">
+            <p style="font-size:1.1rem;margin-bottom:10px">文档加载失败</p>
+            <p style="font-size:.85rem">文件：${file} · 错误：${e.message}</p>
+        </div>`;
+    }
+}
+
+// Tab switching
+const tabs = document.querySelectorAll('.tab');
+tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        loadFile(tab.dataset.file);
+    });
+});
+
+// Copy code
+window.copyCode = function(btn) {
+    const code = btn.nextElementSibling.textContent;
+    navigator.clipboard.writeText(code).then(() => {
+        btn.textContent = '已复制';
+        setTimeout(() => btn.textContent = '复制', 1500);
+    });
+};
+
+// Initial load
+loadFile('README.md');
+</script>
+</body>
+</html>

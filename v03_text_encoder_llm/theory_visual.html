@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v03 LLM - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}
+.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:center;line-height:1.8}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v03</span><h1>Text Encoder (LLM)</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+<div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'自回归语言模型',desc:'语言模型的核心任务：给定前缀 token 序列，预测<strong>下一个 token</strong>。<br><br>P(x_t | x_1, ..., x_{t-1})：每一步只能看到<strong>之前</strong>的 token。<br><br>训练时：用所有位置的预测 loss 之和（teacher forcing）。<br>推理时：逐 token 生成，每步将新 token 加入输入。<br><br>动画展示：逐步预测下一个 token 的过程。',formula:'P(序列) = P(x₁)·P(x₂|x₁)·P(x₃|x₁,x₂)·...\nLoss = -Σ log P(x_t | x_<t)'},
+{title:'因果注意力掩码',desc:'为了防止模型"偷看"未来 token，使用<strong>下三角因果掩码</strong>。<br><br>掩码矩阵 M[i][j]：当 j ≤ i 时为 0（可见），j > i 时为 -∞（屏蔽）。<br><br>这样 Softmax 后被掩码的位置权重为 0，确保每个 token 只能<strong>关注自己及之前</strong>的 token。<br><br>动画展示：掩码矩阵逐行展开。',formula:'mask[i][j] = 0 if j ≤ i else -∞\nattn = Softmax(QK^T/√d + mask) · V'},
+{title:'RoPE 旋转位置编码',desc:'RoPE 将位置信息<strong>编码进旋转角度</strong>：对 Q/K 的每对相邻维度做 2D 旋转。<br><br>位置 pos 在频率 θ 上的旋转角 = pos × θ。<br><br>关键性质：两个位置的 Q·K 内积只取决于<strong>相对位置差</strong>，天然具有相对位置编码的效果。<br><br>低维度旋转快（捕捉近距离关系），高维度旋转慢（捕捉远距离关系）。',formula:'θ_i = 1/10000^(2i/d)\n[x₁\',x₂\'] = [x₁cosθ - x₂sinθ, x₁sinθ + x₂cosθ]\nQ·K 只依赖 (pos_q - pos_k)'},
+{title:'KV Cache 增量推理',desc:'自回归生成时，每步只新增 1 个 token，但 naive 实现要对<strong>所有历史 token 重新计算 K/V</strong>。<br><br>KV Cache 的解决方案：<br>• 缓存之前所有步的 K 和 V<br>• 新 token 只需计算新的 Q/K/V<br>• 将新 K/V 拼接到缓存中<br>• Q 与完整 KV 做注意力<br><br>复杂度从 O(n³) 降至 O(n²)，推理速度提升显著。',formula:'# 第 t 步：\nnew_q, new_k, new_v = proj(x_t)\ncached_k = cat(cached_k, new_k)\ncached_v = cat(cached_v, new_v)\nattn = softmax(new_q · cached_k^T) · cached_v'},
+{title:'SwiGLU 门控 FFN',desc:'SwiGLU 是 LLaMA/Qwen 使用的 FFN 变体，通过<strong>门控机制</strong>控制信息流通：<br><br>① gate = SiLU(x · W_gate)：门控信号<br>② up = x · W_up：上投影<br>③ output = (gate ⊙ up) · W_down：门控相乘后降维<br><br>gate 的值在 0~1 之间，决定<strong>让多少信息通过</strong>。相比 ReLU/GELU，SwiGLU 效果更好。<br><br>参数量：3 × d_model × d_ff（比标准 FFN 多 50%）。',formula:'gate = SiLU(x · W_gate)    # 门控\nup   = x · W_up            # 上投影\nout  = (gate ⊙ up) · W_down # 降维\n\nSiLU(x) = x · σ(x)'},
+{title:'RMSNorm vs LayerNorm',desc:'<strong>LayerNorm</strong>：减均值 + 除标准差 → 中心化 + 缩放。<br><br><strong>RMSNorm</strong>：只除 RMS（均方根）→ 只缩放，不中心化。<br><br>RMSNorm 的优势：<br>• 计算量更少（省去均值计算）<br>• 实践中效果相当<br>• LLaMA/Qwen/GPT 等大模型标准配置<br><br>两者都使用<strong>可学习的缩放参数 γ</strong>。',formula:'LayerNorm: (x - μ) / σ × γ + β\n  μ = mean(x), σ = std(x)\n\nRMSNorm: x / RMS(x) × γ\n  RMS = √(mean(x²) + ε)'}
+];
+
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function ease(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function hsl(h,s,l){return`hsl(${h},${s}%,${l}%)`}
+function rrect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+  const tokens=['我','喜欢','深度','学习','模型','→?'];
+  const cx=W/2,sy=40,gap=65;
+  const sx=cx-(tokens.length-1)*gap/2;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.2))})`;
+  ctx.fillText('自回归预测：逐步生成下一个 token',cx,25);
+  for(let i=0;i<tokens.length;i++){
+    const delay=i*.12;const ap=ease(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const x=sx+i*gap,y=sy+30;
+    ctx.globalAlpha=ap;
+    const isLast=i===tokens.length-1;
+    ctx.fillStyle=isLast?'rgba(239,68,68,.2)':'rgba(108,92,231,.2)';
+    ctx.strokeStyle=isLast?'#EF4444':'rgba(108,92,231,.6)';ctx.lineWidth=isLast?2:1;
+    rrect(x-25,y,50,40,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=isLast?'#EF4444':'#E2E8F0';ctx.font='bold 14px PingFang SC';
+    ctx.fillText(tokens[i],x,y+26);
+    if(i>0&&!isLast){
+      ctx.strokeStyle='rgba(108,92,231,.3)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(x-25-gap+25+5,y+20);ctx.lineTo(x-30,y+20);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+  // Attention arrows
+  if(p>.5){
+    const ap=ease((p-.5)/.3);ctx.globalAlpha=ap*.5;
+    const lastX=sx+(tokens.length-1)*gap,lastY=sy+30;
+    for(let i=0;i<tokens.length-1;i++){
+      const x=sx+i*gap;
+      ctx.strokeStyle=`rgba(0,184,148,${.3+i*.1})`;ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(x,lastY+42);
+      ctx.quadraticCurveTo((x+lastX)/2,lastY+70+i*8,lastX,lastY+42);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    ctx.font='12px PingFang SC';ctx.fillStyle=`rgba(0,184,148,${ap})`;
+    ctx.fillText('← 只看之前的 token',cx,lastY+90);
+  }
+  // Probability distribution
+  if(p>.75){
+    const dp=ease((p-.75)/.25);
+    const dx=cx-80,dy=H/2+40;
+    ctx.globalAlpha=dp;
+    const probs=[{w:'的',v:.35},{w:'训练',v:.25},{w:'推理',v:.15},{w:'效果',v:.1},{w:'...',v:.15}];
+    ctx.font='12px PingFang SC';
+    probs.forEach((pr,i)=>{
+      const y=dy+i*24;
+      ctx.fillStyle='#94A3B8';ctx.textAlign='right';ctx.fillText(pr.w,dx,y+14);
+      ctx.fillStyle=i===0?'rgba(0,184,148,.6)':'rgba(108,92,231,.4)';
+      rrect(dx+8,y,pr.v*200,18,4);ctx.fill();
+      ctx.fillStyle='#E2E8F0';ctx.textAlign='left';ctx.fillText((pr.v*100)+'%',dx+12+pr.v*200,y+14);
+    });
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('P(next | context)',cx,dy-10);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep1(p){
+  const n=6,cx=W/2,sz=Math.min(50,(W-100)/n),sx=cx-n*sz/2,sy=30;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('因果注意力掩码 (Causal Mask)',cx,20);
+  // Token labels
+  const tks=['t₁','t₂','t₃','t₄','t₅','t₆'];
+  for(let i=0;i<n;i++){
+    const ap=ease(Math.max(0,Math.min(1,(p-.05)/.15)));
+    ctx.globalAlpha=ap;ctx.fillStyle='#6C5CE7';ctx.font='12px Courier New';
+    ctx.fillText(tks[i],sx+i*sz+sz/2,sy+8);
+    ctx.fillStyle='#00B894';ctx.textAlign='right';
+    ctx.fillText(tks[i],sx-8,sy+20+i*sz+sz/2+4);ctx.textAlign='center';
+    ctx.globalAlpha=1;
+  }
+  // Matrix cells
+  for(let i=0;i<n;i++) for(let j=0;j<n;j++){
+    const delay=i*.1+.1;const cp=ease(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const x=sx+j*sz,y=sy+20+i*sz;
+    const visible=j<=i;
+    ctx.globalAlpha=cp;
+    ctx.fillStyle=visible?`rgba(0,184,148,${.15+.3*(1-j/n)})`:'rgba(239,68,68,.15)';
+    ctx.strokeStyle=visible?'rgba(0,184,148,.4)':'rgba(239,68,68,.3)';ctx.lineWidth=1;
+    ctx.fillRect(x+1,y+1,sz-2,sz-2);ctx.strokeRect(x+1,y+1,sz-2,sz-2);
+    ctx.fillStyle=visible?'#00B894':'#EF4444';ctx.font='bold 11px Courier New';
+    ctx.fillText(visible?'✓':'-∞',x+sz/2,y+sz/2+4);
+    ctx.globalAlpha=1;
+  }
+  if(p>.8){
+    const lp=ease((p-.8)/.2);ctx.globalAlpha=lp;
+    ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('绿色=可见（j≤i）  红色=掩码（-∞→softmax后为0）',cx,sy+20+n*sz+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,cy=H/2-20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('RoPE: 在复平面上旋转 Q/K 向量',cx,25);
+  // Draw unit circle
+  const R=Math.min(120,H/2-60);
+  const ap=ease(Math.max(0,Math.min(1,(p-.1)/.2)));
+  ctx.globalAlpha=ap;ctx.strokeStyle='rgba(100,116,139,.3)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);ctx.stroke();
+  // Axes
+  ctx.beginPath();ctx.moveTo(cx-R-10,cy);ctx.lineTo(cx+R+10,cy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx,cy-R-10);ctx.lineTo(cx,cy+R+10);ctx.stroke();
+  ctx.fillStyle='#94A3B8';ctx.font='11px Courier New';
+  ctx.fillText('Re',cx+R+15,cy+4);ctx.fillText('Im',cx+4,cy-R-12);
+  ctx.globalAlpha=1;
+  // Rotating vectors for different positions
+  const positions=[0,1,2,3,4];
+  const colors=['#EF4444','#F59E0B','#10B981','#0984E3','#6C5CE7'];
+  const freq=0.4;
+  for(let pi=0;pi<positions.length;pi++){
+    const delay=.3+pi*.1;const vp=ease(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const angle=positions[pi]*freq;
+    const x=cx+Math.cos(angle)*R*.8*vp,y=cy-Math.sin(angle)*R*.8*vp;
+    ctx.globalAlpha=vp;ctx.strokeStyle=colors[pi];ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(x,y);ctx.stroke();
+    // Arrow head
+    ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fillStyle=colors[pi];ctx.fill();
+    ctx.font='11px PingFang SC';ctx.fillText('pos='+positions[pi],x+(x>cx?12:-12),y-10);
+    ctx.globalAlpha=1;
+  }
+  // Angle arc animation
+  if(p>.6){
+    const arp=ease((p-.6)/.2);ctx.globalAlpha=arp*.5;
+    ctx.strokeStyle='#F59E0B';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.arc(cx,cy,R*.4,0,-1*freq,true);ctx.stroke();
+    ctx.setLineDash([]);ctx.globalAlpha=1;
+    ctx.font='12px PingFang SC';ctx.fillStyle=`rgba(249,158,11,${arp})`;
+    ctx.fillText('θ = pos × freq',cx+R*.4+20,cy-15);
+  }
+  if(p>.85){
+    const fp=ease((p-.85)/.15);ctx.globalAlpha=fp;
+    ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('相邻位置旋转相同角度 → Q·K 只依赖相对距离',cx,H-20);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=25;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('KV Cache: 缓存历史 K/V 避免重复计算',cx,15);
+  // Timeline tokens
+  const nTok=6,tokW=60,gap=8;const sx=cx-nTok*(tokW+gap)/2,sy=topY+15;
+  for(let t=0;t<nTok;t++){
+    const delay=t*.08;const tp=ease(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const x=sx+t*(tokW+gap);
+    const isCurrent=t===nTok-1;
+    ctx.globalAlpha=tp;
+    ctx.fillStyle=isCurrent?'rgba(239,68,68,.2)':'rgba(108,92,231,.15)';
+    ctx.strokeStyle=isCurrent?'#EF4444':'rgba(108,92,231,.5)';ctx.lineWidth=isCurrent?2:1;
+    rrect(x,sy,tokW,30,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=isCurrent?'#EF4444':'#E2E8F0';ctx.font='11px Courier New';
+    ctx.fillText('t'+t,x+tokW/2,sy+20);
+    ctx.globalAlpha=1;
+  }
+  // KV Cache area
+  const cacheY=sy+55;
+  if(p>.3){
+    const cp=ease((p-.3)/.2);ctx.globalAlpha=cp;
+    ctx.fillStyle='rgba(0,184,148,.08)';ctx.strokeStyle='rgba(0,184,148,.4)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+    rrect(sx-5,cacheY,(nTok-1)*(tokW+gap)+tokW+10,50,8);ctx.fill();ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font='12px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('KV Cache (缓存的 K₀~K₄, V₀~V₄)',cx-30,cacheY+30);
+    for(let t=0;t<nTok-1;t++){
+      const x=sx+t*(tokW+gap);
+      ctx.fillStyle='rgba(0,184,148,.15)';rrect(x+2,cacheY+5,tokW-4,20,4);ctx.fill();
+      ctx.fillStyle='#00B894';ctx.font='10px Courier New';ctx.fillText('K'+t+',V'+t,x+tokW/2,cacheY+20);
+    }
+    ctx.globalAlpha=1;
+  }
+  // New token only computes new Q,K,V
+  if(p>.55){
+    const np=ease((p-.55)/.2);ctx.globalAlpha=np;
+    const newX=sx+(nTok-1)*(tokW+gap),newY=cacheY+60;
+    ctx.fillStyle='rgba(239,68,68,.15)';ctx.strokeStyle='#EF4444';ctx.lineWidth=1.5;
+    rrect(newX,newY,tokW,30,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#EF4444';ctx.font='11px Courier New';
+    ctx.fillText('Q₅,K₅,V₅',newX+tokW/2,newY+20);
+    ctx.font='12px PingFang SC';ctx.fillText('只计算新 token',newX+tokW/2,newY+48);
+    ctx.globalAlpha=1;
+  }
+  // Attention computation
+  if(p>.75){
+    const ap=ease((p-.75)/.25);ctx.globalAlpha=ap;
+    const attnY=cacheY+120;
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='#F59E0B';
+    ctx.fillText('Q₅ · [K₀,K₁,K₂,K₃,K₄,K₅]^T → attn → 加权 [V₀...V₅]',cx,attnY);
+    ctx.font='12px PingFang SC';ctx.fillStyle='#94A3B8';
+    ctx.fillText('复杂度: O(1) per token (vs O(n) without cache)',cx,attnY+22);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('SwiGLU 门控 FFN',cx,15);
+  const bw=140,bh=32;
+  const drawBox=(x,y,label,color,alpha)=>{
+    ctx.globalAlpha=alpha;ctx.fillStyle=color+'1A';ctx.strokeStyle=color;ctx.lineWidth=1.5;
+    rrect(x-bw/2,y,bw,bh,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=color;ctx.font='12px PingFang SC';ctx.fillText(label,x,y+21);ctx.globalAlpha=1;
+  };
+  // Input
+  const p1=ease(Math.min(1,p/.2));
+  drawBox(cx,topY+15,'输入 x [B,L,D]','#94A3B8',p1);
+  // Split into two paths
+  const splitY=topY+65;
+  const p2=ease(Math.max(0,Math.min(1,(p-.2)/.2)));
+  drawBox(cx-90,splitY,'W_gate → SiLU','#F59E0B',p2);
+  drawBox(cx+90,splitY,'W_up','#0984E3',p2);
+  // Arrows from input
+  if(p2>.3){
+    ctx.globalAlpha=p2;ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(cx-20,topY+47);ctx.lineTo(cx-90,splitY);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(cx+20,topY+47);ctx.lineTo(cx+90,splitY);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Gate visualization
+  const gateY=splitY+55;
+  if(p>.45){
+    const gp=ease((p-.45)/.2);ctx.globalAlpha=gp;
+    // Gate signal bars
+    const barX=cx-90-50,barY=gateY-15;
+    ctx.font='11px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('gate ∈ [0,1]',cx-90,gateY-20);
+    for(let i=0;i<8;i++){
+      const v=Math.max(0,Math.sin(i*.8)*.7+.3);
+      ctx.fillStyle=`rgba(249,158,11,${v*.6})`;
+      ctx.fillRect(barX+i*13,barY+20,10,-(v*30));
+    }
+    ctx.globalAlpha=1;
+  }
+  // Element-wise multiply
+  const mulY=gateY+30;
+  if(p>.6){
+    const mp=ease((p-.6)/.15);
+    ctx.globalAlpha=mp;ctx.fillStyle='rgba(16,185,129,.2)';ctx.strokeStyle='#10B981';ctx.lineWidth=2;
+    rrect(cx-30,mulY,60,30,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#10B981';ctx.font='bold 16px Courier New';ctx.fillText('⊙',cx,mulY+22);
+    ctx.strokeStyle='#F59E0B55';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(cx-90,splitY+bh);ctx.lineTo(cx-15,mulY);ctx.stroke();
+    ctx.strokeStyle='#0984E355';
+    ctx.beginPath();ctx.moveTo(cx+90,splitY+bh);ctx.lineTo(cx+15,mulY);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // W_down
+  if(p>.75){
+    const dp=ease((p-.75)/.15);
+    drawBox(cx,mulY+50,'W_down → 输出','#00B894',dp);
+    if(dp>.3){ctx.globalAlpha=dp;ctx.strokeStyle='#10B98155';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(cx,mulY+30);ctx.lineTo(cx,mulY+50);ctx.stroke();ctx.globalAlpha=1;}
+  }
+}
+
+function renderStep5(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  // LayerNorm side
+  const lx=cx/2,rx=cx+cx/2;
+  const p1=ease(Math.min(1,p/.35));
+  ctx.globalAlpha=p1;ctx.fillStyle='#0984E3';ctx.fillText('LayerNorm',lx,topY);
+  // Formula visualization
+  const barY=topY+25,barH=120;
+  // Input distribution
+  const vals=[-2,1,3,-1,0.5,2,-0.5,1.5];
+  const mean=vals.reduce((a,b)=>a+b,0)/vals.length;
+  const std2=Math.sqrt(vals.reduce((a,b)=>a+(b-mean)**2,0)/vals.length);
+  const barW=20,bsx=lx-vals.length*barW/2;
+  for(let i=0;i<vals.length;i++){
+    const v=(vals[i]-mean)/std2;
+    const h=v*25;
+    ctx.fillStyle=h>0?'rgba(9,132,227,.4)':'rgba(239,68,68,.4)';
+    ctx.fillRect(bsx+i*barW+2,barY+barH/2,barW-4,-h);
+    ctx.strokeStyle=h>0?'#0984E3':'#EF4444';ctx.lineWidth=1;
+    ctx.strokeRect(bsx+i*barW+2,barY+barH/2,barW-4,-h);
+  }
+  ctx.strokeStyle='rgba(255,255,255,.2)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(bsx-5,barY+barH/2);ctx.lineTo(bsx+vals.length*barW+5,barY+barH/2);ctx.stroke();
+  ctx.font='11px PingFang SC';ctx.fillStyle='#94A3B8';
+  ctx.fillText('减均值 + 除标准差',lx,barY+barH+15);
+  ctx.fillText('(x - μ) / σ × γ + β',lx,barY+barH+32);
+  ctx.globalAlpha=1;
+
+  // RMSNorm side
+  const p2=ease(Math.max(0,Math.min(1,(p-.35)/.35)));
+  ctx.globalAlpha=p2;ctx.fillStyle='#00B894';ctx.font='bold 14px PingFang SC';
+  ctx.fillText('RMSNorm',rx,topY);
+  const rms=Math.sqrt(vals.reduce((a,b)=>a+b*b,0)/vals.length);
+  const brsx=rx-vals.length*barW/2;
+  for(let i=0;i<vals.length;i++){
+    const v=vals[i]/rms;
+    const h=v*25;
+    ctx.fillStyle=h>0?'rgba(0,184,148,.4)':'rgba(249,158,11,.4)';
+    ctx.fillRect(brsx+i*barW+2,barY+barH/2,barW-4,-h);
+    ctx.strokeStyle=h>0?'#00B894':'#F59E0B';ctx.lineWidth=1;
+    ctx.strokeRect(brsx+i*barW+2,barY+barH/2,barW-4,-h);
+  }
+  ctx.strokeStyle='rgba(255,255,255,.2)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(brsx-5,barY+barH/2);ctx.lineTo(brsx+vals.length*barW+5,barY+barH/2);ctx.stroke();
+  ctx.font='11px PingFang SC';ctx.fillStyle='#94A3B8';
+  ctx.fillText('只除 RMS（更简单）',rx,barY+barH+15);
+  ctx.fillText('x / RMS(x) × γ',rx,barY+barH+32);
+  ctx.globalAlpha=1;
+
+  // VS
+  if(p>.5){
+    const vp=ease((p-.5)/.15);ctx.globalAlpha=vp;
+    ctx.font='bold 22px PingFang SC';ctx.fillStyle='#F59E0B';ctx.fillText('VS',cx,barY+barH/2+5);
+    ctx.globalAlpha=1;
+  }
+  // Conclusion
+  if(p>.8){
+    const cp=ease((p-.8)/.2);ctx.globalAlpha=cp;
+    ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('RMSNorm 更轻量，是 LLaMA/Qwen 的标准选择',cx,H-20);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const s=document.createElement('span');if(i===currentStep)s.className='active';s.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(s)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p03 SFT 指令微调 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+  --orange: #F97316; --pink: #EC4899;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(249,115,22,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(249,115,22,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--orange),var(--danger)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(249,115,22,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--orange),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(249,115,22,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; white-space:pre-line; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(249,115,22,.5); background:rgba(249,115,22,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(249,115,22,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(249,115,22,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p03</span>
+  <h1>SFT 指令微调</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/7</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'LoRA 低秩分解',
+    desc: 'LoRA 的核心：将权重更新 ΔW 分解为两个低秩矩阵的乘积。<br><br>原始: <strong>y = Wx</strong><br>LoRA: <strong>y = Wx + BAx</strong><br><br>其中 B∈ℝ^{d×r}, A∈ℝ^{r×k}，r 远小于 d 和 k。<br><br>动画展示：大矩阵 ΔW 被分解为两个"瘦长"矩阵相乘。',
+    formula: 'ΔW = B × A\nW_new = W_base + (α/r) × B × A\n\n参数节省: d×k → d×r + r×k\n例: 896×896 = 802,816 → 896×16 + 16×896 = 28,672' },
+  { title: '四种微调方法对比',
+    desc: '雷达图展示 Full/LoRA/QLoRA/DoRA 四种方法在<strong>5个维度</strong>上的表现：<br><br>• <strong>效果质量</strong> — 生成回答的准确性<br>• <strong>显存效率</strong> — 显存占用的节省程度<br>• <strong>训练速度</strong> — 每秒处理的 token 数<br>• <strong>参数效率</strong> — 可训练参数占比<br>• <strong>部署便利</strong> — 部署和推理的方便程度',
+    formula: 'Full:    效果★★★★★ 显存★★   速度★★★  参数★    部署★★★★★\nLoRA:    效果★★★★  显存★★★★ 速度★★★★ 参数★★★★★ 部署★★★★\nQLoRA:   效果★★★   显存★★★★★速度★★★  参数★★★★★ 部署★★★\nDoRA:    效果★★★★★ 显存★★★★ 速度★★★  参数★★★★★ 部署★★★★' },
+  { title: 'Label Masking 可视化',
+    desc: 'SFT 的核心技巧：<strong>只对 assistant 回复计算 loss</strong>。<br><br>• <strong>蓝色</strong> = system/user token（label = -100，不计算 loss）<br>• <strong>绿色</strong> = assistant token（label = token_id，计算 loss）<br>• <strong>灰色</strong> = padding（label = -100）<br><br>这确保模型只学习"如何回答"，不学习"如何提问"。',
+    formula: 'L_SFT = -1/|A| × Σ_{i∈A} log P(x_i | x_{<i})\n\nA = assistant 回复的 token 位置集合\n|A| / |Total| ≈ 38% (典型比例)' },
+  { title: 'ChatML 对话模板',
+    desc: '展示 Qwen2.5 的 <strong>ChatML</strong> 对话格式结构：<br><br>ChatML 通过特殊标记来标识不同角色的发言边界。<br><br>• <strong>&lt;|im_start|&gt;</strong> 标记角色开始<br>• <strong>&lt;|im_end|&gt;</strong> 标记角色结束<br>• 支持 system / user / assistant 三种角色<br>• 可以扩展为多轮对话',
+    formula: '<|im_start|>system\\nYou are helpful.<|im_end|>\\n\n<|im_start|>user\\n请解释机器学习<|im_end|>\\n\n<|im_start|>assistant\\n机器学习是...<|im_end|>\\n' },
+  { title: 'LoRA Rank 消融结果',
+    desc: '展示不同 LoRA rank 对训练效果的影响：<br><br>• <strong>r=8</strong>: 参数最少，可能欠拟合<br>• <strong>r=16</strong>: 平衡点，推荐起步<br>• <strong>r=32</strong>: 效果更好，显存增加有限<br>• <strong>r=64</strong>: 接近全参效果<br>• <strong>r=128</strong>: 几乎等同全参，失去效率优势<br><br>柱状图展示 eval loss 随 rank 的变化趋势。',
+    formula: 'rank=8:  params=1.7M  eval_loss=2.45\nrank=16: params=3.4M  eval_loss=2.31\nrank=32: params=6.8M  eval_loss=2.22\nrank=64: params=13.6M eval_loss=2.18\nrank=128:params=27.2M eval_loss=2.16' },
+  { title: 'QLoRA 量化原理',
+    desc: 'QLoRA 使用 <strong>NF4 (NormalFloat 4-bit)</strong> 量化：<br><br>神经网络权重近似服从正态分布 N(0, σ²)。<br>NF4 在正态分布的等概率分位点上设置 16 个量化值。<br><br>• 接近 0 的值（高频区域）获得更细的精度<br>• 远离 0 的值（低频区域）精度较粗<br><br>双重量化进一步压缩量化常数。',
+    formula: 'NF4 量化:\n  fp32 权重 → 4-bit 量化值 (16级)\n  显存: 4 bytes → 0.5 bytes\n\n双重量化:\n  量化常数 fp32 → int8\n  额外节省 ~0.37 bits/param' },
+  { title: 'DoRA 权重分解',
+    desc: 'DoRA 将权重分解为<strong>方向</strong>和<strong>幅度</strong>：<br><br>W = m · V/‖V‖<br><br>• <strong>m</strong> (幅度): 直接作为可训练参数<br>• <strong>V</strong> (方向): 使用 LoRA 更新<br><br>这种分解更接近全参微调的行为模式，通常效果优于标准 LoRA。',
+    formula: 'W\' = (m + Δm) · (V + BA) / ‖V + BA‖\n\nm: 幅度向量 ∈ ℝ^d (可训练)\nV: 方向矩阵 ∈ ℝ^{d×k}\nBA: LoRA 更新 ∈ ℝ^{d×k}' },
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: LoRA decomposition
+function renderStep0(p) {
+  const cx=W/2, cy=H/2-20;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('LoRA 低秩分解: ΔW = B × A',cx,30);
+
+  // Big W matrix
+  const bw=140, bh=140;
+  const p1=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=p1;
+  ctx.fillStyle='rgba(108,92,231,.2)'; ctx.strokeStyle='rgba(108,92,231,.5)'; ctx.lineWidth=2;
+  drawRoundRect(cx-bw/2-180,cy-bh/2,bw,bh,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#6C5CE7'; ctx.font='bold 18px PingFang SC';
+  ctx.fillText('ΔW',cx-180,cy+6);
+  ctx.font='12px Courier New'; ctx.fillStyle='rgba(108,92,231,.7)';
+  ctx.fillText('d × k',cx-180,cy+30);
+  ctx.fillText('(802,816)',cx-180,cy+48);
+  ctx.globalAlpha=1;
+
+  // Equals
+  const p2=easeInOut(Math.max(0,(p-.25)/.2));
+  ctx.globalAlpha=p2;
+  ctx.font='bold 24px PingFang SC'; ctx.fillStyle='var(--warn)';
+  ctx.fillText('=',cx-80,cy+6);
+  ctx.globalAlpha=1;
+
+  // B matrix (tall thin)
+  const p3=easeInOut(Math.max(0,(p-.4)/.25));
+  ctx.globalAlpha=p3;
+  ctx.fillStyle='rgba(239,68,68,.2)'; ctx.strokeStyle='rgba(239,68,68,.5)'; ctx.lineWidth=2;
+  drawRoundRect(cx-30,cy-bh/2,35,bh,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#EF4444'; ctx.font='bold 16px PingFang SC';
+  ctx.fillText('B',cx-12,cy+6);
+  ctx.font='11px Courier New'; ctx.fillStyle='rgba(239,68,68,.7)';
+  ctx.fillText('d×r',cx-12,cy+28);
+  ctx.globalAlpha=1;
+
+  // × sign
+  const p4=easeInOut(Math.max(0,(p-.5)/.15));
+  ctx.globalAlpha=p4;
+  ctx.font='bold 20px PingFang SC'; ctx.fillStyle='var(--warn)';
+  ctx.fillText('×',cx+30,cy+6);
+  ctx.globalAlpha=1;
+
+  // A matrix (short wide)
+  const p5=easeInOut(Math.max(0,(p-.55)/.25));
+  ctx.globalAlpha=p5;
+  ctx.fillStyle='rgba(0,184,148,.2)'; ctx.strokeStyle='rgba(0,184,148,.5)'; ctx.lineWidth=2;
+  drawRoundRect(cx+50,cy-18,bw,35,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#00B894'; ctx.font='bold 16px PingFang SC';
+  ctx.fillText('A',cx+50+bw/2,cy+6);
+  ctx.font='11px Courier New'; ctx.fillStyle='rgba(0,184,148,.7)';
+  ctx.fillText('r×k',cx+50+bw/2,cy+28);
+  ctx.globalAlpha=1;
+
+  // Savings
+  if(p>.8){
+    const sp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=sp;
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle='var(--accent)'; ctx.textAlign='center';
+    ctx.fillText('参数节省: 802,816 → 28,672 (96.4%)',cx,H-50);
+    ctx.font='13px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.7)';
+    ctx.fillText('r=16 时，只需 3.6% 的参数即可适配模型',cx,H-28);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Radar chart - 4 methods
+function renderStep1(p) {
+  const cx=W/2, cy=H/2-10, radius=Math.min(W,H)*0.32;
+  const dims=['效果','显存','速度','参数效率','部署'];
+  const methods=[
+    {name:'Full',scores:[5,2,3,1,5],color:'#EF4444'},
+    {name:'LoRA',scores:[4,4,4,5,4],color:'#6C5CE7'},
+    {name:'QLoRA',scores:[3,5,3,5,3],color:'#F59E0B'},
+    {name:'DoRA',scores:[4.5,4,3,5,4],color:'#10B981'},
+  ];
+
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('四种微调方法雷达图对比',cx,25);
+
+  // Draw axes
+  const n=dims.length;
+  for(let i=0;i<n;i++){
+    const angle=-Math.PI/2+i*2*Math.PI/n;
+    const ex=cx+Math.cos(angle)*radius, ey=cy+Math.sin(angle)*radius;
+    ctx.strokeStyle='rgba(255,255,255,.1)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(ex,ey); ctx.stroke();
+    // Rings
+    for(let r=1;r<=5;r++){
+      const rr=radius*r/5;
+      if(r===5){ ctx.strokeStyle='rgba(255,255,255,.15)'; } else { ctx.strokeStyle='rgba(255,255,255,.05)'; }
+      ctx.beginPath();
+      for(let j=0;j<=n;j++){
+        const a=-Math.PI/2+j*2*Math.PI/n;
+        const px=cx+Math.cos(a)*rr, py=cy+Math.sin(a)*rr;
+        j===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+      }
+      ctx.stroke();
+    }
+    // Labels
+    const lx=cx+Math.cos(angle)*(radius+20), ly=cy+Math.sin(angle)*(radius+20);
+    ctx.font='13px PingFang SC'; ctx.fillStyle='var(--text-sub)'; ctx.textAlign='center';
+    ctx.fillText(dims[i],lx,ly+5);
+  }
+
+  // Draw method polygons
+  methods.forEach((m,mi)=>{
+    const delay=mi*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    ctx.globalAlpha=ap*.3;
+    ctx.fillStyle=m.color;
+    ctx.beginPath();
+    for(let i=0;i<n;i++){
+      const angle=-Math.PI/2+i*2*Math.PI/n;
+      const r2=radius*m.scores[i]/5*ap;
+      const px=cx+Math.cos(angle)*r2, py=cy+Math.sin(angle)*r2;
+      i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha=ap*.8;
+    ctx.strokeStyle=m.color; ctx.lineWidth=2;
+    ctx.stroke();
+    ctx.globalAlpha=1;
+  });
+
+  // Legend
+  if(p>.5){
+    const lp=easeInOut((p-.5)/.2);
+    ctx.globalAlpha=lp;
+    methods.forEach((m,i)=>{
+      const lx=20+i*100, ly=H-30;
+      ctx.fillStyle=m.color;
+      ctx.fillRect(lx,ly,12,12);
+      ctx.font='12px PingFang SC'; ctx.textAlign='left'; ctx.fillStyle='var(--text-sub)';
+      ctx.fillText(m.name,lx+16,ly+11);
+    });
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Label masking
+function renderStep2(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('Label Masking: 只对 Assistant 回复计算 Loss',W/2,30);
+
+  const tokens=[
+    {text:'<|im_s|>',role:'special',w:55},{text:'sys',role:'system',w:30},
+    {text:'You',role:'system',w:30},{text:'are',role:'system',w:28},
+    {text:'helpful',role:'system',w:50},{text:'<|im_e|>',role:'special',w:55},
+    {text:'<|im_s|>',role:'special',w:55},{text:'user',role:'user',w:32},
+    {text:'请',role:'user',w:20},{text:'解释',role:'user',w:30},
+    {text:'机器',role:'user',w:30},{text:'学习',role:'user',w:30},
+    {text:'<|im_e|>',role:'special',w:55},
+    {text:'<|im_s|>',role:'special',w:55},{text:'asst',role:'assist_tag',w:30},
+    {text:'机器',role:'assistant',w:30},{text:'学习',role:'assistant',w:30},
+    {text:'是',role:'assistant',w:20},{text:'AI',role:'assistant',w:22},
+    {text:'的',role:'assistant',w:20},{text:'分支',role:'assistant',w:30},
+    {text:'...',role:'assistant',w:25},{text:'<|im_e|>',role:'special',w:55},
+    {text:'[PAD]',role:'pad',w:40},{text:'[PAD]',role:'pad',w:40},
+  ];
+
+  const colors={special:'#64748B',system:'#0984E3',user:'#0984E3',assist_tag:'#64748B',assistant:'#10B981',pad:'#334155'};
+  const tokenH=30, gap=4, startX=20, startY=60;
+  let x=startX, y=startY, row=0;
+
+  tokens.forEach((t,i)=>{
+    const delay=i*.02;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    if(x+t.w>W-20){ x=startX; y+=tokenH+gap+15; row++; }
+
+    ctx.globalAlpha=ap;
+    const c=colors[t.role];
+    ctx.fillStyle=c+'33'; ctx.strokeStyle=c+'88'; ctx.lineWidth=1;
+    drawRoundRect(x,y,t.w,tokenH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=c; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText(t.text,x+t.w/2,y+tokenH/2+4);
+
+    // Label indicator
+    const labelY=y+tokenH+2;
+    if(t.role==='assistant'){
+      ctx.fillStyle='rgba(16,185,129,.6)';
+      drawRoundRect(x,labelY,t.w,8,2); ctx.fill();
+    } else {
+      ctx.fillStyle='rgba(239,68,68,.3)';
+      drawRoundRect(x,labelY,t.w,8,2); ctx.fill();
+      ctx.font='8px Courier New'; ctx.fillStyle='rgba(239,68,68,.6)';
+      ctx.fillText('-100',x+t.w/2,labelY+7);
+    }
+    ctx.globalAlpha=1;
+    x+=t.w+gap;
+  });
+
+  // Legend
+  if(p>.6){
+    const lp=easeInOut((p-.6)/.2);
+    ctx.globalAlpha=lp;
+    const ly=H-50;
+    ctx.font='13px PingFang SC'; ctx.textAlign='left';
+    [{c:'#0984E3',t:'System/User (label=-100)'},{c:'#10B981',t:'Assistant (计算 loss)'},{c:'#334155',t:'Padding (label=-100)'}].forEach((item,i)=>{
+      ctx.fillStyle=item.c; ctx.fillRect(20+i*200,ly,14,14);
+      ctx.fillStyle='var(--text-sub)';
+      ctx.fillText(item.t,38+i*200,ly+12);
+    });
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: ChatML template
+function renderStep3(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('ChatML 对话模板结构',W/2,30);
+
+  const blocks=[
+    {role:'system',text:'You are a helpful assistant.',color:'#64748B',icon:'🔧'},
+    {role:'user',text:'请解释什么是机器学习？',color:'#0984E3',icon:'👤'},
+    {role:'assistant',text:'机器学习是人工智能的一个分支，它使计算机能够从数据中学习...',color:'#10B981',icon:'🤖'},
+  ];
+
+  const blockH=70, gap=20, startY=55, blockW=Math.min(W-40,450);
+  const sx=(W-blockW)/2;
+
+  blocks.forEach((b,i)=>{
+    const delay=i*.25;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const y=startY+i*(blockH+gap);
+
+    ctx.globalAlpha=ap;
+    // Block bg
+    ctx.fillStyle=b.color+'22'; ctx.strokeStyle=b.color+'66'; ctx.lineWidth=2;
+    drawRoundRect(sx,y,blockW,blockH,10); ctx.fill(); ctx.stroke();
+
+    // Start tag
+    ctx.fillStyle=b.color+'44';
+    drawRoundRect(sx,y,90,22,6); ctx.fill();
+    ctx.font='10px Courier New'; ctx.fillStyle=b.color; ctx.textAlign='center';
+    ctx.fillText('<|im_start|>',sx+45,y+15);
+
+    // Role
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle=b.color; ctx.textAlign='left';
+    ctx.fillText(b.icon+' '+b.role,sx+100,y+18);
+
+    // Content
+    ctx.font='13px PingFang SC'; ctx.fillStyle='var(--text-sub)'; ctx.textAlign='left';
+    const maxChars=Math.floor((blockW-30)/13);
+    ctx.fillText(b.text.substring(0,maxChars),sx+15,y+48);
+
+    // End tag
+    ctx.fillStyle=b.color+'44';
+    drawRoundRect(sx+blockW-80,y+blockH-20,75,18,6); ctx.fill();
+    ctx.font='10px Courier New'; ctx.fillStyle=b.color; ctx.textAlign='center';
+    ctx.fillText('<|im_end|>',sx+blockW-42,y+blockH-7);
+
+    // Arrow
+    if(i<blocks.length-1 && ap>.5){
+      ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(W/2,y+blockH); ctx.lineTo(W/2,y+blockH+gap); ctx.stroke();
+      ctx.fillStyle='rgba(255,255,255,.3)';
+      ctx.beginPath(); ctx.moveTo(W/2-5,y+blockH+gap-5); ctx.lineTo(W/2+5,y+blockH+gap-5); ctx.lineTo(W/2,y+blockH+gap); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  });
+}
+
+// Step 4: Rank ablation bar chart
+function renderStep4(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('LoRA Rank 消融实验结果',W/2,30);
+
+  const data=[
+    {rank:8,loss:2.45,params:'1.7M',color:'#EF4444'},
+    {rank:16,loss:2.31,params:'3.4M',color:'#F97316'},
+    {rank:32,loss:2.22,params:'6.8M',color:'#F59E0B'},
+    {rank:64,loss:2.18,params:'13.6M',color:'#10B981'},
+    {rank:128,loss:2.16,params:'27.2M',color:'#0984E3'},
+  ];
+
+  const barW=60, gap=30, maxH=H-130;
+  const totalW=data.length*(barW+gap)-gap;
+  const sx=(W-totalW)/2;
+  const maxLoss=2.6, minLoss=2.0;
+
+  data.forEach((d,i)=>{
+    const delay=i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const x=sx+i*(barW+gap);
+    const normH=(d.loss-minLoss)/(maxLoss-minLoss)*maxH;
+    const barH=normH*ap;
+    const y=H-80-barH;
+
+    ctx.globalAlpha=.8;
+    ctx.fillStyle=d.color;
+    drawRoundRect(x,y,barW,barH,6); ctx.fill();
+    ctx.globalAlpha=1;
+
+    // Label
+    ctx.font='bold 13px Courier New'; ctx.textAlign='center';
+    ctx.fillStyle=d.color;
+    ctx.fillText('r='+d.rank,x+barW/2,H-60);
+
+    if(ap>.5){
+      ctx.font='bold 12px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.8)';
+      ctx.fillText(d.loss.toFixed(2),x+barW/2,y-8);
+      ctx.font='10px Courier New'; ctx.fillStyle='rgba(255,255,255,.4)';
+      ctx.fillText(d.params,x+barW/2,y-22);
+    }
+  });
+
+  // Sweet spot
+  if(p>.7){
+    const sp=easeInOut((p-.7)/.2);
+    ctx.globalAlpha=sp;
+    const x16=sx+1*(barW+gap);
+    ctx.strokeStyle='rgba(0,184,148,.6)'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
+    drawRoundRect(x16-5,50,barW+10,H-120,8); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font='bold 12px PingFang SC'; ctx.fillStyle='var(--accent)';
+    ctx.fillText('← 推荐',x16+barW+30,70);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: QLoRA quantization
+function renderStep5(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('NF4 量化: 正态分布等概率分位点',W/2,30);
+
+  const cx=W/2, baseY=H-60;
+  // Draw normal distribution curve
+  const curveW=W-80, curveH=H-120, startX=40;
+
+  const p1=easeInOut(Math.min(1,p/.4));
+  ctx.globalAlpha=p1;
+
+  // Bell curve
+  ctx.strokeStyle='rgba(108,92,231,.6)'; ctx.lineWidth=2;
+  ctx.beginPath();
+  for(let i=0;i<=200;i++){
+    const x=startX+i/200*curveW;
+    const z=(i/200-0.5)*6; // -3 to 3
+    const y_val=Math.exp(-z*z/2)/Math.sqrt(2*Math.PI);
+    const y=baseY-y_val*curveH*2.5;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+
+  // Quantization levels (16 levels for NF4)
+  const p2=easeInOut(Math.max(0,(p-.3)/.4));
+  if(p2>0){
+    ctx.globalAlpha=p2;
+    const nLevels=16;
+    for(let i=0;i<nLevels;i++){
+      const frac=(i+0.5)/nLevels;
+      const x=startX+frac*curveW;
+      const z=(frac-0.5)*6;
+      const y_val=Math.exp(-z*z/2)/Math.sqrt(2*Math.PI);
+      const y=baseY-y_val*curveH*2.5;
+
+      // Vertical line
+      ctx.strokeStyle=i>=6&&i<=9?'rgba(16,185,129,.6)':'rgba(249,115,22,.4)';
+      ctx.lineWidth=i>=6&&i<=9?2:1;
+      ctx.beginPath(); ctx.moveTo(x,baseY); ctx.lineTo(x,y); ctx.stroke();
+
+      // Dot
+      ctx.fillStyle=i>=6&&i<=9?'#10B981':'#F97316';
+      ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fill();
+    }
+
+    // Annotations
+    ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(16,185,129,.8)'; ctx.textAlign='center';
+    ctx.fillText('高频区域 → 精度细',cx,baseY+15);
+    ctx.fillStyle='rgba(249,115,22,.6)'; ctx.textAlign='left';
+    ctx.fillText('低频 → 粗',startX,baseY+15);
+    ctx.textAlign='right';
+    ctx.fillText('低频 → 粗',startX+curveW,baseY+15);
+  }
+  ctx.globalAlpha=1;
+}
+
+// Step 6: DoRA decomposition
+function renderStep6(p) {
+  const cx=W/2, cy=H/2-20;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('DoRA: 权重 = 幅度 × 方向',cx,30);
+
+  // W matrix
+  const p1=easeInOut(Math.min(1,p/.25));
+  ctx.globalAlpha=p1;
+  ctx.fillStyle='rgba(108,92,231,.2)'; ctx.strokeStyle='rgba(108,92,231,.5)'; ctx.lineWidth=2;
+  drawRoundRect(cx-200,cy-50,100,100,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#6C5CE7'; ctx.font='bold 20px PingFang SC';
+  ctx.fillText('W',cx-150,cy+8);
+  ctx.globalAlpha=1;
+
+  // = sign
+  const p2=easeInOut(Math.max(0,(p-.2)/.15));
+  ctx.globalAlpha=p2;
+  ctx.font='bold 24px PingFang SC'; ctx.fillStyle='var(--warn)';
+  ctx.fillText('=',cx-80,cy+8);
+  ctx.globalAlpha=1;
+
+  // m (magnitude)
+  const p3=easeInOut(Math.max(0,(p-.3)/.25));
+  ctx.globalAlpha=p3;
+  ctx.fillStyle='rgba(239,68,68,.2)'; ctx.strokeStyle='rgba(239,68,68,.5)'; ctx.lineWidth=2;
+  drawRoundRect(cx-50,cy-50,30,100,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#EF4444'; ctx.font='bold 16px PingFang SC';
+  ctx.fillText('m',cx-35,cy+8);
+  ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.7)';
+  ctx.fillText('幅度',cx-35,cy+30);
+  ctx.globalAlpha=1;
+
+  // × sign
+  ctx.globalAlpha=p3;
+  ctx.font='bold 20px PingFang SC'; ctx.fillStyle='var(--warn)';
+  ctx.fillText('·',cx+5,cy+8);
+  ctx.globalAlpha=1;
+
+  // V/||V|| (direction)
+  const p4=easeInOut(Math.max(0,(p-.45)/.25));
+  ctx.globalAlpha=p4;
+  ctx.fillStyle='rgba(0,184,148,.2)'; ctx.strokeStyle='rgba(0,184,148,.5)'; ctx.lineWidth=2;
+  drawRoundRect(cx+25,cy-50,120,100,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#00B894'; ctx.font='bold 16px PingFang SC';
+  ctx.fillText('V/‖V‖',cx+85,cy+8);
+  ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.7)';
+  ctx.fillText('方向',cx+85,cy+30);
+  ctx.globalAlpha=1;
+
+  // LoRA update on direction
+  if(p>.65){
+    const p5=easeInOut((p-.65)/.25);
+    ctx.globalAlpha=p5;
+    ctx.strokeStyle='rgba(249,115,22,.5)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
+    drawRoundRect(cx+20,cy-55,130,110,12); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font='12px PingFang SC'; ctx.fillStyle='#F97316'; ctx.textAlign='center';
+    ctx.fillText('LoRA 更新方向: V + BA',cx+85,cy+70);
+
+    // m is directly trainable
+    ctx.strokeStyle='rgba(239,68,68,.5)';
+    ctx.setLineDash([4,4]);
+    drawRoundRect(cx-55,cy-55,40,110,8); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#EF4444';
+    ctx.fillText('直接训练幅度',cx-35,cy+70);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5,renderStep6];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function animate() {
+  animProgress += .012;
+  if(animProgress > 1.5) animProgress = 1.5;
+  render();
+  animId = requestAnimationFrame(animate);
+}
+
+function goToStep(i) {
+  currentStep = Math.max(0, Math.min(i, steps.length-1));
+  animProgress = 0;
+  document.getElementById('stepTitle').textContent = steps[currentStep].title;
+  document.getElementById('stepDesc').innerHTML = steps[currentStep].desc;
+  const fb = document.getElementById('formulaBox');
+  if(steps[currentStep].formula){ fb.textContent = steps[currentStep].formula; fb.style.display='block'; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent = `Step ${currentStep+1}/${steps.length}`;
+  const dots = document.getElementById('dots');
+  dots.innerHTML = '';
+  for(let j=0;j<steps.length;j++){
+    const s = document.createElement('span');
+    if(j===currentStep) s.className='active';
+    s.onclick = ()=>goToStep(j);
+    dots.appendChild(s);
+  }
+}
+
+function nextStep(){ goToStep(currentStep+1); }
+function prevStep(){ goToStep(currentStep-1); }
+function replay(){ animProgress=0; }
+
+resize();
+goToStep(0);
+animate();
+</script>
+</body>
+</html>

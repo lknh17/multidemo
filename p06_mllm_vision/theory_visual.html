@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p06 MLLM 多模态微调 - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:15px;color:var(--warn);text-align:center;line-height:1.8}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">p06</span><h1>MLLM 多模态微调</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'MLLM 三阶段架构',desc:'多模态大语言模型由三个核心模块组成：<br><br>1. <strong>视觉编码器（Vision Encoder）</strong>：将图像像素转为高维特征向量，通常使用 ViT 架构<br><br>2. <strong>跨模态投影器（Projector）</strong>：将视觉特征映射到 LLM 的嵌入空间<br><br>3. <strong>大语言模型（LLM）</strong>：接收混合的视觉+文本 token 序列，进行理解和生成<br><br>信息流：Image → ViT → Projector → [vis_tokens + text_tokens] → LLM → Response',formula:'V = VisionEncoder(Image) ∈ R^{N_v × D_v}\nH_v = Projector(V) ∈ R^{N_v\' × D_t}\nY = LLM([H_v; H_text])'},
+{title:'Qwen2.5-VL 动态分辨率',desc:'传统 MLLM 将图像 resize 到固定尺寸（如 224×224），丢失细节。<br><br><strong>Qwen2.5-VL 采用动态分辨率</strong>：<br>• 保持图像原始宽高比<br>• 调整到 min_pixels ~ max_pixels 范围<br>• 宽高对齐到 28 的倍数（patch size）<br>• 视觉 token 数 = (H/28) × (W/28)<br><br>高分辨率图像 → 更多视觉 token → 更精细的理解<br>低分辨率图像 → 更少 token → 节省计算',formula:'N_tokens = (H / 28) × (W / 28)\n\n例: 448×448 → 16×16 = 256 tokens\n    896×672 → 32×24 = 768 tokens'},
+{title:'视觉 Token 注入',desc:'MLLM 的输入是<strong>混合序列</strong>，包含视觉 token 和文本 token：<br><br>[System] [<img_start>] [vis₁ vis₂ ... visₙ] [<img_end>] [User Text] [Response]<br><br>视觉 token 通过<strong>投影器</strong>从图像特征空间映射到文本嵌入空间。<br><br>Qwen2.5-VL 使用 <strong>Spatial Merge</strong> 投影器：<br>• 将相邻 2×2 个 patch token 合并为一个<br>• Token 数量减少 4 倍<br>• 通过 MLP 投影到 LLM 维度<br><br>还使用 <strong>3D RoPE</strong> 编码位置（时间×高度×宽度）。',formula:'Spatial Merge:\nN_merged = N_tokens / 4\n\n3D RoPE:\npos = (temporal_id, row_id, col_id)'},
+{title:'冻结策略对比',desc:'三种冻结策略决定了哪些参数参与训练：<br><br><strong>freeze_vision（推荐）</strong>：<br>• 冻结整个视觉编码器<br>• 训练 LLM + 投影层<br>• 显存 ~10GB，适合 24G GPU<br><br><strong>partial_unfreeze</strong>：<br>• 冻结视觉编码器前 N 层<br>• 解冻最后 4 层让高层特征适应任务<br>• 显存 ~18GB<br><br><strong>full</strong>：<br>• 全模型端到端训练<br>• 效果最好但容易过拟合<br>• 显存 ~30GB',formula:'freeze_vision:  trainable ≈ 1% (LoRA)\npartial:        trainable ≈ 10%\nfull:           trainable = 100%'},
+{title:'LoRA 多模态微调',desc:'<strong>LoRA（Low-Rank Adaptation）</strong>只对 LLM 部分注入可训练参数：<br><br>W\' = W + ΔW = W + BA<br><br>其中 B∈R^{d×r}, A∈R^{r×d}, r≪d<br><br>目标模块（Qwen2.5-VL 的 LLM 层）：<br>• 注意力层：q_proj, k_proj, v_proj, o_proj<br>• FFN 层：gate_proj, up_proj, down_proj<br><br><strong>不修改视觉编码器</strong>的任何参数。<br><br>r=16 时只增加 ~20M 参数（原始 2B 的 ~1%），但效果接近全参微调。',formula:'W\' = W + BA\n\nr=16, α=32\n可训练参数 ≈ 20M / 2B ≈ 0.9%\n\n目标: q_proj, k_proj, v_proj, o_proj\n      gate_proj, up_proj, down_proj'},
+{title:'两阶段训练范式',desc:'大多数 MLLM 采用<strong>两阶段训练</strong>：<br><br><strong>Stage 1: 预训练对齐</strong><br>• 数据：大规模图文对（500M+）<br>• 策略：冻结 ViT + LLM，只训练投影器<br>• 目标：让视觉特征与文本空间对齐<br>• LR: 1e-3, Epochs: 1<br><br><strong>Stage 2: 指令微调</strong><br>• 数据：高质量指令数据（100K~1M）<br>• 策略：冻结 ViT，微调 LLM + 投影器<br>• 目标：学会理解指令并生成回答<br>• LR: 1e-5, Epochs: 1-3<br><br>本模块实践的是 Stage 2 指令微调。',formula:'Stage 1 (对齐):\n  冻结: ViT + LLM\n  训练: Projector only\n  数据: ~500M 图文对\n\nStage 2 (指令微调):\n  冻结: ViT\n  训练: LLM + Projector (LoRA)\n  数据: ~100K 指令数据'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function hsl(h,s,l){return`hsl(${h},${s}%,${l}%)`}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+// Step 0: Three-stage architecture
+function renderStep0(p){
+  const cx=W/2,topY=20;
+  const modules=[
+    {label:'Vision Encoder',sub:'ViT-600M',color:'#0984E3',x:cx-180,y:topY,w:140,h:55,icon:'🖼'},
+    {label:'Projector',sub:'Spatial Merge',color:'#F59E0B',x:cx-40,y:topY+80,w:140,h:50,icon:'🔗'},
+    {label:'LLM',sub:'Qwen2.5-2B',color:'#6C5CE7',x:cx+100,y:topY,w:140,h:55,icon:'🧠'}
+  ];
+  // Draw modules
+  for(let i=0;i<3;i++){
+    const delay=i*.15;const mp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const m=modules[i];
+    ctx.globalAlpha=mp;
+    ctx.fillStyle=m.color+'1A';ctx.strokeStyle=m.color;ctx.lineWidth=2;
+    drawRR(m.x,m.y,m.w,m.h,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=m.color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(m.icon+' '+m.label,m.x+m.w/2,m.y+22);
+    ctx.font='11px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText(m.sub,m.x+m.w/2,m.y+40);
+    ctx.globalAlpha=1;
+  }
+  // Arrows
+  if(p>.3){
+    const ap=easeInOut((p-.3)/.2);
+    ctx.globalAlpha=ap;ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    // ViT → Projector
+    ctx.beginPath();ctx.moveTo(cx-110,topY+55);ctx.lineTo(cx+30,topY+80);ctx.stroke();
+    // Projector → LLM
+    ctx.beginPath();ctx.moveTo(cx+60,topY+80);ctx.lineTo(cx+170,topY+55);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Token sequence visualization
+  if(p>.5){
+    const tp=easeInOut((p-.5)/.3);
+    ctx.globalAlpha=tp;
+    const seqY=topY+155,tw=28,th=24,gap=3;
+    const tokens=[
+      {label:'sys',color:'#64748B'},
+      {label:'<img>',color:'#0984E3'},
+      {label:'v₁',color:'#0984E3'},{label:'v₂',color:'#0984E3'},
+      {label:'v₃',color:'#0984E3'},{label:'...',color:'#0984E3'},
+      {label:'vₙ',color:'#0984E3'},
+      {label:'</img>',color:'#0984E3'},
+      {label:'用',color:'#00B894'},{label:'户',color:'#00B894'},
+      {label:'问',color:'#00B894'},{label:'题',color:'#00B894'},
+      {label:'回',color:'#6C5CE7'},{label:'答',color:'#6C5CE7'},
+      {label:'...',color:'#6C5CE7'},
+    ];
+    const sx=cx-tokens.length*(tw+gap)/2;
+    ctx.font='10px PingFang SC';ctx.textAlign='center';
+    for(let i=0;i<tokens.length;i++){
+      const t=tokens[i],x=sx+i*(tw+gap);
+      const delay2=.5+i*.02;const cp=easeInOut(Math.max(0,Math.min(1,(p-delay2)/.1)));
+      ctx.globalAlpha=cp;
+      ctx.fillStyle=t.color+'22';ctx.strokeStyle=t.color+'66';ctx.lineWidth=1;
+      drawRR(x,seqY,tw,th,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle=t.color;ctx.fillText(t.label,x+tw/2,seqY+th/2+3);
+    }
+    // Labels
+    ctx.globalAlpha=tp;ctx.font='11px PingFang SC';
+    ctx.fillStyle='#0984E3';ctx.fillText('视觉 tokens',sx+4*(tw+gap),seqY+th+14);
+    ctx.fillStyle='#00B894';ctx.fillText('用户文本',sx+10*(tw+gap),seqY+th+14);
+    ctx.fillStyle='#6C5CE7';ctx.fillText('回答',sx+13.5*(tw+gap),seqY+th+14);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Dynamic resolution
+function renderStep1(p){
+  const cx=W/2,topY=15;
+  // Show different resolution images
+  const images=[
+    {label:'224×224',w:60,h:60,tokens:64,color:'#EF4444'},
+    {label:'448×448',w:90,h:90,tokens:256,color:'#F59E0B'},
+    {label:'896×672',w:120,h:90,tokens:768,color:'#00B894'},
+  ];
+  const gap=30,totalW=images.reduce((s,img)=>s+img.w,0)+(images.length-1)*gap;
+  let sx=cx-totalW/2;
+  for(let i=0;i<images.length;i++){
+    const delay=i*.2;const ip=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const img=images[i];
+    ctx.globalAlpha=ip;
+    // Image box
+    ctx.fillStyle=img.color+'1A';ctx.strokeStyle=img.color;ctx.lineWidth=2;
+    drawRR(sx,topY+20,img.w,img.h,6);ctx.fill();ctx.stroke();
+    // Grid inside (patches)
+    const ps=14;// visual patch size in display
+    ctx.strokeStyle=img.color+'33';ctx.lineWidth=0.5;
+    for(let gx=sx+ps;gx<sx+img.w;gx+=ps){ctx.beginPath();ctx.moveTo(gx,topY+20);ctx.lineTo(gx,topY+20+img.h);ctx.stroke()}
+    for(let gy=topY+20+ps;gy<topY+20+img.h;gy+=ps){ctx.beginPath();ctx.moveTo(sx,gy);ctx.lineTo(sx+img.w,gy);ctx.stroke()}
+    // Label
+    ctx.fillStyle=img.color;ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(img.label,sx+img.w/2,topY+12);
+    ctx.font='10px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText(img.tokens+' tokens',sx+img.w/2,topY+25+img.h+12);
+    sx+=img.w+gap;
+    ctx.globalAlpha=1;
+  }
+  // Arrow showing token count relationship
+  if(p>.6){
+    const ap=easeInOut((p-.6)/.2);
+    ctx.globalAlpha=ap;
+    const ay=topY+145;
+    ctx.fillStyle='rgba(249,158,11,.1)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=1.5;
+    drawRR(cx-160,ay,320,40,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('N_tokens = (H/28) × (W/28)',cx,ay+16);
+    ctx.font='11px PingFang SC';ctx.fillStyle='#94A3B8';
+    ctx.fillText('更高分辨率 → 更多 tokens → 更细粒度理解',cx,ay+32);
+    ctx.globalAlpha=1;
+  }
+  // Patch size illustration
+  if(p>.8){
+    const pp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=pp;
+    const px=cx+80,py=topY+195;
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';ctx.lineWidth=1.5;
+    drawRR(px,py,28,28,3);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='10px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('28×28',px+14,py+18);
+    ctx.fillStyle='#94A3B8';ctx.font='10px PingFang SC';
+    ctx.fillText('← 1 patch = 1 token',px+60,py+18);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Visual token injection
+function renderStep2(p){
+  const cx=W/2,topY=10;
+  // Image → ViT → Patches → Merge → LLM input
+  const stages=[
+    {label:'原始图像',x:15,w:70,h:60,color:'#0984E3'},
+    {label:'ViT Patches',x:110,w:80,h:60,color:'#6C5CE7'},
+    {label:'Spatial Merge',x:215,w:85,h:60,color:'#F59E0B'},
+    {label:'LLM 输入序列',x:325,w:W-345,h:60,color:'#00B894'},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.15;const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=s.color+'15';ctx.strokeStyle=s.color;ctx.lineWidth=1.5;
+    drawRR(s.x,topY+20,s.w,s.h,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(s.label,s.x+s.w/2,topY+12);
+    // Connect arrows
+    if(i>0){
+      ctx.strokeStyle=s.color+'88';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(stages[i-1].x+stages[i-1].w+2,topY+50);ctx.lineTo(s.x-2,topY+50);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(s.x-2,topY+47);ctx.lineTo(s.x+3,topY+50);ctx.lineTo(s.x-2,topY+53);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+  // Show image pixels → patches
+  if(p>.2){
+    const ip=easeInOut((p-.2)/.15);
+    ctx.globalAlpha=ip;
+    // Image grid
+    const ix=20,iy=topY+28,iw=60,ih=45;
+    ctx.fillStyle='#0984E3';ctx.font='22px sans-serif';ctx.textAlign='center';
+    ctx.fillText('🖼',ix+iw/2,iy+ih/2+8);
+    ctx.globalAlpha=1;
+  }
+  // Patches grid (4x4)
+  if(p>.35){
+    const pp=easeInOut((p-.35)/.15);
+    ctx.globalAlpha=pp;
+    const gx=118,gy=topY+28,gs=12,gc=4;
+    for(let r=0;r<gc;r++)for(let c=0;c<gc;c++){
+      const h=200+r*20+c*10;
+      ctx.fillStyle=hsl(h,60,40);
+      ctx.fillRect(gx+c*(gs+2),gy+r*(gs+2),gs,gs);
+    }
+    ctx.fillStyle='#94A3B8';ctx.font='9px Courier New';ctx.textAlign='center';
+    ctx.fillText('16 patches',150,topY+78);
+    ctx.globalAlpha=1;
+  }
+  // Spatial merge (2x2 → 1)
+  if(p>.5){
+    const mp=easeInOut((p-.5)/.15);
+    ctx.globalAlpha=mp;
+    const mx=228,my=topY+32,ms=18;
+    for(let r=0;r<2;r++)for(let c=0;c<2;c++){
+      ctx.fillStyle=hsl(200+r*40+c*20,60,40);
+      ctx.fillRect(mx+c*(ms+3),my+r*(ms+3),ms,ms);
+    }
+    ctx.fillStyle='#F59E0B';ctx.font='9px Courier New';ctx.textAlign='center';
+    ctx.fillText('÷4 tokens',257,topY+78);
+    ctx.globalAlpha=1;
+  }
+  // LLM input mixed sequence
+  if(p>.65){
+    const lp=easeInOut((p-.65)/.2);
+    ctx.globalAlpha=lp;
+    const tokens2=[
+      {t:'v₁',c:'#0984E3'},{t:'v₂',c:'#0984E3'},{t:'v₃',c:'#0984E3'},{t:'v₄',c:'#0984E3'},
+      {t:'描',c:'#00B894'},{t:'述',c:'#00B894'},{t:'图',c:'#00B894'},{t:'片',c:'#00B894'},
+    ];
+    const tw2=22,sx2=335,sy2=topY+38;
+    for(let i=0;i<tokens2.length;i++){
+      const t=tokens2[i];
+      ctx.fillStyle=t.c+'22';ctx.strokeStyle=t.c+'66';ctx.lineWidth=1;
+      drawRR(sx2+i*(tw2+2),sy2,tw2,20,3);ctx.fill();ctx.stroke();
+      ctx.fillStyle=t.c;ctx.font='9px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(t.t,sx2+i*(tw2+2)+tw2/2,sy2+14);
+    }
+    ctx.globalAlpha=1;
+  }
+  // 3D RoPE illustration
+  if(p>.85){
+    const rp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=rp;
+    const ry=topY+100;
+    ctx.fillStyle='rgba(108,92,231,.1)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=1.5;
+    drawRR(20,ry,W-40,50,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('3D RoPE 位置编码',cx,ry+15);
+    ctx.font='11px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText('pos = (temporal, row, col) → 时间 × 高度 × 宽度',cx,ry+35);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Freeze strategies comparison
+function renderStep3(p){
+  const cx=W/2,topY=10;
+  const strategies=[
+    {name:'freeze_vision',vit:'冻结',llm:'LoRA',proj:'训练',mem:'~10GB',color:'#00B894'},
+    {name:'partial_unfreeze',vit:'部分',llm:'训练',proj:'训练',mem:'~18GB',color:'#F59E0B'},
+    {name:'full',vit:'训练',llm:'训练',proj:'训练',mem:'~30GB',color:'#EF4444'},
+  ];
+  const sw=W/3-15,sh=H-30;
+  for(let i=0;i<3;i++){
+    const delay=i*.2;const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const s=strategies[i],x=10+i*(sw+10);
+    ctx.globalAlpha=sp;
+    // Strategy box
+    ctx.fillStyle=s.color+'0A';ctx.strokeStyle=s.color;ctx.lineWidth=1.5;
+    drawRR(x,topY,sw,sh,10);ctx.fill();ctx.stroke();
+    // Title
+    ctx.fillStyle=s.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(s.name,x+sw/2,topY+20);
+    // Components
+    const components=[
+      {label:'Vision Encoder',state:s.vit,y:topY+35},
+      {label:'Projector',state:s.proj,y:topY+80},
+      {label:'LLM',state:s.llm,y:topY+125},
+    ];
+    for(const c of components){
+      const isFrozen=c.state==='冻结';
+      const isPartial=c.state==='部分';
+      const isLora=c.state==='LoRA';
+      const boxColor=isFrozen?'#64748B':isPartial?'#F59E0B':isLora?'#6C5CE7':s.color;
+      ctx.fillStyle=boxColor+'1A';ctx.strokeStyle=boxColor;ctx.lineWidth=1;
+      drawRR(x+10,c.y,sw-20,35,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle=boxColor;ctx.font='11px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(c.label,x+sw/2,c.y+15);
+      ctx.font='10px PingFang SC';ctx.fillStyle=isFrozen?'#64748B':'#E2E8F0';
+      const icon=isFrozen?'🧊':isPartial?'🔓':isLora?'🔧':'🔥';
+      ctx.fillText(icon+' '+c.state,x+sw/2,c.y+28);
+    }
+    // Memory usage
+    ctx.fillStyle=s.color;ctx.font='bold 11px Courier New';ctx.textAlign='center';
+    ctx.fillText(s.mem,x+sw/2,topY+sh-10);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: LoRA on LLM
+function renderStep4(p){
+  const cx=W/2,topY=15;
+  // Original weight matrix
+  const mw=90,mh=70;
+  const lp=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=lp;
+  ctx.fillStyle='rgba(100,116,139,.15)';ctx.strokeStyle='#64748B';ctx.lineWidth=2;
+  drawRR(20,topY+30,mw,mh,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#64748B';ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('W',20+mw/2,topY+22);
+  ctx.font='10px PingFang SC';ctx.fillText('原始权重',20+mw/2,topY+mh+45);
+  ctx.font='11px Courier New';ctx.fillStyle='#94A3B8';
+  ctx.fillText('d × d',20+mw/2,topY+30+mh/2+4);
+  ctx.fillText('(冻结)',20+mw/2,topY+30+mh/2+18);
+  ctx.globalAlpha=1;
+  // Plus sign
+  if(p>.2){
+    const pp=easeInOut((p-.2)/.1);
+    ctx.globalAlpha=pp;ctx.fillStyle='#F59E0B';ctx.font='bold 24px sans-serif';
+    ctx.fillText('+',20+mw+15,topY+30+mh/2+8);
+    ctx.globalAlpha=1;
+  }
+  // LoRA matrices B and A
+  if(p>.3){
+    const lp2=easeInOut((p-.3)/.2);
+    ctx.globalAlpha=lp2;
+    const bx=20+mw+35,by=topY+20;
+    // B matrix
+    ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=2;
+    drawRR(bx,by,30,mh,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('B',bx+15,by-8);
+    ctx.font='9px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText('d×r',bx+15,by+mh/2+3);
+    // × sign
+    ctx.fillStyle='#F59E0B';ctx.font='bold 16px sans-serif';
+    ctx.fillText('×',bx+42,by+mh/2+5);
+    // A matrix
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(bx+55,by+15,mw-20,25,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 12px PingFang SC';
+    ctx.fillText('A',bx+55+(mw-20)/2,by+7);
+    ctx.font='9px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText('r×d',bx+55+(mw-20)/2,by+32);
+    // Label
+    ctx.fillStyle='#F59E0B';ctx.font='10px PingFang SC';
+    ctx.fillText('r=16 (低秩)',bx+50,by+mh+25);
+    ctx.globalAlpha=1;
+  }
+  // Result: W' = W + BA
+  if(p>.55){
+    const rp=easeInOut((p-.55)/.2);
+    ctx.globalAlpha=rp;
+    const rx=cx+80,ry=topY+30;
+    ctx.fillStyle='rgba(249,158,11,.1)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(rx,ry,mw,mh,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('W\'',rx+mw/2,ry-8);
+    ctx.font='11px Courier New';ctx.fillStyle='#E2E8F0';
+    ctx.fillText('W + BA',rx+mw/2,ry+mh/2+4);
+    // Arrow
+    ctx.strokeStyle='#F59E0B88';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(rx-10,ry+mh/2);ctx.lineTo(rx-2,ry+mh/2);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Target modules list
+  if(p>.75){
+    const mp=easeInOut((p-.75)/.25);
+    ctx.globalAlpha=mp;
+    const my=topY+mh+55;
+    ctx.fillStyle='rgba(108,92,231,.08)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=1;
+    drawRR(15,my,W-30,55,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('LoRA 目标模块 (仅 LLM 层)',cx,my+14);
+    const mods=['q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj'];
+    ctx.font='10px Courier New';
+    const modW=60,modGap=5,modSx=cx-mods.length*(modW+modGap)/2;
+    for(let i=0;i<mods.length;i++){
+      const mx2=modSx+i*(modW+modGap);
+      ctx.fillStyle=i<4?'#6C5CE7':'#00B894';
+      ctx.fillText(mods[i],mx2+modW/2,my+35);
+    }
+    ctx.font='9px PingFang SC';ctx.fillStyle='#94A3B8';
+    ctx.fillText('注意力层',modSx+2*modW,my+48);
+    ctx.fillText('FFN 层',modSx+5.5*modW,my+48);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: Two-stage training
+function renderStep5(p){
+  const cx=W/2,topY=10;
+  // Stage 1
+  const s1p=easeInOut(Math.min(1,p/.4));
+  ctx.globalAlpha=s1p;
+  ctx.fillStyle='rgba(9,132,227,.08)';ctx.strokeStyle='#0984E3';ctx.lineWidth=2;
+  drawRR(15,topY,W/2-25,H-30,12);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('Stage 1: 预训练对齐',W/4+5,topY+22);
+  // Stage 1 modules
+  const s1mods=[
+    {label:'ViT',state:'冻结 🧊',frozen:true,y:topY+35},
+    {label:'Projector',state:'训练 🔥',frozen:false,y:topY+75},
+    {label:'LLM',state:'冻结 🧊',frozen:true,y:topY+115},
+  ];
+  const mw2=120;
+  for(let i=0;i<s1mods.length;i++){
+    const m=s1mods[i];
+    const delay=i*.08;const mp=easeInOut(Math.max(0,Math.min(1,(p-.05-delay)/.12)));
+    ctx.globalAlpha=mp;
+    ctx.fillStyle=m.frozen?'rgba(100,116,139,.12)':'rgba(249,158,11,.15)';
+    ctx.strokeStyle=m.frozen?'#64748B':'#F59E0B';ctx.lineWidth=1.5;
+    drawRR(W/4-mw2/2+5,m.y,mw2,30,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=m.frozen?'#64748B':'#F59E0B';ctx.font='11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(m.label+' — '+m.state,W/4+5,m.y+20);
+    ctx.globalAlpha=1;
+  }
+  // Stage 1 info
+  if(p>.2){
+    const ip=easeInOut((p-.2)/.15);
+    ctx.globalAlpha=ip;ctx.font='10px PingFang SC';ctx.fillStyle='#94A3B8';ctx.textAlign='center';
+    ctx.fillText('数据: ~500M 图文对',W/4+5,topY+160);
+    ctx.fillText('LR: 1e-3, Epochs: 1',W/4+5,topY+175);
+    ctx.globalAlpha=1;
+  }
+  // Stage 2
+  if(p>.45){
+    const s2p=easeInOut((p-.45)/.35);
+    ctx.globalAlpha=s2p;
+    ctx.fillStyle='rgba(0,184,148,.08)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(W/2+10,topY,W/2-25,H-30,12);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('Stage 2: 指令微调',3*W/4-5,topY+22);
+    const s2mods=[
+      {label:'ViT',state:'冻结 🧊',frozen:true,y:topY+35},
+      {label:'Projector',state:'训练 🔥',frozen:false,y:topY+75},
+      {label:'LLM',state:'LoRA 🔧',frozen:false,y:topY+115},
+    ];
+    for(let i=0;i<s2mods.length;i++){
+      const m=s2mods[i];
+      const delay=.5+i*.08;const mp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.12)));
+      ctx.globalAlpha=mp;
+      const isLora=m.state.includes('LoRA');
+      ctx.fillStyle=m.frozen?'rgba(100,116,139,.12)':isLora?'rgba(108,92,231,.15)':'rgba(249,158,11,.15)';
+      ctx.strokeStyle=m.frozen?'#64748B':isLora?'#6C5CE7':'#F59E0B';ctx.lineWidth=1.5;
+      drawRR(3*W/4-mw2/2-5,m.y,mw2,30,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle=m.frozen?'#64748B':isLora?'#6C5CE7':'#F59E0B';ctx.font='11px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(m.label+' — '+m.state,3*W/4-5,m.y+20);
+      ctx.globalAlpha=1;
+    }
+    if(p>.7){
+      const ip2=easeInOut((p-.7)/.15);
+      ctx.globalAlpha=ip2;ctx.font='10px PingFang SC';ctx.fillStyle='#94A3B8';ctx.textAlign='center';
+      ctx.fillText('数据: ~100K 指令数据',3*W/4-5,topY+160);
+      ctx.fillText('LR: 2e-4, Epochs: 3',3*W/4-5,topY+175);
+      ctx.globalAlpha=1;
+    }
+  }
+  // Arrow between stages
+  if(p>.85){
+    const ap=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=ap;ctx.strokeStyle='#F59E0B';ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(W/2-3,H/2-15);ctx.lineTo(W/2+13,H/2-15);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W/2+8,H/2-21);ctx.lineTo(W/2+15,H/2-15);ctx.lineTo(W/2+8,H/2-9);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

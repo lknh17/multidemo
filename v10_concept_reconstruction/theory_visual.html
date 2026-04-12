@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v10 商业概念重构 - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}
+.header h1{font-size:20px;font-weight:700}
+.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}
+.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}
+.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}
+.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:center;line-height:1.8}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}
+.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}
+.btn:active{transform:scale(.97)}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v10</span><h1>商业概念重构 Loss</h1><span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'广告商业概念体系',desc:'广告多模态 embedding 需要编码丰富的<strong>商业语义信息</strong>：<br><br>• <strong>行业</strong>：电商/游戏/教育/金融等（单标签分类）<br>• <strong>品牌</strong>：具体品牌名称（单标签分类）<br>• <strong>属性</strong>：高端/促销/年轻/创意等（多标签分类）<br>• <strong>意图</strong>：品牌曝光/效果转化/新客获取等（单标签分类）<br><br>这些概念构成<strong>树状层次结构</strong>，从宏观行业到微观意图。',formula:'概念层次:\n行业 (Industry) → 单标签 CE Loss\n品牌 (Brand) → 单标签 CE Loss\n属性 (Attributes) → 多标签 BCE Loss\n意图 (Intent) → 单标签 CE Loss'},
+{title:'概念重构思想',desc:'核心思想：如果一个好的 embedding 包含了丰富的商业语义，那么应该能从 embedding <strong>重构出</strong>这些商业属性。<br><br>这构成了一个<strong>自监督信号</strong>：<br>1. 编码器输出 embedding<br>2. 从 embedding 预测各种商业属性<br>3. 预测结果与真实标签对比<br>4. 反向传播<strong>迫使 embedding 编码语义信息</strong><br><br>重构 Loss 与对比 Loss 互补：对比学习做跨模态对齐，重构学习做语义编码。',formula:'embedding = Encoder(input)\npred_industry = MLP_industry(embedding)\npred_brand = MLP_brand(embedding)\n...\nL_recon = Σ Loss(pred_k, label_k)'},
+{title:'多头预测架构',desc:'<strong>ConceptReconstructionHead</strong> 包含 4 个独立的 MLP 预测头：<br><br>每个头的结构：<strong>Linear → ReLU → Linear</strong><br>• industry_head: embed_dim → embed_dim → num_industries<br>• brand_head: embed_dim → embed_dim → num_brands<br>• attr_head: embed_dim → embed_dim → num_attributes<br>• intent_head: embed_dim → embed_dim → num_intents<br><br>四个头<strong>共享输入 embedding，但参数独立</strong>。这样每个头可以专注学习各自的预测任务。',formula:'ConceptReconstructionHead:\n  industry = Linear(ReLU(Linear(emb)))\n  brand = Linear(ReLU(Linear(emb)))\n  attributes = Linear(ReLU(Linear(emb)))\n  intent = Linear(ReLU(Linear(emb)))'},
+{title:'对比 Loss + 重构 Loss 联合训练',desc:'联合训练中两种 Loss 互补：<br><br><strong>对比 Loss (InfoNCE)</strong>：<br>• 拉近匹配的图文 embedding，推远不匹配的<br>• 学习<strong>跨模态对齐</strong><br><br><strong>重构 Loss</strong>：<br>• 行业/品牌/意图：<strong>CrossEntropy</strong>（单标签分类）<br>• 属性：<strong>BCEWithLogits</strong>（多标签分类）<br>• 学习<strong>语义编码</strong><br><br>两者结合 = 既对齐又语义丰富的 embedding。',formula:'L_contrastive = InfoNCE(img_emb, txt_emb)\n\nL_recon = CE(pred_ind, gt_ind)\n       + CE(pred_brand, gt_brand)\n       + BCE(pred_attr, gt_attr)\n       + CE(pred_intent, gt_intent)\n\nL_total = L_contrastive + L_recon'},
+{title:'Uncertainty Weighting',desc:'多 Loss 联合训练的难点：各 Loss <strong>量级不同</strong>，手动调权费时。<br><br><strong>Uncertainty Weighting</strong>（Kendall et al.）自动学习权重：<br>• 为每个 Loss 引入可学习参数 <strong>log(σ²)</strong><br>• 加权公式：L_weighted = L/(2σ²) + log(σ)<br>• σ 大 → 该 Loss 权重小（不确定性大，降权）<br>• σ 小 → 该 Loss 权重大（确定性高，加权）<br>• log(σ) 正则项防止所有 σ 趋于无穷<br><br>训练中 σ 自动调整，无需手动调参。',formula:'log_σ_c, log_σ_r = nn.Parameter(0.0)\n\nL_weighted = L_contrastive / (2·exp(2·log_σ_c))\n           + log_σ_c\n           + L_recon / (2·exp(2·log_σ_r))\n           + log_σ_r'}
+];
+
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+function drawBox(x,y,w,h,label,color,alpha){ctx.globalAlpha=alpha;ctx.fillStyle=color+'22';ctx.strokeStyle=color;drawRR(x,y,w,h,8);ctx.fill();ctx.stroke();ctx.fillStyle=color;ctx.font='12px PingFang SC';ctx.textAlign='center';ctx.textBaseline='middle';const ls=label.split('\n');ls.forEach((l,i)=>ctx.fillText(l,x+w/2,y+h/2+(i-(ls.length-1)/2)*14));ctx.globalAlpha=1}
+function drawArrow(x1,y1,x2,y2,color,alpha){ctx.globalAlpha=alpha;ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-8*Math.cos(a-.3),y2-8*Math.sin(a-.3));ctx.moveTo(x2,y2);ctx.lineTo(x2-8*Math.cos(a+.3),y2-8*Math.sin(a+.3));ctx.stroke();ctx.globalAlpha=1}
+
+// Step 0: Tree diagram of concepts
+function renderStep0(p){
+  const cx=W/2,rootY=20;
+  // Root
+  const rp=easeInOut(Math.min(1,p/.15));
+  drawBox(cx-50,rootY,100,28,'广告素材','#94A3B8',rp);
+  
+  const cats=[
+    {label:'行业',color:'#EF4444',children:['电商','游戏','教育','金融']},
+    {label:'品牌',color:'#F59E0B',children:['Nike','Apple','腾讯','华为']},
+    {label:'属性',color:'#0984E3',children:['高端','促销','年轻','创意']},
+    {label:'意图',color:'#6C5CE7',children:['曝光','转化','获客','留存']}
+  ];
+  const catW=W/4;
+  for(let c=0;c<cats.length;c++){
+    const delay=.1+c*.1;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const mx=catW/2+c*catW;
+    drawBox(mx-35,rootY+50,70,26,cats[c].label,cats[c].color,ap);
+    drawArrow(cx,rootY+28,mx,rootY+50,cats[c].color,ap*.4);
+    
+    // Children
+    for(let i=0;i<cats[c].children.length;i++){
+      const cd=delay+.15+i*.05;
+      const cp=easeInOut(Math.max(0,Math.min(1,(p-cd)/.15)));
+      const cy=rootY+100+i*30;
+      drawBox(mx-30,cy,60,22,cats[c].children[i],cats[c].color,cp);
+      drawArrow(mx,rootY+76,mx,cy,cats[c].color,cp*.3);
+    }
+  }
+  
+  if(p>.85){
+    const np=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=np;ctx.fillStyle='#00B894';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('每个广告素材都可以标注这些商业概念标签',cx,H-20);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Concept reconstruction idea
+function renderStep1(p){
+  const cx=W/2;
+  // Encoder
+  const ep=easeInOut(Math.min(1,p/.2));
+  drawBox(cx-55,20,110,30,'编码器 Encoder','#0984E3',ep);
+  drawArrow(cx,50,cx,65,'#0984E3',ep*.5);
+  
+  // Embedding
+  const emp=easeInOut(Math.max(0,Math.min(1,(p-.15)/.2)));
+  drawBox(cx-50,70,100,30,'Embedding','#6C5CE7',emp);
+  
+  // Question mark
+  if(p>.3){
+    const qp=easeInOut(Math.max(0,Math.min(1,(p-.3)/.15)));
+    ctx.globalAlpha=qp;ctx.fillStyle='#F59E0B';ctx.font='bold 16px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('能否从 embedding 恢复商业语义？',cx,120);
+    ctx.globalAlpha=1;
+  }
+  
+  // Reconstruction heads
+  const heads=['行业','品牌','属性','意图'];
+  const colors=['#EF4444','#F59E0B','#0984E3','#6C5CE7'];
+  const headW=W/4;
+  for(let i=0;i<4;i++){
+    const delay=.35+i*.08;
+    const hp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const mx=headW/2+i*headW;
+    
+    drawArrow(cx,100,mx,140,colors[i],hp*.4);
+    drawBox(mx-30,145,60,25,`MLP_${heads[i]}`,colors[i],hp);
+    drawArrow(mx,170,mx,185,colors[i],hp*.4);
+    drawBox(mx-30,190,60,25,`pred_${heads[i]}`,colors[i],hp);
+    
+    // Compare with GT
+    if(p>delay+.2){
+      const cp=easeInOut(Math.max(0,Math.min(1,(p-delay-.2)/.15)));
+      ctx.globalAlpha=cp;ctx.fillStyle=colors[i];ctx.font='11px PingFang SC';ctx.textAlign='center';
+      ctx.fillText('vs GT',mx,230);
+      drawBox(mx-30,238,60,22,`label_${heads[i]}`,'#00B894',cp);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Backward arrow
+  if(p>.85){
+    const bp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=bp;ctx.strokeStyle='#EF4444';ctx.lineWidth=2;ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.moveTo(cx,270);ctx.lineTo(cx,100);ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#EF4444';ctx.font='12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText('← 反向传播迫使 embedding 编码语义',cx+10,200);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Multi-head prediction
+function renderStep2(p){
+  const cx=W/2;
+  const heads=[
+    {name:'industry_head',out:'num_industries',loss:'CE',color:'#EF4444'},
+    {name:'brand_head',out:'num_brands',loss:'CE',color:'#F59E0B'},
+    {name:'attr_head',out:'num_attributes',loss:'BCE',color:'#0984E3'},
+    {name:'intent_head',out:'num_intents',loss:'CE',color:'#6C5CE7'}
+  ];
+  
+  // Shared embedding input
+  const ip=easeInOut(Math.min(1,p/.15));
+  drawBox(cx-55,15,110,28,'Embedding [B,D]','#6C5CE7',ip);
+  
+  const colW=W/4;
+  for(let i=0;i<4;i++){
+    const delay=.1+i*.1;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const mx=colW/2+i*colW;
+    
+    // Arrow from embedding
+    drawArrow(cx,43,mx,60,heads[i].color,ap*.4);
+    
+    // Linear 1
+    drawBox(mx-35,65,70,22,'Linear(D→D)',heads[i].color,ap);
+    // ReLU
+    if(p>delay+.08){
+      const rp=easeInOut(Math.max(0,Math.min(1,(p-delay-.08)/.1)));
+      drawArrow(mx,87,mx,95,heads[i].color,rp*.4);
+      drawBox(mx-25,98,50,20,'ReLU',heads[i].color,rp);
+    }
+    // Linear 2
+    if(p>delay+.15){
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-delay-.15)/.1)));
+      drawArrow(mx,118,mx,126,heads[i].color,lp*.4);
+      drawBox(mx-35,130,70,22,`Linear(D→${heads[i].out.replace('num_','')})`,heads[i].color,lp);
+    }
+    // Output
+    if(p>delay+.22){
+      const op=easeInOut(Math.max(0,Math.min(1,(p-delay-.22)/.12)));
+      drawArrow(mx,152,mx,162,heads[i].color,op*.4);
+      drawBox(mx-35,165,70,25,`${heads[i].name}`,heads[i].color,op);
+      
+      // Loss type
+      ctx.globalAlpha=op;ctx.fillStyle=heads[i].color;ctx.font='11px Courier New';ctx.textAlign='center';
+      ctx.fillText(`Loss: ${heads[i].loss}`,mx,205);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  if(p>.9){
+    const np=easeInOut((p-.9)/.1);
+    ctx.globalAlpha=np;ctx.fillStyle='#00B894';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('四个头共享 embedding 输入，参数独立',cx,H-20);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Contrastive + Reconstruction
+function renderStep3(p){
+  const cx=W/2;
+  
+  // Two loss branches
+  const leftX=cx-100,rightX=cx+100;
+  
+  // Image & Text
+  const ip=easeInOut(Math.min(1,p/.15));
+  drawBox(leftX-40,15,80,25,'图像 Emb','#0984E3',ip);
+  drawBox(rightX-40,15,80,25,'文本 Emb','#00B894',ip);
+  
+  // Contrastive Loss (left side)
+  if(p>.15){
+    const cp=easeInOut(Math.max(0,Math.min(1,(p-.15)/.25)));
+    drawArrow(leftX,40,cx-30,70,'#0984E3',cp*.4);
+    drawArrow(rightX,40,cx+30,70,'#00B894',cp*.4);
+    drawBox(cx-55,75,110,30,'对比 Loss\nInfoNCE','#EF4444',cp);
+    
+    // Similarity matrix
+    if(p>.3){
+      const sp=easeInOut(Math.max(0,Math.min(1,(p-.3)/.2)));
+      const sz=15,sx=cx-2*sz,sy=115;
+      for(let i=0;i<4;i++) for(let j=0;j<4;j++){
+        const v=i===j?0.8:Math.random()*.2;
+        ctx.globalAlpha=sp;
+        ctx.fillStyle=`hsl(${lerp(220,0,v)},80%,${lerp(15,55,v)}%)`;
+        ctx.fillRect(sx+j*sz,sy+i*sz,sz-1,sz-1);
+        ctx.globalAlpha=1;
+      }
+    }
+  }
+  
+  // Reconstruction Loss (below)
+  if(p>.4){
+    const rp=easeInOut(Math.max(0,Math.min(1,(p-.4)/.25)));
+    const ry=190;
+    drawArrow(leftX,40,leftX,ry,'#F59E0B',rp*.4);
+    drawArrow(rightX,40,rightX,ry,'#F59E0B',rp*.4);
+    
+    const heads=['行业CE','品牌CE','属性BCE','意图CE'];
+    const colors=['#EF4444','#F59E0B','#0984E3','#6C5CE7'];
+    for(let i=0;i<4;i++){
+      const hx=40+i*(W-80)/4;
+      const hp=easeInOut(Math.max(0,Math.min(1,(p-.45-i*.05)/.15)));
+      drawBox(hx,ry,70,22,heads[i],colors[i],hp);
+    }
+    
+    // Recon loss sum
+    if(p>.65){
+      const sp=easeInOut(Math.max(0,Math.min(1,(p-.65)/.15)));
+      drawBox(cx-55,ry+35,110,25,'重构 Loss = Σ',  '#F59E0B',sp);
+    }
+  }
+  
+  // Total loss
+  if(p>.8){
+    const tp=easeInOut(Math.max(0,Math.min(1,(p-.8)/.2)));
+    drawBox(cx-70,265,140,30,'L = L_contra + L_recon','#00B894',tp);
+    drawArrow(cx,105,cx,265,'#EF4444',tp*.3);
+    drawArrow(cx,250,cx,265,'#F59E0B',tp*.3);
+  }
+}
+
+// Step 4: Uncertainty Weighting
+function renderStep4(p){
+  const cx=W/2;
+  
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=tp;ctx.fillStyle='#F59E0B';ctx.font='bold 15px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('Uncertainty Weighting 自动平衡多 Loss',cx,20);
+  ctx.globalAlpha=1;
+  
+  // Two losses
+  const losses=[
+    {name:'L_contrastive',color:'#EF4444',sigma:'σ_c',x:cx-120},
+    {name:'L_reconstruction',color:'#F59E0B',sigma:'σ_r',x:cx+120}
+  ];
+  
+  for(let i=0;i<2;i++){
+    const delay=.1+i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const lx=losses[i].x;
+    
+    drawBox(lx-55,50,110,28,losses[i].name,losses[i].color,ap);
+    
+    // Sigma parameter
+    if(p>delay+.1){
+      const sp=easeInOut(Math.max(0,Math.min(1,(p-delay-.1)/.15)));
+      ctx.globalAlpha=sp;
+      ctx.fillStyle='#6C5CE7'+'33';ctx.strokeStyle='#6C5CE7';
+      ctx.beginPath();ctx.arc(lx,115,18,0,Math.PI*2);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#6C5CE7';ctx.font='bold 12px Courier New';ctx.textAlign='center';
+      ctx.fillText(`log${losses[i].sigma}`,lx,119);
+      ctx.font='10px PingFang SC';
+      ctx.fillText('可学习参数',lx,140);
+      ctx.globalAlpha=1;
+    }
+    
+    // Weighted formula
+    if(p>delay+.2){
+      const wp=easeInOut(Math.max(0,Math.min(1,(p-delay-.2)/.2)));
+      drawBox(lx-60,155,120,28,`L/(2σ²) + log(σ)`,losses[i].color,wp);
+    }
+  }
+  
+  // Balance visualization - seesaw
+  if(p>.6){
+    const bp=easeInOut(Math.max(0,Math.min(1,(p-.6)/.25)));
+    const sy=220, seeW=200;
+    ctx.globalAlpha=bp;
+    // Fulcrum
+    ctx.fillStyle='#64748B';
+    ctx.beginPath();ctx.moveTo(cx,sy+30);ctx.lineTo(cx-12,sy+50);ctx.lineTo(cx+12,sy+50);ctx.closePath();ctx.fill();
+    // Bar with slight tilt animation
+    const tilt=Math.sin(animProgress*Math.PI*2)*.05;
+    ctx.save();ctx.translate(cx,sy+30);ctx.rotate(tilt);
+    ctx.strokeStyle='#94A3B8';ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(-seeW/2,0);ctx.lineTo(seeW/2,0);ctx.stroke();
+    // Weights on each side
+    ctx.fillStyle='#EF4444';ctx.beginPath();ctx.arc(-seeW/2+20,-15,12,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText('L_c',-seeW/2+20,-12);
+    ctx.fillStyle='#F59E0B';ctx.beginPath();ctx.arc(seeW/2-20,-15,12,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.fillText('L_r',seeW/2-20,-12);
+    ctx.restore();
+    ctx.globalAlpha=1;
+  }
+  
+  // Final formula
+  if(p>.85){
+    const fp=easeInOut((p-.85)/.15);
+    drawBox(cx-100,290,200,30,'σ 自动学习 → 无需手动调参','#00B894',fp);
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const s=document.createElement('span');if(i===currentStep)s.className='active';s.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(s)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

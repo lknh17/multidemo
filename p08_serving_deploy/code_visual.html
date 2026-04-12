@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p08 推理部署 - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre;overflow-x:auto}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">p08</span><h1>推理部署</h1><span class="tag">代码可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+var canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+var W,H,currentStep=0,animProgress=0,animId=null;
+var steps=[
+{title:'vLLM 启动命令构建',desc:'<strong>build_vllm_command</strong> 将配置映射为 CLI 参数：<br><br>1. 基础参数：model, port, host, max-model-len<br>2. <strong>PagedAttention</strong>：block-size, swap-space<br>3. <strong>Continuous Batching</strong>：max-num-seqs, chunked-prefill<br>4. <strong>前缀缓存</strong>：enable-prefix-caching<br>5. <strong>投机解码</strong>：speculative-model<br><br>使用 subprocess 启动，命令行兼容直接 CLI 使用。',formula:'python -m vllm.entrypoints.openai.api_server \\\n  --model Qwen/Qwen2.5-0.5B-Instruct \\\n  --gpu-memory-utilization 0.90 \\\n  --block-size 16 \\\n  --enable-chunked-prefill \\\n  --enable-prefix-caching'},
+{title:'SGLang RadixAttention 调度',desc:'SGLang 的 <strong>RadixAttention</strong> 用基数树索引 KV Cache：<br><br>• <strong>schedule-policy lpm</strong>：优先调度与已有缓存匹配最长前缀的请求<br>• <strong>mem-fraction-static</strong>：模型参数占用的显存比例，剩余给 KV Cache<br>• <strong>chunked-prefill-size</strong>：prefill 分块大小<br>• 支持 <strong>TP+DP</strong> 组合并行<br><br>新请求自动匹配已缓存的最长前缀，避免重复计算。',formula:'python -m sglang.launch_server \\\n  --model-path Qwen/Qwen2.5-0.5B-Instruct \\\n  --schedule-policy lpm \\\n  --mem-fraction-static 0.88 \\\n  --tp 1 --dp 1'},
+{title:'异步压力测试流程',desc:'<strong>benchmark_serving.py</strong> 核心流程：<br><br>1. <strong>Semaphore</strong> 控制并发：限制同时活跃请求数<br>2. <strong>SSE 流式解析</strong>：逐 token 测量 TTFT<br>3. <strong>perf_counter</strong>：纳秒级精度计时<br>4. 逐级测试 [1,2,4,8,16,32] 并发<br>5. 计算 P50/P90/P99 百分位延迟<br>6. 生成对比图表',formula:'semaphore = asyncio.Semaphore(concurrency)\n\nasync def bounded_request(prompt):\n  async with semaphore:\n    start = perf_counter()\n    async for chunk in stream:\n      if first_token is None:\n        first_token = perf_counter()\n      tokens += 1\n    ttft = first_token - start\n    tps = tokens / elapsed'},
+{title:'流式推理与多轮对话',desc:'<strong>inference.py</strong> 通过 OpenAI SDK 调用推理服务：<br><br><strong>流式推理</strong>：stream=True，逐 token 输出<br>• 用户感知延迟 = TTFT（而非总生成时间）<br><br><strong>多轮对话</strong>：维护完整 messages 历史<br>• 每轮发送全部历史<br>• 服务端前缀缓存自动复用历史 KV<br><br><strong>批量推理</strong>：asyncio.gather 并发请求',formula:'# 流式推理\nstream = client.chat.completions.create(\n  model=model, messages=[...],\n  stream=True\n)\nfor chunk in stream:\n  print(chunk.choices[0].delta.content)\n\n# 多轮: messages 累积\nmessages.append({role:"user", ...})\nmessages.append({role:"assistant", ...})'},
+{title:'Ollama Modelfile 生成',desc:'<strong>serve_ollama.sh</strong> 自动生成 Modelfile 并部署：<br><br>1. 检查 Ollama 安装和 GGUF 文件<br>2. 生成 <strong>Modelfile</strong>（声明模型来源和参数）<br>3. <strong>ollama create</strong> 导入模型<br>4. 快速测试验证<br><br>Modelfile 包含：<br>• FROM: GGUF 模型路径<br>• PARAMETER: 推理参数<br>• SYSTEM: 系统提示词<br>• TEMPLATE: ChatML 对话模板',formula:'# Modelfile\nFROM models/model-Q4_K_M.gguf\n\nPARAMETER temperature 0.7\nPARAMETER num_ctx 2048\nPARAMETER num_gpu 99\n\nSYSTEM \"你是AI助手\"\nTEMPLATE \"{{ChatML格式}}\"'}
+];
+function resize(){var r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function ease(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+  var cx=W/2,topY=8;
+  var flow=[
+    {text:'--model Qwen/Qwen2.5-0.5B-Instruct',color:'#0984E3',t:0},
+    {text:'--gpu-memory-utilization 0.90',color:'#6C5CE7',t:.08},
+    {text:'--tensor-parallel-size 1',color:'#6C5CE7',t:.14},
+    {text:'--block-size 16  (PagedAttention)',color:'#F59E0B',t:.22},
+    {text:'--max-num-seqs 256  (Continuous Batch)',color:'#F59E0B',t:.30},
+    {text:'--enable-chunked-prefill',color:'#00B894',t:.38},
+    {text:'--enable-prefix-caching',color:'#00B894',t:.46},
+    {text:'--max-model-len 2048',color:'#94A3B8',t:.54},
+    {text:'→ subprocess.Popen(cmd)',color:'#EF4444',t:.65}
+  ];
+  var bw=240,bh=24,gap=6;
+  for(var i=0;i<flow.length;i++){var f=flow[i];
+    var fp=ease(Math.max(0,Math.min(1,(p-f.t)/.08)));
+    var y=topY+i*(bh+gap);var active=animProgress>f.t&&animProgress<f.t+.08;
+    ctx.globalAlpha=fp;
+    if(active){ctx.fillStyle=f.color+'15';ctx.fillRect(8,y,W-16,bh)}
+    ctx.fillStyle=f.color+'1A';ctx.strokeStyle=f.color+'55';ctx.lineWidth=1;
+    drawRR(cx-bw/2,y+1,bw,bh-2,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle=f.color;ctx.font='10px Courier New';ctx.textAlign='center';
+    ctx.fillText(f.text,cx,y+bh/2+3);ctx.globalAlpha=1}
+  if(p>.8){var lp=ease((p-.8)/.2);ctx.globalAlpha=lp;
+    ctx.fillStyle='rgba(0,184,148,.1)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    var ry=topY+flow.length*(bh+gap)+5;
+    drawRR(20,ry,W-40,28,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('API: http://0.0.0.0:8000/v1  (OpenAI 兼容)',cx,ry+18);ctx.globalAlpha=1}
+}
+
+function renderStep1(p){
+  var cx=W/2,topY=5;
+  // Radix tree visualization
+  ctx.globalAlpha=ease(Math.min(1,p/.12));ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle='#6C5CE7';ctx.fillText('RadixAttention 前缀树',cx,topY+12);ctx.globalAlpha=1;
+  // Tree nodes
+  var root={x:cx,y:topY+35,label:'ROOT',c:'#94A3B8'};
+  var L1=[{x:cx-80,y:topY+70,label:'System',c:'#0984E3'},{x:cx+80,y:topY+70,label:'Code',c:'#00B894'}];
+  var L2=[{x:cx-120,y:topY+105,label:'用户A',c:'#F59E0B'},{x:cx-40,y:topY+105,label:'用户B',c:'#EF4444'},
+    {x:cx+60,y:topY+105,label:'补全1',c:'#6C5CE7'},{x:cx+120,y:topY+105,label:'补全2',c:'#6C5CE7'}];
+  // Root
+  var rp=ease(Math.max(0,Math.min(1,(p-.1)/.08)));
+  ctx.globalAlpha=rp;ctx.fillStyle=root.c+'33';ctx.strokeStyle=root.c;ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.arc(root.x,root.y,14,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.fillStyle=root.c;ctx.font='bold 9px Courier New';ctx.textAlign='center';ctx.fillText(root.label,root.x,root.y+3);ctx.globalAlpha=1;
+  // L1
+  for(var i=0;i<L1.length;i++){var d=.18+i*.08,np=ease(Math.max(0,Math.min(1,(p-d)/.08)));
+    ctx.globalAlpha=np;ctx.strokeStyle=L1[i].c+'88';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(root.x,root.y+14);ctx.lineTo(L1[i].x,L1[i].y-12);ctx.stroke();
+    ctx.fillStyle=L1[i].c+'33';ctx.strokeStyle=L1[i].c;
+    ctx.beginPath();ctx.arc(L1[i].x,L1[i].y,12,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle=L1[i].c;ctx.font='8px PingFang SC';ctx.fillText(L1[i].label,L1[i].x,L1[i].y+3);ctx.globalAlpha=1}
+  // L2
+  for(var i=0;i<L2.length;i++){var parent=i<2?L1[0]:L1[1];
+    var d2=.32+i*.06,np2=ease(Math.max(0,Math.min(1,(p-d2)/.08)));
+    ctx.globalAlpha=np2;ctx.strokeStyle=L2[i].c+'66';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(parent.x,parent.y+12);ctx.lineTo(L2[i].x,L2[i].y-10);ctx.stroke();
+    ctx.fillStyle=L2[i].c+'33';ctx.strokeStyle=L2[i].c;
+    ctx.beginPath();ctx.arc(L2[i].x,L2[i].y,10,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle=L2[i].c;ctx.font='7px PingFang SC';ctx.fillText(L2[i].label,L2[i].x,L2[i].y+3);ctx.globalAlpha=1}
+  // Shared prefix highlight
+  if(p>.6){var sp=ease((p-.6)/.2);ctx.globalAlpha=sp;
+    ctx.strokeStyle='rgba(0,184,148,.6)';ctx.lineWidth=3;ctx.setLineDash([5,3]);
+    ctx.beginPath();ctx.arc(L1[0].x,L1[0].y,18,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#00B894';ctx.font='10px PingFang SC';
+    ctx.fillText('共享前缀 → 复用KV',cx,topY+135);ctx.globalAlpha=1}
+  // Config params below
+  if(p>.5){var cp=ease((p-.5)/.15);ctx.globalAlpha=cp;
+    var params=['--schedule-policy lpm','--mem-fraction-static 0.88','--chunked-prefill-size 8192'];
+    for(var i=0;i<params.length;i++){var y2=topY+155+i*22;
+      ctx.fillStyle='rgba(108,92,231,.1)';ctx.strokeStyle='#6C5CE744';ctx.lineWidth=1;
+      drawRR(20,y2,W-40,18,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#6C5CE7';ctx.font='9px Courier New';ctx.textAlign='center';
+      ctx.fillText(params[i],cx,y2+12)}ctx.globalAlpha=1}
+}
+
+function renderStep2(p){
+  var cx=W/2,topY=5;
+  // Async flow
+  var flow=[
+    {text:'concurrency_levels = [1,2,4,8,16,32]',color:'#6C5CE7',t:0},
+    {text:'semaphore = Semaphore(concurrency)',color:'#0984E3',t:.08},
+    {text:'async for line in resp.content:',color:'#00B894',t:.18},
+    {text:'  if first_token is None: record TTFT',color:'#F59E0B',t:.28},
+    {text:'  output_tokens += 1',color:'#00B894',t:.36},
+    {text:'tps = tokens / elapsed',color:'#EF4444',t:.44},
+    {text:'p90 = sorted(ttfts)[int(N*0.9)]',color:'#F59E0B',t:.52}
+  ];
+  var lh=26;
+  for(var i=0;i<flow.length;i++){var f=flow[i];
+    var fp=ease(Math.max(0,Math.min(1,(p-f.t)/.08)));var y=topY+i*lh;
+    var active=animProgress>f.t&&animProgress<f.t+.08;
+    ctx.globalAlpha=fp;
+    if(active){ctx.fillStyle=f.color+'15';ctx.fillRect(8,y,W-16,lh-2)}
+    ctx.fillStyle='#64748B';ctx.font='8px Courier New';ctx.textAlign='right';ctx.fillText(String(i+1),12,y+lh/2+2);
+    ctx.fillStyle=f.color;ctx.font='10px Courier New';ctx.textAlign='left';ctx.fillText(f.text,18,y+lh/2+3);
+    ctx.globalAlpha=1}
+  // Concurrency bar chart
+  if(p>.6){var cp=ease((p-.6)/.25);ctx.globalAlpha=cp;
+    var levels=[1,2,4,8,16,32],tputs=[2,3.5,6,12,17,20];
+    var bx=20,by=topY+flow.length*lh+15,bw2=(W-50)/levels.length,bh2=H-by-20;
+    var maxT=22;
+    for(var i=0;i<levels.length;i++){
+      var h=tputs[i]/maxT*bh2*cp;
+      var x=bx+i*(bw2+3);
+      ctx.fillStyle='rgba(0,184,148,.4)';drawRR(x,by+bh2-h,bw2,h,3);ctx.fill();
+      ctx.fillStyle='#00B894';ctx.font='bold 8px Courier New';ctx.textAlign='center';
+      ctx.fillText(tputs[i].toFixed(1),x+bw2/2,by+bh2-h-5);
+      ctx.fillStyle='#94A3B8';ctx.font='8px PingFang SC';
+      ctx.fillText('c='+levels[i],x+bw2/2,by+bh2+10)}
+    ctx.fillStyle='#94A3B8';ctx.font='9px PingFang SC';ctx.textAlign='right';
+    ctx.fillText('req/s ↑',bx-5,by+5);ctx.globalAlpha=1}
+}
+
+function renderStep3(p){
+  var cx=W/2,topY=5;
+  // Stream flow
+  var sflow=[
+    {text:'client = OpenAI(base_url, api_key)',color:'#6C5CE7',t:0},
+    {text:'stream = client.chat.completions.create(',color:'#0984E3',t:.08},
+    {text:'  model=model, messages=[...],',color:'#0984E3',t:.14},
+    {text:'  stream=True  # 启用流式',color:'#00B894',t:.2},
+    {text:')',color:'#0984E3',t:.24},
+    {text:'for chunk in stream:',color:'#F59E0B',t:.3},
+    {text:'  content = chunk.choices[0].delta.content',color:'#F59E0B',t:.36},
+    {text:'  print(content, end="", flush=True)',color:'#00B894',t:.42}
+  ];
+  var lh=22;
+  for(var i=0;i<sflow.length;i++){var f=sflow[i];
+    var fp=ease(Math.max(0,Math.min(1,(p-f.t)/.07)));var y=topY+i*lh;
+    ctx.globalAlpha=fp;
+    ctx.fillStyle='#64748B';ctx.font='8px Courier New';ctx.textAlign='right';ctx.fillText(String(i+1),12,y+lh/2+2);
+    ctx.fillStyle=f.color;ctx.font='10px Courier New';ctx.textAlign='left';ctx.fillText(f.text,18,y+lh/2+3);
+    ctx.globalAlpha=1}
+  // Streaming output simulation
+  if(p>.5){var sp=ease((p-.5)/.3);ctx.globalAlpha=sp;
+    var oy=topY+sflow.length*lh+12;
+    ctx.fillStyle='rgba(0,184,148,.08)';ctx.strokeStyle='#00B89444';ctx.lineWidth=1;
+    drawRR(15,oy,W-30,50,8);ctx.fill();ctx.stroke();
+    var output='KV Cache 是一种将已计算的 Key 和 Value 向量缓存在显存中的技术...';
+    var visLen=Math.floor(output.length*sp);
+    ctx.fillStyle='#00B894';ctx.font='12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(output.substring(0,visLen),22,oy+20);
+    // Cursor blink
+    if(sp<1){var cx2=22+ctx.measureText(output.substring(0,visLen)).width;
+      ctx.fillStyle=Math.sin(Date.now()/200)>.0?'#00B894':'transparent';
+      ctx.fillRect(cx2,oy+8,2,18)}
+    // Multi-turn diagram
+    var my=oy+60;
+    ctx.fillStyle='#94A3B8';ctx.font='bold 10px PingFang SC';ctx.textAlign='left';
+    ctx.fillText('多轮对话: messages 累积',18,my);
+    var turns=[{r:'system',c:'#94A3B8'},{r:'user',c:'#0984E3'},{r:'assistant',c:'#00B894'},{r:'user',c:'#0984E3'},{r:'assistant',c:'#00B894'}];
+    for(var i=0;i<turns.length;i++){var t=turns[i],tx=18+i*48,ty=my+10;
+      ctx.fillStyle=t.c+'33';ctx.strokeStyle=t.c;ctx.lineWidth=1;
+      drawRR(tx,ty,44,18,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle=t.c;ctx.font='7px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(t.r,tx+22,ty+12);
+      if(i>0){ctx.strokeStyle='#64748B';ctx.lineWidth=.5;ctx.beginPath();ctx.moveTo(tx-4,ty+9);ctx.lineTo(tx,ty+9);ctx.stroke()}}
+    ctx.globalAlpha=1}
+}
+
+function renderStep4(p){
+  var cx=W/2,topY=5;
+  // Modelfile content
+  var lines=[
+    {text:'# Modelfile',color:'#64748B',t:0},
+    {text:'FROM models/model-Q4_K_M.gguf',color:'#0984E3',t:.06},
+    {text:'',color:'#64748B',t:.1},
+    {text:'PARAMETER temperature 0.7',color:'#F59E0B',t:.14},
+    {text:'PARAMETER num_ctx 2048',color:'#F59E0B',t:.2},
+    {text:'PARAMETER num_gpu 99',color:'#F59E0B',t:.26},
+    {text:'PARAMETER repeat_penalty 1.1',color:'#F59E0B',t:.32},
+    {text:'',color:'#64748B',t:.36},
+    {text:'SYSTEM "你是AI助手。请用中文回答。"',color:'#00B894',t:.4},
+    {text:'',color:'#64748B',t:.44},
+    {text:'TEMPLATE "{{ChatML格式}}"',color:'#6C5CE7',t:.48}
+  ];
+  var lh=22;
+  for(var i=0;i<lines.length;i++){var l=lines[i];if(!l.text)continue;
+    var lp=ease(Math.max(0,Math.min(1,(p-l.t)/.06)));var y=topY+i*lh;
+    ctx.globalAlpha=lp;
+    ctx.fillStyle='#64748B';ctx.font='8px Courier New';ctx.textAlign='right';ctx.fillText(String(i+1),12,y+lh/2+2);
+    ctx.fillStyle=l.color;ctx.font='10px Courier New';ctx.textAlign='left';ctx.fillText(l.text,18,y+lh/2+3);
+    ctx.globalAlpha=1}
+  // Shell script flow
+  if(p>.55){var sp=ease((p-.55)/.25);ctx.globalAlpha=sp;
+    var sy=topY+lines.length*lh+10;
+    var cmds=[
+      {text:'Step 1: 检查 Ollama',icon:'📋',c:'#94A3B8'},
+      {text:'Step 2: 检查 GGUF',icon:'📋',c:'#0984E3'},
+      {text:'Step 3: 生成 Modelfile',icon:'📋',c:'#F59E0B'},
+      {text:'Step 4: ollama create',icon:'📋',c:'#6C5CE7'},
+      {text:'Step 5: 验证 & 测试',icon:'📋',c:'#00B894'}
+    ];
+    for(var i=0;i<cmds.length;i++){
+      var d=.55+i*.06,cp=ease(Math.max(0,Math.min(1,(p-d)/.06)));
+      var y2=sy+i*24;ctx.globalAlpha=cp;
+      ctx.fillStyle=cmds[i].c+'15';ctx.strokeStyle=cmds[i].c+'55';ctx.lineWidth=1;
+      drawRR(15,y2,W-30,20,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle=cmds[i].c;ctx.font='10px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(cmds[i].text,cx,y2+14);
+      if(i>0){ctx.strokeStyle=cmds[i].c+'44';ctx.lineWidth=1;
+        ctx.beginPath();ctx.moveTo(cx,y2-4);ctx.lineTo(cx,y2);ctx.stroke()}
+      ctx.globalAlpha=1}
+    ctx.globalAlpha=1}
+}
+
+var renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;var start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){var s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;var fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent='Step '+(currentStep+1)+'/'+steps.length;var d=document.getElementById('dots');d.innerHTML='';for(var i=0;i<steps.length;i++){var sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(function(idx){return function(){currentStep=idx;updateUI();startAnim()}})(i);d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',function(e){if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

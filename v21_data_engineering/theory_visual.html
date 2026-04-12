@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v21 数据工程 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #ff9800; --accent: #ffb74d; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(255,152,0,.15),rgba(255,183,77,.1)); border-bottom:1px solid rgba(255,152,0,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,#ff9800,#ffb74d); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; color:#000; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(255,183,77,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(255,152,0,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,#ff9800,#ffb74d); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(255,152,0,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(255,152,0,.5); background:rgba(255,152,0,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(255,152,0,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(255,152,0,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(255,183,77,.5); background:rgba(255,183,77,.1); }
+.btn.accent:hover { background:rgba(255,183,77,.3); box-shadow:0 0 20px rgba(255,183,77,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v21</span>
+  <h1>数据工程</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/6</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'MinHash — Jaccard 相似度估计',
+    desc: '将文本切分为 n-gram 集合（Shingling），使用多个随机哈希函数取最小值作为签名。<br><br><strong>核心定理</strong>：两个集合的 MinHash 签名相等的概率，恰好等于它们的 <strong>Jaccard 相似度</strong>。<br><br>通过 <strong>LSH 分桶</strong>加速：将签名分成多个 band，任一 band 匹配即成为候选对。',
+    formula: 'Pr[min h(A) = min h(B)] = J(A,B)\nJ(A,B) = |A ∩ B| / |A ∪ B|\nP(candidate) = 1 - (1 - J^r)^b' },
+  { title: 'SimHash — 随机超平面映射',
+    desc: 'SimHash 将高维向量映射为固定长度的<strong>二进制串</strong>。<br><br>对每个随机超平面 r_i，如果 v·r_i ≥ 0 则 bit=1，否则 bit=0。<br><br><strong>Hamming 距离</strong>与原始向量的角距离成正比，可以快速近似<strong>余弦相似度</strong>。<br><br>适合嵌入向量的去重场景。',
+    formula: 'bit_i = 1 if v · r_i ≥ 0 else 0\nd_H / bits ≈ θ / π\ncos(θ) ≈ cos(π · d_H / bits)' },
+  { title: 'MixUp — 线性插值增强',
+    desc: 'MixUp 将两个训练样本在<strong>像素级</strong>线性混合，同时混合它们的标签。<br><br>混合比例 λ 从 <strong>Beta(α, α)</strong> 分布采样：α=0.2 时大部分接近 0 或 1（轻微混合），α=1.0 时均匀混合。<br><br><strong>效果</strong>：正则化、标签平滑、减少对抗敏感度，提升泛化能力。',
+    formula: 'x̃ = λ·x_i + (1-λ)·x_j\nỹ = λ·y_i + (1-λ)·y_j\nλ ~ Beta(α, α)' },
+  { title: 'CutMix — 矩形区域替换',
+    desc: 'CutMix 不是全局混合，而是用<strong>矩形区域</strong>替换：保留一张图的大部分，替换一个矩形为另一张图的对应区域。<br><br>标签按<strong>实际替换面积比</strong>混合，让模型同时学到两张图的信息。<br><br>相比 Cutout（只遮挡不替换），CutMix <strong>不丢失任何信息</strong>。',
+    formula: 'x̃ = M ⊙ x_i + (1-M) ⊙ x_j\nr_w = W√(1-λ), r_h = H√(1-λ)\nỹ = λ_actual · y_i + (1-λ_actual) · y_j' },
+  { title: '课程学习 — 先易后难',
+    desc: '模仿人类学习过程：先学<strong>简单样本</strong>，再逐步引入困难样本。<br><br><strong>节奏函数 λ(t)</strong> 控制每个阶段使用数据的比例：<br>• 线性：匀速引入<br>• 根号：前期快速扩展<br>• 阶梯：分级跳跃引入<br><br><strong>难度评分</strong>：使用模型 loss / 置信度 / 熵来衡量。',
+    formula: 'linear: λ(t) = λ₀ + (1-λ₀) · t/T_w\nroot: λ(t) = λ₀ + (1-λ₀) · √(t/T_w)\nstep: λ(t) = λ₀ + (1-λ₀) · ⌊t·K/T_w⌋/K' },
+  { title: '数据质量与平衡',
+    desc: '<strong>质量评分</strong>：多维度加权（CLIP 质量 + 分辨率 + 宽高比 + 模糊度），低于阈值的样本被过滤。<br><br><strong>类别平衡</strong>：<br>• 逆频率权重：w_c = N/(C·n_c)<br>• 有效样本数：更平滑的权重方案<br>• 过采样：复制少数类样本<br><br>综合以上技术构建完整的<strong>数据工程管道</strong>。',
+    formula: 'Q(x) = Σ w_d · S_d(x)\nw_c = N / (C · n_c)  [逆频率]\nw_c = (1-β) / (1-β^n_c)  [有效样本数]' },
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function hsl(h,s,l){ return `hsl(${h},${s}%,${l}%)`; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: MinHash visualization
+function renderStep0(p) {
+  const cx=W/2, topY=30;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Two sets
+  const setA=['猫','在','草地','玩耍','的'];
+  const setB=['猫','在','花园','奔跑','的'];
+  const intersection=['猫','在','的'];
+  const sx=cx-200, sy=topY;
+  // Set A
+  const ap1=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ap1;
+  ctx.fillStyle='rgba(255,152,0,.15)'; ctx.strokeStyle='#ff9800';
+  drawRoundRect(sx,sy,160,130,12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#ff9800'; ctx.font='bold 13px PingFang SC';
+  ctx.fillText('集合 A',sx+80,sy+20);
+  ctx.font='12px PingFang SC'; ctx.fillStyle='#E2E8F0';
+  setA.forEach((w,i)=>{
+    const color=intersection.includes(w)?'#10B981':'#94A3B8';
+    ctx.fillStyle=color;
+    ctx.fillText(w,sx+40+i%3*45,sy+50+Math.floor(i/3)*25);
+  });
+  ctx.globalAlpha=1;
+  // Set B
+  const bx=cx+40;
+  ctx.globalAlpha=ap1;
+  ctx.fillStyle='rgba(9,132,227,.15)'; ctx.strokeStyle='#0984E3';
+  drawRoundRect(bx,sy,160,130,12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#0984E3'; ctx.font='bold 13px PingFang SC';
+  ctx.fillText('集合 B',bx+80,sy+20);
+  ctx.font='12px PingFang SC';
+  setB.forEach((w,i)=>{
+    const color=intersection.includes(w)?'#10B981':'#94A3B8';
+    ctx.fillStyle=color;
+    ctx.fillText(w,bx+40+i%3*45,sy+50+Math.floor(i/3)*25);
+  });
+  ctx.globalAlpha=1;
+  // Jaccard
+  if(p>.3){
+    const jp=easeInOut((p-.3)/.2);
+    ctx.globalAlpha=jp;
+    ctx.fillStyle='#10B981'; ctx.font='bold 14px PingFang SC';
+    ctx.fillText('J(A,B) = |A∩B|/|A∪B| = 3/7 ≈ 0.43',cx,sy+160);
+    ctx.globalAlpha=1;
+  }
+  // MinHash signatures
+  if(p>.5){
+    const mp=easeInOut((p-.5)/.3);
+    const my=sy+190;
+    ctx.globalAlpha=mp;
+    ctx.fillStyle='#F59E0B'; ctx.font='bold 13px PingFang SC';
+    ctx.fillText('MinHash 签名 (k=8)',cx,my);
+    const sigA=[12,5,3,18,7,3,9,15];
+    const sigB=[12,8,3,22,7,3,14,15];
+    ctx.font='11px Courier New';
+    for(let i=0;i<8;i++){
+      const x=cx-140+i*38;
+      const match=sigA[i]===sigB[i];
+      ctx.fillStyle=match?'#10B981':'#EF4444';
+      ctx.fillText(sigA[i],x,my+22);
+      ctx.fillText(sigB[i],x,my+38);
+      if(match){drawRoundRect(x-10,my+10,25,35,3);ctx.strokeStyle='#10B98144';ctx.stroke();}
+    }
+    ctx.fillStyle='#94A3B8'; ctx.font='11px PingFang SC'; ctx.textAlign='right';
+    ctx.fillText('A:',cx-155,my+22); ctx.fillText('B:',cx-155,my+38);
+    ctx.textAlign='center';
+    if(p>.8){
+      ctx.fillStyle='#ffb74d'; ctx.font='bold 13px PingFang SC';
+      ctx.fillText('匹配率: 4/8 = 0.50 ≈ J(A,B)',cx,my+60);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: SimHash visualization
+function renderStep1(p) {
+  const cx=W/2, topY=30;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Vector
+  const ap1=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ap1;
+  ctx.fillStyle='#ff9800'; ctx.fillText('向量 v = [0.5, -0.3, 0.8, -0.1, ...]',cx,topY);
+  ctx.globalAlpha=1;
+  // Random hyperplanes
+  const planes=6;
+  const py=topY+40;
+  for(let i=0;i<planes;i++){
+    const delay=.1+i*.1;
+    const pp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=py+i*42;
+    ctx.globalAlpha=pp;
+    const angle=(i*37+20)*Math.PI/180;
+    const positive=i%3!==1;
+    // Plane line
+    ctx.strokeStyle='rgba(255,183,77,.4)'; ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(cx-120,y+15); ctx.lineTo(cx+120,y+15); ctx.stroke();
+    // Arrow for normal
+    ctx.strokeStyle='#ffb74d'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx,y+15);
+    const nx=Math.cos(angle)*30, ny=-Math.abs(Math.sin(angle))*20;
+    ctx.lineTo(cx+nx,y+15+ny); ctx.stroke();
+    // Result bit
+    ctx.fillStyle=positive?'#10B981':'#EF4444';
+    ctx.font='bold 14px Courier New';
+    ctx.fillText(positive?'1':'0',cx+160,y+20);
+    ctx.fillStyle='#94A3B8'; ctx.font='11px PingFang SC';
+    ctx.fillText(`r_${i+1}`,cx-150,y+20);
+    ctx.fillText(`v·r_${i+1} ${positive?'≥':'<'} 0`,cx+210,y+20);
+    ctx.globalAlpha=1;
+  }
+  // Result
+  if(p>.8){
+    const rp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=rp;
+    const ry=py+planes*42+10;
+    ctx.fillStyle='#ff9800'; ctx.font='bold 14px PingFang SC';
+    ctx.fillText('SimHash(v) = 101010...',cx,ry);
+    ctx.fillStyle='#94A3B8'; ctx.font='12px PingFang SC';
+    ctx.fillText('Hamming 距离 ↔ 角距离 ↔ 余弦相似度',cx,ry+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: MixUp visualization
+function renderStep2(p) {
+  const cx=W/2, topY=20;
+  const imgSize=80;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Image A (cat pattern)
+  const ax=cx-180, ay=topY+20;
+  const ap1=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ap1;
+  ctx.fillStyle='#ff9800'; ctx.fillText('图像 A (猫)',ax+imgSize/2,topY);
+  for(let i=0;i<imgSize;i+=8)for(let j=0;j<imgSize;j+=8){
+    const v=Math.sin(i*.15)*Math.cos(j*.15)*.5+.5;
+    ctx.fillStyle=`rgba(255,${Math.floor(152*v)},0,${.3+v*.5})`;
+    ctx.fillRect(ax+j,ay+i,8,8);
+  }
+  ctx.strokeStyle='#ff9800'; drawRoundRect(ax,ay,imgSize,imgSize,4); ctx.stroke();
+  ctx.globalAlpha=1;
+  // Image B (dog pattern)
+  const bx=cx+100, by=topY+20;
+  ctx.globalAlpha=ap1;
+  ctx.fillStyle='#0984E3'; ctx.fillText('图像 B (狗)',bx+imgSize/2,topY);
+  for(let i=0;i<imgSize;i+=8)for(let j=0;j<imgSize;j+=8){
+    const v=Math.cos(i*.12+j*.12)*.5+.5;
+    ctx.fillStyle=`rgba(9,${Math.floor(132*v)},227,${.3+v*.5})`;
+    ctx.fillRect(bx+j,by+i,8,8);
+  }
+  ctx.strokeStyle='#0984E3'; drawRoundRect(bx,by,imgSize,imgSize,4); ctx.stroke();
+  ctx.globalAlpha=1;
+  // Lambda
+  if(p>.3){
+    const lp=easeInOut((p-.3)/.2);
+    ctx.globalAlpha=lp;
+    ctx.fillStyle='#F59E0B'; ctx.font='bold 16px Courier New';
+    ctx.fillText('λ = 0.7',cx,topY+55);
+    ctx.font='12px PingFang SC'; ctx.fillStyle='#94A3B8';
+    ctx.fillText('λ ~ Beta(0.2, 0.2)',cx,topY+75);
+    ctx.globalAlpha=1;
+  }
+  // Mixed result
+  if(p>.5){
+    const mp=easeInOut((p-.5)/.3);
+    const mx=cx-imgSize/2, my=topY+120;
+    ctx.globalAlpha=mp;
+    ctx.fillStyle='#10B981'; ctx.font='bold 14px PingFang SC';
+    ctx.fillText('混合结果',cx,my-10);
+    for(let i=0;i<imgSize;i+=8)for(let j=0;j<imgSize;j+=8){
+      const vA=Math.sin(i*.15)*Math.cos(j*.15)*.5+.5;
+      const vB=Math.cos(i*.12+j*.12)*.5+.5;
+      const vM=.7*vA+.3*vB;
+      const r=Math.floor(255*.7+9*.3);
+      const g=Math.floor(152*vA*.7+132*vB*.3);
+      const b=Math.floor(0*.7+227*.3);
+      ctx.fillStyle=`rgba(${r},${g},${b},${.3+vM*.5})`;
+      ctx.fillRect(mx+j,my+i,8,8);
+    }
+    ctx.strokeStyle='#10B981'; drawRoundRect(mx,my,imgSize,imgSize,4); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Labels
+  if(p>.8){
+    const lp2=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=lp2;
+    ctx.font='13px PingFang SC'; ctx.fillStyle='#ffb74d';
+    ctx.fillText('标签: 0.7×猫 + 0.3×狗 (软标签)',cx,topY+220);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: CutMix visualization
+function renderStep3(p) {
+  const cx=W/2, topY=20;
+  const imgSize=90;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  const ap1=easeInOut(Math.min(1,p/.2));
+  // Image A
+  const ax=cx-180, ay=topY+20;
+  ctx.globalAlpha=ap1;
+  ctx.fillStyle='#ff9800'; ctx.fillText('图像 A',ax+imgSize/2,topY);
+  ctx.fillStyle='rgba(255,152,0,.3)'; ctx.fillRect(ax,ay,imgSize,imgSize);
+  ctx.strokeStyle='#ff9800'; drawRoundRect(ax,ay,imgSize,imgSize,4); ctx.stroke();
+  ctx.fillStyle='#ff9800'; ctx.font='30px PingFang SC';
+  ctx.fillText('🐱',ax+imgSize/2,ay+55);
+  ctx.globalAlpha=1;
+  // Image B
+  const bx=cx+90, by=topY+20;
+  ctx.globalAlpha=ap1;
+  ctx.fillStyle='#0984E3'; ctx.font='bold 14px PingFang SC';
+  ctx.fillText('图像 B',bx+imgSize/2,topY);
+  ctx.fillStyle='rgba(9,132,227,.3)'; ctx.fillRect(bx,by,imgSize,imgSize);
+  ctx.strokeStyle='#0984E3'; drawRoundRect(bx,by,imgSize,imgSize,4); ctx.stroke();
+  ctx.fillStyle='#0984E3'; ctx.font='30px PingFang SC';
+  ctx.fillText('🐶',bx+imgSize/2,by+55);
+  ctx.globalAlpha=1;
+  // CutMix result
+  if(p>.35){
+    const mp=easeInOut((p-.35)/.3);
+    const mx=cx-imgSize/2, my=topY+140;
+    ctx.globalAlpha=mp;
+    ctx.fillStyle='#10B981'; ctx.font='bold 14px PingFang SC';
+    ctx.fillText('CutMix 结果',cx,my-10);
+    // Base image A
+    ctx.fillStyle='rgba(255,152,0,.3)'; ctx.fillRect(mx,my,imgSize,imgSize);
+    // Cut region from B
+    const cutX=mx+25, cutY=my+20, cutW=45, cutH=50;
+    ctx.fillStyle='rgba(9,132,227,.4)'; ctx.fillRect(cutX,cutY,cutW,cutH);
+    ctx.strokeStyle='#EF4444'; ctx.lineWidth=2; ctx.setLineDash([4,3]);
+    ctx.strokeRect(cutX,cutY,cutW,cutH);
+    ctx.setLineDash([]);
+    ctx.strokeStyle='#10B981'; drawRoundRect(mx,my,imgSize,imgSize,4); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  // Area ratio
+  if(p>.7){
+    const lp=easeInOut((p-.7)/.2);
+    ctx.globalAlpha=lp;
+    ctx.font='13px PingFang SC'; ctx.fillStyle='#ffb74d';
+    ctx.fillText('替换面积: 28% → λ_actual = 0.72',cx,topY+255);
+    ctx.fillText('标签: 0.72×猫 + 0.28×狗',cx,topY+278);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Curriculum Learning pacing functions
+function renderStep4(p) {
+  const cx=W/2, topY=20, plotW=W-120, plotH=100;
+  const sx=60;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle=`rgba(255,152,0,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.fillText('课程学习 — 节奏函数 λ(t)',cx,topY);
+  // Axes
+  const py=topY+30;
+  ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(sx,py+plotH); ctx.lineTo(sx+plotW,py+plotH); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(sx,py); ctx.lineTo(sx,py+plotH); ctx.stroke();
+  ctx.fillStyle='#94A3B8'; ctx.font='10px PingFang SC'; ctx.textAlign='right';
+  ctx.fillText('1.0',sx-5,py+5); ctx.fillText('λ₀',sx-5,py+plotH-5);
+  ctx.textAlign='center'; ctx.fillText('epoch',sx+plotW/2,py+plotH+15);
+  // Draw pacing functions
+  const colors=['#ff9800','#10B981','#0984E3'];
+  const names=['linear','root','step'];
+  const lam0=0.2, tw=0.5;
+  const funcs=[
+    t=>lam0+(1-lam0)*Math.min(1,t/tw),
+    t=>lam0+(1-lam0)*Math.min(1,Math.sqrt(t/tw)),
+    t=>lam0+(1-lam0)*Math.min(1,Math.floor(t*5/tw)/5),
+  ];
+  for(let f=0;f<3;f++){
+    const delay=.2+f*.15;
+    const fp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    ctx.strokeStyle=colors[f]; ctx.lineWidth=2.5;
+    ctx.beginPath();
+    for(let px=0;px<=plotW*fp;px++){
+      const t=px/plotW;
+      const v=funcs[f](t);
+      const x=sx+px;
+      const y=py+plotH-(v*plotH);
+      px===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    // Label
+    ctx.globalAlpha=fp;
+    ctx.fillStyle=colors[f]; ctx.font='11px PingFang SC'; ctx.textAlign='left';
+    ctx.fillText(names[f],sx+plotW+10,py+20+f*18);
+    ctx.globalAlpha=1;
+  }
+  // Training data visualization
+  if(p>.6){
+    const dp=easeInOut((p-.6)/.4);
+    const dy=py+plotH+40;
+    ctx.globalAlpha=dp;
+    ctx.fillStyle='#ffb74d'; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('训练数据随时间增长',cx,dy);
+    const epochs=5;
+    for(let e=0;e<epochs;e++){
+      const x=sx+40+e*(plotW-80)/(epochs-1);
+      const fraction=Math.min(1,e/(epochs-1)/tw)*(.8)+.2;
+      const barH=60*fraction;
+      ctx.fillStyle=`rgba(255,152,0,${.3+fraction*.5})`;
+      drawRoundRect(x-15,dy+75-barH,30,barH,4); ctx.fill();
+      ctx.fillStyle='#94A3B8'; ctx.font='10px PingFang SC';
+      ctx.fillText(`E${e+1}`,x,dy+85);
+      ctx.fillStyle='#E2E8F0'; ctx.font='10px Courier New';
+      ctx.fillText(`${Math.floor(fraction*100)}%`,x,dy+70-barH);
+    }
+    ctx.fillStyle='#94A3B8'; ctx.font='11px PingFang SC';
+    ctx.fillText('简单 → 困难',cx,dy+20);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: Quality scoring and data balance
+function renderStep5(p) {
+  const cx=W/2, topY=20;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  // Quality dimensions
+  const dims=[
+    {name:'CLIP质量',weight:.4,color:'#ff9800',score:.72},
+    {name:'分辨率',weight:.3,color:'#0984E3',score:.85},
+    {name:'宽高比',weight:.2,color:'#10B981',score:.93},
+    {name:'模糊度',weight:.1,color:'#F59E0B',score:.60},
+  ];
+  const dy=topY+10;
+  for(let i=0;i<dims.length;i++){
+    const delay=i*.12;
+    const dp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const y=dy+i*35;
+    ctx.globalAlpha=dp;
+    ctx.fillStyle='#94A3B8'; ctx.font='12px PingFang SC'; ctx.textAlign='right';
+    ctx.fillText(`${dims[i].name} (w=${dims[i].weight})`,cx-80,y+14);
+    // Score bar
+    ctx.fillStyle=dims[i].color+'33';
+    drawRoundRect(cx-70,y,200,20,6); ctx.fill();
+    ctx.fillStyle=dims[i].color;
+    drawRoundRect(cx-70,y,200*dims[i].score*dp,20,6); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.font='11px Courier New'; ctx.textAlign='left';
+    ctx.fillText(dims[i].score.toFixed(2),cx-70+200*dims[i].score*dp+5,y+14);
+    ctx.globalAlpha=1;
+  }
+  // Total score
+  if(p>.5){
+    const tp=easeInOut((p-.5)/.2);
+    const total=dims.reduce((s,d)=>s+d.weight*d.score,0);
+    ctx.globalAlpha=tp;
+    ctx.fillStyle='#ffb74d'; ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(`综合质量 Q = ${total.toFixed(3)}`,cx+20,dy+155);
+    ctx.globalAlpha=1;
+  }
+  // Class balance
+  if(p>.6){
+    const bp=easeInOut((p-.6)/.4);
+    const by=dy+190;
+    ctx.globalAlpha=bp;
+    ctx.fillStyle='#ffb74d'; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('类别平衡 — 逆频率权重',cx,by);
+    const classes=[{n:100,color:'#ff9800'},{n:50,color:'#0984E3'},{n:20,color:'#10B981'},{n:5,color:'#EF4444'}];
+    const maxN=100;
+    for(let i=0;i<classes.length;i++){
+      const x=cx-120+i*70;
+      const barH=classes[i].n/maxN*60;
+      const weight=(100+50+20+5)/(4*classes[i].n);
+      ctx.fillStyle=classes[i].color+'66';
+      drawRoundRect(x,by+85-barH,50,barH,4); ctx.fill();
+      ctx.fillStyle='#E2E8F0'; ctx.font='10px Courier New'; ctx.textAlign='center';
+      ctx.fillText(`n=${classes[i].n}`,x+25,by+95);
+      ctx.fillText(`w=${weight.toFixed(1)}`,x+25,by+78-barH);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2000;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

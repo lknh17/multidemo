@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v14 RLHF/DPO 偏好对齐 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(108,92,231,.25);border-left:3px solid var(--primary);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(9,132,227,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(9,132,227,.5);background:rgba(9,132,227,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(9,132,227,.3);transform:scale(1.05);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v14</span>
+  <h1>RLHF / DPO 偏好对齐</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'DPO Loss 核心实现',
+   desc:'DPO 的全部核心只有 5 行：计算隐式奖励差 → β 缩放 → logsigmoid。等价于一个二分类问题。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">dpo_loss</span>(pol_w, pol_l, ref_w, ref_l, beta):',hl:false},
+     {text:'    <span class="cm"># 隐式奖励 = log(π_θ/π_ref)</span>',hl:false},
+     {text:'    chosen_r = pol_w - ref_w  <span class="cm"># log π_θ(y_w) - log π_ref(y_w)</span>',hl:true},
+     {text:'    rejected_r = pol_l - ref_l',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># Bradley-Terry: σ(β·(r_w - r_l))</span>',hl:false},
+     {text:'    logits = beta * (chosen_r - rejected_r)',hl:true},
+     {text:'    loss = -F.logsigmoid(logits).mean()',hl:true},
+     {text:'    <span class="kw">return</span> loss',hl:false},
+   ],
+   highlightLines:[2,3,6,7]},
+  {title:'序列对数概率计算 get_batch_logps',
+   desc:'将模型 logits 转换为序列级对数概率。关键：log_softmax → gather 取 label 对应概率 → mask padding → 求和/平均。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">get_batch_logps</span>(logits, labels, average=False):',hl:false},
+     {text:'    <span class="cm"># 每个 token 的对数概率</span>',hl:false},
+     {text:'    per_token = torch.gather(',hl:true},
+     {text:'        logits.log_softmax(-1),  <span class="cm"># [B, L, V]</span>',hl:true},
+     {text:'        dim=2,',hl:false},
+     {text:'        index=labels.clamp(min=0).unsqueeze(2)',hl:true},
+     {text:'    ).squeeze(2)  <span class="cm"># [B, L]</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 忽略 padding (-100)</span>',hl:false},
+     {text:'    mask = (labels != <span class="num">-100</span>).float()',hl:true},
+     {text:'    logps = (per_token * mask).sum(-1)  <span class="cm"># [B]</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="kw">if</span> average:  <span class="cm"># SimPO 使用平均</span>',hl:false},
+     {text:'        logps = logps / mask.sum(-1).clamp(min=1)',hl:true},
+     {text:'    <span class="kw">return</span> logps',hl:false},
+   ],
+   highlightLines:[2,3,5,9,10,13]},
+  {title:'DPOTrainer 完整训练流程',
+   desc:'DPOTrainer 封装：创建冻结的 ref_model、前向传播 policy + ref、计算 DPO loss、反向传播更新 policy。',
+   code:[
+     {text:'<span class="cm"># 初始化: 深拷贝 + 冻结参考模型</span>',hl:false},
+     {text:'self.ref_model = copy.deepcopy(policy_model)',hl:true},
+     {text:'self.ref_model.eval()',hl:true},
+     {text:'<span class="kw">for</span> p <span class="kw">in</span> self.ref_model.parameters():',hl:false},
+     {text:'    p.requires_grad = <span class="num">False</span>',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 训练一步</span>',hl:false},
+     {text:'pol_w = policy.get_logps(chosen_ids, chosen_labels)',hl:true},
+     {text:'pol_l = policy.get_logps(rejected_ids, rejected_labels)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="kw">with</span> torch.no_grad():  <span class="cm"># ref 不需要梯度</span>',hl:false},
+     {text:'    ref_w = ref_model.get_logps(chosen_ids, chosen_labels)',hl:true},
+     {text:'    ref_l = ref_model.get_logps(rejected_ids, rejected_labels)',hl:false},
+     {text:'',hl:false},
+     {text:'loss, metrics = dpo_loss(pol_w, pol_l, ref_w, ref_l, beta)',hl:true},
+     {text:'loss.backward(); optimizer.step()',hl:true},
+   ],
+   highlightLines:[1,2,4,7,8,11,14,15]},
+  {title:'SimPO: 无需参考模型的简洁实现',
+   desc:'SimPO 最大的优势：去掉 ref_model，显存减半。使用 average log prob 消除长度偏置，加入 γ reward margin。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">simpo_loss</span>(pol_w, pol_l, beta, gamma):',hl:false},
+     {text:'    <span class="cm"># 无需 ref_model！</span>',hl:false},
+     {text:'    <span class="cm"># 使用平均对数概率 (average=True)</span>',hl:false},
+     {text:'    logits = beta * (pol_w - pol_l - gamma)',hl:true},
+     {text:'    loss = -F.logsigmoid(logits).mean()',hl:true},
+     {text:'    <span class="kw">return</span> loss',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 使用时:</span>',hl:false},
+     {text:'w_logps = policy.get_logps(chosen, labels, average=<span class="num">True</span>)',hl:true},
+     {text:'l_logps = policy.get_logps(rejected, labels, average=<span class="num">True</span>)',hl:true},
+     {text:'loss, _ = simpo_loss(w_logps, l_logps, beta=2.0, gamma=0.5)',hl:true},
+   ],
+   highlightLines:[3,4,8,9,10]},
+  {title:'偏好数据集构造',
+   desc:'偏好对数据集：每条 (prompt, chosen_response, rejected_response)。Labels 中 prompt 部分设为 -100 不计算 loss。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">__getitem__</span>(self, idx):',hl:false},
+     {text:'    item = self.data[idx]',hl:false},
+     {text:'    <span class="cm"># 构建 chosen 序列</span>',hl:false},
+     {text:'    seq = [BOS] + prompt + chosen_response + [EOS]',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># Labels: prompt 部分 = -100 (不计算 loss)</span>',hl:false},
+     {text:'    labels = [-100]*len(prompt) + chosen_response + [EOS]',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 同理构建 rejected 序列</span>',hl:false},
+     {text:'    <span class="kw">return</span> {',hl:false},
+     {text:'        <span class="str">"chosen_ids"</span>: chosen_ids,',hl:false},
+     {text:'        <span class="str">"chosen_labels"</span>: chosen_labels,  <span class="cm"># prompt=-100</span>',hl:true},
+     {text:'        <span class="str">"rejected_ids"</span>: rejected_ids,',hl:false},
+     {text:'        <span class="str">"rejected_labels"</span>: rejected_labels,',hl:false},
+     {text:'    }',hl:false},
+   ],
+   highlightLines:[3,6,11]},
+];
+
+function resize(){const r=window.devicePixelRatio||1;const rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0);}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+function renderStep0(p){
+  const cx=W/2,topY=20;ctx.textAlign='center';
+  // DPO as classification
+  const stages=[
+    {label:'chosen_rewards = pol_w - ref_w',color:'#10B981'},
+    {label:'rejected_rewards = pol_l - ref_l',color:'#EF4444'},
+    {label:'logits = β × (chosen_r - rejected_r)',color:'#F59E0B'},
+    {label:'loss = -logsigmoid(logits)',color:'#6C5CE7'},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.2;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=topY+i*55;ctx.globalAlpha=ap;
+    ctx.fillStyle=stages[i].color+'1A';ctx.strokeStyle=stages[i].color;
+    drawRoundRect(cx-140,y,280,38,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=stages[i].color;ctx.font='12px Courier New';
+    ctx.fillText(stages[i].label,cx,y+24);
+    if(i>0){ctx.strokeStyle=stages[i].color+'44';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,topY+(i-1)*55+38);ctx.lineTo(cx,y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+  if(p>.85){const fp=easeInOut((p-.85)/.15);ctx.globalAlpha=fp;ctx.fillStyle='#00B894';ctx.font='bold 13px PingFang SC';ctx.fillText('本质：二分类 — chosen 的奖励 > rejected 的奖励',cx,topY+4*55+15);ctx.globalAlpha=1;}
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=15;ctx.textAlign='center';
+  const flow=[
+    {label:'logits [B, L, V]',color:'#6C5CE7'},
+    {label:'log_softmax(-1)',color:'#0984E3'},
+    {label:'gather(labels)',color:'#F59E0B'},
+    {label:'per_token [B, L]',color:'#10B981'},
+    {label:'× mask → sum → [B]',color:'#00B894'},
+  ];
+  for(let i=0;i<flow.length;i++){
+    const delay=i*.17;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=topY+i*48;ctx.globalAlpha=ap;
+    ctx.fillStyle=flow[i].color+'1A';ctx.strokeStyle=flow[i].color;
+    drawRoundRect(cx-110,y,220,34,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=flow[i].color;ctx.font='12px Courier New';ctx.fillText(flow[i].label,cx,y+22);
+    if(i>0){ctx.strokeStyle=flow[i].color+'44';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,topY+(i-1)*48+34);ctx.lineTo(cx,y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=15;ctx.textAlign='center';
+  const items=[
+    {label:'1. 深拷贝 → ref_model (冻结)',color:'#94A3B8'},
+    {label:'2. policy → chosen_logps',color:'#6C5CE7'},
+    {label:'3. policy → rejected_logps',color:'#6C5CE7'},
+    {label:'4. ref → chosen_logps (no_grad)',color:'#0984E3'},
+    {label:'5. ref → rejected_logps (no_grad)',color:'#0984E3'},
+    {label:'6. dpo_loss(pol, ref, β)',color:'#F59E0B'},
+    {label:'7. loss.backward() → 只更新 policy',color:'#10B981'},
+  ];
+  for(let i=0;i<items.length;i++){
+    const delay=i*.11;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.18)));
+    const y=topY+i*36;ctx.globalAlpha=ap;
+    ctx.fillStyle=items[i].color+'15';ctx.strokeStyle=items[i].color;
+    drawRoundRect(cx-155,y,310,28,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=items[i].color;ctx.font='11px Courier New';ctx.fillText(items[i].label,cx,y+18);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=20;ctx.textAlign='center';
+  // DPO vs SimPO comparison
+  const p1=easeInOut(Math.min(1,p/.4));ctx.globalAlpha=p1;
+  // DPO
+  ctx.fillStyle='rgba(108,92,231,.2)';ctx.strokeStyle='#6C5CE7';
+  drawRoundRect(cx-170,topY,150,100,10);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='bold 13px PingFang SC';
+  ctx.fillText('DPO',cx-95,topY+20);
+  ctx.font='11px PingFang SC';ctx.fillStyle='#94A3B8';
+  ctx.fillText('π_θ + π_ref',cx-95,topY+45);
+  ctx.fillText('sum logps',cx-95,topY+65);
+  ctx.fillText('β = 0.1',cx-95,topY+85);
+  ctx.globalAlpha=1;
+
+  if(p>.4){
+    const p2=easeInOut((p-.4)/.4);ctx.globalAlpha=p2;
+    // SimPO
+    ctx.fillStyle='rgba(16,185,129,.2)';ctx.strokeStyle='#10B981';
+    drawRoundRect(cx+20,topY,150,100,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#10B981';ctx.font='bold 13px PingFang SC';
+    ctx.fillText('SimPO',cx+95,topY+20);
+    ctx.font='11px PingFang SC';ctx.fillStyle='#94A3B8';
+    ctx.fillText('π_θ only!',cx+95,topY+45);
+    ctx.fillText('avg logps',cx+95,topY+65);
+    ctx.fillText('β=2.0 γ=0.5',cx+95,topY+85);
+    ctx.globalAlpha=1;
+  }
+  if(p>.8){
+    const fp=easeInOut((p-.8)/.2);ctx.globalAlpha=fp;
+    ctx.fillStyle='#00B894';ctx.font='bold 12px PingFang SC';
+    ctx.fillText('SimPO 去掉 ref_model → 显存减半！',cx,topY+130);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=15;ctx.textAlign='center';
+  const items=[
+    {label:'seq = [BOS] + prompt + response + [EOS]',color:'#6C5CE7'},
+    {label:'labels: prompt 部分 = -100',color:'#EF4444'},
+    {label:'只对 response 部分计算 loss',color:'#10B981'},
+  ];
+  for(let i=0;i<items.length;i++){
+    const delay=i*.25;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const y=topY+i*55;ctx.globalAlpha=ap;
+    ctx.fillStyle=items[i].color+'1A';ctx.strokeStyle=items[i].color;
+    drawRoundRect(cx-150,y,300,40,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=items[i].color;ctx.font='12px Courier New';ctx.fillText(items[i].label,cx,y+25);
+    ctx.globalAlpha=1;
+  }
+  // Visual sequence
+  if(p>.7){
+    const sp=easeInOut((p-.7)/.3);ctx.globalAlpha=sp;
+    const sy=topY+180;const cw=35;
+    const tokens=['BOS','x₁','x₂','x₃','y₁','y₂','y₃','EOS'];
+    const isPrompt=[true,true,true,true,false,false,false,false];
+    for(let i=0;i<tokens.length;i++){
+      const x=cx-tokens.length*cw/2+i*cw;
+      ctx.fillStyle=isPrompt[i]?'rgba(239,68,68,.2)':'rgba(16,185,129,.2)';
+      ctx.strokeStyle=isPrompt[i]?'#EF4444':'#10B981';
+      drawRoundRect(x,sy,cw-2,30,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle=isPrompt[i]?'#EF4444':'#10B981';ctx.font='10px Courier New';
+      ctx.fillText(tokens[i],x+cw/2-1,sy+19);
+    }
+    ctx.font='10px PingFang SC';
+    ctx.fillStyle='#EF4444';ctx.fillText('labels = -100',cx-tokens.length*cw/4,sy+48);
+    ctx.fillStyle='#10B981';ctx.fillText('labels = token_ids',cx+tokens.length*cw/4,sy+48);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function updateCodePanel(){const panel=document.getElementById('codePanel');const s=steps[currentStep];panel.innerHTML=s.code.map((line,i)=>{const cls=s.highlightLines.includes(i)?'code-line highlight':'code-line';return `<div class="${cls}">${line.text||'&nbsp;'}</div>`;}).join('');}
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress);}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2200;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick);}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick);}
+function updateUI(){const s=steps[currentStep];document.getElementById('infoTitle').textContent=s.title;document.getElementById('infoDesc').innerHTML=s.desc;document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;updateCodePanel();const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const s=document.createElement('span');if(i===currentStep)s.className='active';s.onclick=()=>{currentStep=i;updateUI();startAnim();};d.appendChild(s);}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim();}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim();}}
+function replay(){startAnim();}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep();});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V16 - OCR 代码可视化</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{background:#0d1117;color:#e0e0e0;font-family:'Segoe UI',sans-serif;overflow:hidden}canvas{display:block}
+#controls{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
+#controls button{padding:10px 20px;border:1px solid #58a6ff;border-radius:25px;background:rgba(88,166,255,0.1);color:#58a6ff;cursor:pointer;font-size:13px;transition:all 0.3s}
+#controls button:hover{background:rgba(88,166,255,0.3)}#controls button.active{background:#58a6ff;color:#0d1117}
+#info{position:fixed;top:20px;left:50%;transform:translateX(-50%);text-align:center;z-index:10}
+#title{font-size:20px;color:#58a6ff;margin-bottom:5px}#desc{font-size:13px;color:#8b949e}
+</style>
+</head>
+<body>
+<div id="info"><div id="title">V16 - OCR 代码实现可视化</div><div id="desc"></div></div>
+<canvas id="canvas"></canvas>
+<div id="controls">
+<button onclick="setStep(0)" class="active">DB二值化</button>
+<button onclick="setStep(1)">FPN融合</button>
+<button onclick="setStep(2)">CTC路径</button>
+<button onclick="setStep(3)">Attention OCR</button>
+<button onclick="setStep(4)">空间注意力</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,step=0,time=0;
+const descs=['sigmoid(k*(P-T))：k控制决策锐度，k=50平衡精度与可微性','FPN自顶向下融合多尺度特征检测不同大小文字','CTC允许多条路径映射到同一标签序列','Attention解码器用Cross-Attention关注CNN特征的不同位置','空间感知注意力：标准QK^T/√d + 空间偏置B_spatial'];
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+window.addEventListener('resize',resize);resize();
+function setStep(s){step=s;time=0;document.querySelectorAll('#controls button').forEach((b,i)=>b.classList.toggle('active',i===s));document.getElementById('desc').textContent=descs[s]}
+setStep(0);
+
+function drawCode(lines,x,y,hl){
+ctx.font='11px "Courier New",monospace';
+lines.forEach((l,i)=>{
+const h=hl&&hl.includes(i);
+if(h){ctx.fillStyle='#ffd93d22';ctx.fillRect(x-5,y+i*16-11,480,16);ctx.fillStyle='#ffd93d'}
+else ctx.fillStyle='#8b949e';
+ctx.fillText(l,x,y+i*16);
+});
+}
+
+function drawDBCode(){
+const cx=W/2,cy=H/2;
+const code=[
+'class DifferentiableBinarization:',
+'    def forward(self, prob, thresh, k=50):',
+'        # 可微二值化',
+'        binary = sigmoid(k * (prob - thresh))',
+'        return binary',
+'',
+'# k值效果：',
+'# k=1:  sigmoid(1*(0.6-0.3)) = 0.574  模糊',
+'# k=10: sigmoid(10*(0.6-0.3)) = 0.953 较清晰',
+'# k=50: sigmoid(50*(0.6-0.3)) = 1.000 接近硬二值化',
+'',
+'# 梯度：k*σ(z)*(1-σ(z))',
+'# k=50时在边界处梯度仍>0，可以训练',
+];
+const hl=[3,9];
+drawCode(code,cx-230,cy-90,hl);
+// Visual sigmoid curve
+const graphX=cx+120,graphY=cy-40,gw=180,gh=100;
+ctx.strokeStyle='#444';ctx.strokeRect(graphX,graphY,gw,gh);
+[1,10,50].forEach((k,ki)=>{
+ctx.beginPath();
+const colors=['#ff6b6b','#ffd93d','#6bff6b'];
+ctx.strokeStyle=colors[ki];ctx.lineWidth=2;
+for(let px=0;px<gw;px++){
+const z=(px/gw-0.5)*6;
+const y=1/(1+Math.exp(-k*z));
+const py=graphY+gh-y*gh;
+if(px===0)ctx.moveTo(graphX+px,py);else ctx.lineTo(graphX+px,py);
+}
+ctx.stroke();
+ctx.fillStyle=colors[ki];ctx.font='10px sans-serif';
+ctx.fillText(`k=${k}`,graphX+gw+5,graphY+20+ki*15);
+});
+}
+
+function drawFPN(){
+const cx=W/2,cy=H/2;
+const levels=[{s:120,label:'C2 (1/4)',color:'#6bff6b'},{s:80,label:'C3 (1/8)',color:'#ffd93d'},{s:50,label:'C4 (1/16)',color:'#ff6b6b'}];
+ctx.textAlign='center';
+levels.forEach((lv,i)=>{
+const x=cx-200,y=cy-80+i*55;
+ctx.fillStyle=lv.color+'33';ctx.fillRect(x,y,lv.s,30);
+ctx.strokeStyle=lv.color;ctx.strokeRect(x,y,lv.s,30);
+ctx.fillStyle=lv.color;ctx.font='11px sans-serif';
+ctx.fillText(lv.label,x+lv.s/2,y+19);
+});
+// Arrows (top-down)
+for(let i=levels.length-1;i>0;i--){
+const x=cx-200+levels[i].s/2;
+const y1=cy-80+i*55;
+const y0=cy-80+(i-1)*55+30;
+ctx.beginPath();ctx.moveTo(x,y1);ctx.lineTo(x,y0);
+ctx.strokeStyle='#58a6ff';ctx.lineWidth=2;ctx.stroke();
+ctx.fillStyle='#58a6ff';ctx.font='10px sans-serif';
+ctx.fillText('↑ Upsample+Add',x+60,(y0+y1)/2);
+}
+// Output
+ctx.fillStyle='#fff';ctx.font='13px sans-serif';
+ctx.fillText('FPN 融合 → 检测不同大小文字',cx,cy+110);
+ctx.fillText('小文字: 细粒度特征(C2)', cx, cy+130);
+ctx.fillText('大文字: 粗粒度特征(C4)', cx, cy+150);
+ctx.textAlign='start';
+}
+
+function drawCTCPaths(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';ctx.font='bold 13px sans-serif';ctx.fillStyle='#58a6ff';
+ctx.fillText('CTC: 多条路径映射到同一标签',cx,cy-90);
+const paths=[
+{tokens:['a','a','-','b'],color:'#ff6b6b'},
+{tokens:['a','-','a','b'],color:'#ffd93d'},
+{tokens:['-','a','-','b'],color:'#6bff6b'},
+];
+ctx.font='12px sans-serif';ctx.fillStyle='#fff';
+ctx.fillText('目标: "ab"',cx,cy-70);
+paths.forEach((p,pi)=>{
+const y=cy-45+pi*35;
+ctx.fillStyle=p.color;ctx.font='12px sans-serif';
+ctx.fillText(`路径${pi+1}:`,cx-100,y+12);
+p.tokens.forEach((t,ti)=>{
+const x=cx-30+ti*35;
+const isB=t==='-';
+ctx.fillStyle=isB?p.color+'44':p.color;
+ctx.fillRect(x,y,28,22);
+ctx.fillStyle=isB?'#888':'#0d1117';ctx.font='12px monospace';
+ctx.fillText(t,x+14,y+15);
+});
+ctx.fillStyle=p.color;ctx.font='12px sans-serif';
+ctx.fillText('→ "ab"',cx+130,y+12);
+});
+ctx.fillStyle='#aaa';ctx.font='12px monospace';
+ctx.fillText('P("ab"|x) = Σ_π P(π) 对所有映射到"ab"的路径求和',cx,cy+80);
+ctx.textAlign='start';
+}
+
+function drawAttnOCR(){
+const cx=W/2,cy=H/2-20;
+// CNN features
+const featW=12;
+ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.textAlign='center';
+ctx.fillText('CNN Feature Map',cx-100,cy-80);
+for(let i=0;i<featW;i++){
+const x=cx-160+i*22;
+ctx.fillStyle=`hsla(${i*25},70%,50%,0.7)`;
+ctx.fillRect(x,cy-70,18,30);
+}
+// Attention weights
+const tokens=['人','物','走','进','<EOS>'];
+const genIdx=Math.min(tokens.length-1,Math.floor(time*0.02));
+for(let ti=0;ti<=genIdx;ti++){
+const ty=cy+ti*30;
+ctx.fillStyle='#58a6ff';ctx.fillRect(cx+80,ty,60,22);
+ctx.fillStyle='#0d1117';ctx.font='13px sans-serif';
+ctx.fillText(tokens[ti],cx+110,ty+16);
+// Attention line
+const attnPos=Math.floor(ti*featW/tokens.length);
+const fx=cx-160+attnPos*22+9;
+ctx.beginPath();ctx.moveTo(fx,cy-40);ctx.lineTo(cx+80,ty+11);
+ctx.strokeStyle=`hsla(210,80%,60%,${0.3+Math.sin(time*0.05+ti)*0.2})`;
+ctx.lineWidth=1.5;ctx.stroke();
+}
+ctx.fillStyle='#aaa';ctx.font='11px monospace';ctx.textAlign='center';
+ctx.fillText('Cross-Attention: 每步解码关注不同位置的视觉特征',cx,cy+180);
+ctx.textAlign='start';
+}
+
+function drawSpatialAttn(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';ctx.font='bold 13px sans-serif';ctx.fillStyle='#58a6ff';
+ctx.fillText('空间感知注意力',cx,cy-100);
+const code=[
+'# 标准注意力 + 空间偏置',
+'attn = QK^T / √d',
+'',
+'# 计算空间偏置',
+'dx = x_i - x_j  # 水平距离',
+'dy = y_i - y_j  # 垂直距离',
+'B_spatial = MLP([dx, dy])  # → [H] heads',
+'',
+'# 融合',
+'attn = softmax(attn + B_spatial) @ V',
+];
+const hl=[1,6,8];
+drawCode(code,cx-200,cy-80,hl);
+// Visual: tokens with spatial relation
+const tokens=[{x:100,y:200,label:'发票'},{x:300,y:200,label:'金额'},{x:100,y:400,label:'日期'}];
+const baseX=cx+120,baseY=cy-60;
+tokens.forEach((t,i)=>{
+const px=baseX+(t.x-100)/5,py=baseY+(t.y-200)/5;
+ctx.fillStyle=['#ff6b6b','#ffd93d','#6bff6b'][i];
+ctx.fillRect(px-20,py-10,40,20);
+ctx.fillStyle='#0d1117';ctx.font='11px sans-serif';
+ctx.fillText(t.label,px,py+4);
+});
+// Distance lines
+ctx.beginPath();
+ctx.moveTo(baseX,baseY);ctx.lineTo(baseX+40,baseY);
+ctx.strokeStyle='#58a6ff';ctx.lineWidth=1;ctx.stroke();
+ctx.fillStyle='#58a6ff';ctx.font='10px sans-serif';
+ctx.fillText('同行→B大',baseX+20,baseY-15);
+ctx.beginPath();
+ctx.moveTo(baseX,baseY);ctx.lineTo(baseX,baseY+40);
+ctx.stroke();
+ctx.fillText('不同行→B小',baseX-10,baseY+25);
+ctx.textAlign='start';
+}
+
+const drawFns=[drawDBCode,drawFPN,drawCTCPaths,drawAttnOCR,drawSpatialAttn];
+function animate(){ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);time++;drawFns[step]();requestAnimationFrame(animate)}
+animate();
+</script>
+</body>
+</html>

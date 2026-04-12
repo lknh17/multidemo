@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v12 分布式训练 & 部署优化 - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}
+.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:center;line-height:1.8}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}
+.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v12</span><h1>分布式训练 & 部署优化</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main">
+  <div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+  <div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'数据并行 (DP / DDP)',desc:'<strong>数据并行</strong>是最常用的分布式策略：每张卡持有<strong>完整模型副本</strong>，数据切分到不同卡。<br><br><strong>DP (DataParallel)</strong>：单进程多线程，有 GIL 瓶颈<br><strong>DDP (DistributedDataParallel)</strong>：多进程，AllReduce 同步梯度<br><br>流程：数据均分 → 各卡前向 → 各卡反向 → <strong>AllReduce 梯度</strong> → 各卡更新<br><br>等效 batch_size = 单卡 batch × 卡数',formula:'DDP 流程:\n1. 数据切分: batch → [chunk_0, chunk_1, ...]\n2. 各卡前向: loss_i = model(chunk_i)\n3. 各卡反向: loss_i.backward()\n4. AllReduce: grad = mean(grad_0, grad_1, ...)\n5. 各卡更新: optimizer.step()'},
+{title:'模型并行 & 流水线并行 & 张量并行',desc:'当模型太大无法放入单卡时，需要<strong>模型切分</strong>：<br><br><strong>模型并行</strong>：不同层放在不同卡上，串行执行<br>• 缺点：大量 GPU 空闲（气泡问题）<br><br><strong>流水线并行</strong>：将 batch 切成 micro-batch，流水线执行<br>• GPipe / PipeDream 方案减少气泡<br><br><strong>张量并行</strong>：单层内的矩阵切分到多卡<br>• 例：Linear(4096→4096) → 两卡各算一半列<br>• Megatron-LM 风格',formula:'模型并行: Layer0→GPU0, Layer1→GPU1\n流水线: micro-batch 流水执行\n张量并行: matmul 按列/行切分\n  Y = XW → Y = [XW₁, XW₂] (列切分)'},
+{title:'DeepSpeed ZeRO Stage 1/2/3',desc:'ZeRO (Zero Redundancy Optimizer) <strong>消除数据并行中的冗余</strong>：<br><br><strong>Stage 1</strong>：分片优化器状态（Adam 的 m, v）<br>• 显存节省 ~4x<br><br><strong>Stage 2</strong>：分片优化器状态 + 梯度<br>• 显存节省 ~8x<br><br><strong>Stage 3</strong>：分片优化器状态 + 梯度 + 参数<br>• 显存节省 ~N倍（N = 卡数）<br>• 需要通信获取参数<br><br>Stage 越高，显存越省，通信越多。',formula:'显存占用 (单位: 参数量Φ, 精度: FP16+FP32):\n标准DDP: 2Φ+2Φ+12Φ = 16Φ per GPU\nZeRO-1:  2Φ+2Φ+12Φ/N ≈ 4Φ+12Φ/N\nZeRO-2:  2Φ+2Φ/N+12Φ/N ≈ 2Φ+14Φ/N\nZeRO-3:  (2Φ+2Φ+12Φ)/N = 16Φ/N'},
+{title:'混合精度 FP32/FP16/BF16',desc:'<strong>混合精度训练</strong>用低精度加速计算，高精度保证精度：<br><br><strong>FP32</strong>（32位）：7位有效数字，范围大，标准精度<br><strong>FP16</strong>（16位）：3-4位有效数字，计算快 2x，但容易溢出<br><strong>BF16</strong>（Brain Float 16）：与 FP32 同样范围，精度低<br><br>混合精度策略：<br>• 前向/反向用 FP16/BF16（快）<br>• 参数主副本用 FP32（准）<br>• <strong>GradScaler</strong> 防止 FP16 梯度下溢',formula:'混合精度训练:\nwith autocast(dtype=fp16):\n  loss = model(x)  # FP16 前向\n  scaler.scale(loss).backward()  # 缩放梯度\n  scaler.step(optimizer)  # FP32 参数更新\n  scaler.update()  # 调整缩放因子'},
+{title:'梯度累积：小显存模拟大 batch',desc:'显存不足以放下大 batch？用<strong>梯度累积</strong>：<br><br>将大 batch 分成 N 个小 batch 逐步计算梯度，<strong>累积 N 步后再做一次参数更新</strong>。<br><br>等效于：effective_batch = micro_batch × accumulation_steps<br><br>要点：<br>• 每步 loss 除以 N（保持梯度量级一致）<br>• 累积 N 步后才执行 optimizer.step()<br>• 最后记得 optimizer.zero_grad()<br><br>几乎没有精度损失，但训练速度略慢（无并行）。',formula:'for step, batch in enumerate(loader):\n  loss = model(batch) / N  # 除以累积步数\n  loss.backward()  # 梯度累积\n  if (step+1) % N == 0:  # 每N步更新一次\n    optimizer.step()\n    optimizer.zero_grad()'},
+{title:'量化推理 & ONNX 导出',desc:'部署优化的两大手段：<br><br><strong>量化推理</strong>：<br>• <strong>INT8 动态量化</strong>：将 Linear 层权重从 FP32 → INT8<br>• 模型体积减少 ~4x，CPU 推理加速 2-4x<br>• torch.quantization.quantize_dynamic<br><br><strong>ONNX 导出</strong>：<br>• 将 PyTorch 模型转为 ONNX 格式<br>• 支持 TensorRT / ONNXRuntime 等推理引擎<br>• 支持动态 batch_size<br>• 跨框架部署',formula:'# INT8 量化\nmodel_q = quantize_dynamic(model, {Linear}, qint8)\n\n# ONNX 导出\ntorch.onnx.export(model, (img, ids), "model.onnx",\n  input_names=["images","input_ids"],\n  dynamic_axes={"images":{0:"batch"}},\n  opset_version=14)'}
+];
+
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+function drawBox(x,y,w,h,label,color,alpha){ctx.globalAlpha=alpha;ctx.fillStyle=color+'22';ctx.strokeStyle=color;drawRR(x,y,w,h,8);ctx.fill();ctx.stroke();ctx.fillStyle=color;ctx.font='11px PingFang SC';ctx.textAlign='center';ctx.textBaseline='middle';const ls=label.split('\n');ls.forEach((l,i)=>ctx.fillText(l,x+w/2,y+h/2+(i-(ls.length-1)/2)*13));ctx.globalAlpha=1}
+function drawArrow(x1,y1,x2,y2,color,alpha){ctx.globalAlpha=alpha;ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a-.3),y2-7*Math.sin(a-.3));ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a+.3),y2-7*Math.sin(a+.3));ctx.stroke();ctx.globalAlpha=1}
+
+// Step 0: Data Parallel
+function renderStep0(p){
+  const cx=W/2,gpus=4,gpuW=80,gpuH=140,gap=15;
+  const totalW=gpus*(gpuW+gap)-gap,sx=cx-totalW/2;
+  const colors=['#EF4444','#F59E0B','#0984E3','#6C5CE7'];
+  
+  // Data batch at top
+  const dp=easeInOut(Math.min(1,p/.15));
+  drawBox(cx-80,10,160,25,'Data Batch [B=128]','#94A3B8',dp);
+  
+  // Split arrows
+  for(let i=0;i<gpus;i++){
+    const d=.1+i*.05,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.15)));
+    const gx=sx+i*(gpuW+gap);
+    drawArrow(cx,35,gx+gpuW/2,50,colors[i],ap*.4);
+    
+    // GPU box
+    ctx.globalAlpha=ap;ctx.fillStyle=colors[i]+'11';ctx.strokeStyle=colors[i]+'66';
+    drawRR(gx,55,gpuW,gpuH,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=colors[i];ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(`GPU ${i}`,gx+gpuW/2,70);
+    ctx.font='10px PingFang SC';ctx.fillStyle=colors[i]+'BB';
+    ctx.fillText('完整模型',gx+gpuW/2,88);
+    ctx.fillText(`数据 [${32}]`,gx+gpuW/2,105);
+    ctx.globalAlpha=1;
+    
+    // Forward → Backward
+    if(p>.3){
+      const fp=easeInOut(Math.max(0,Math.min(1,(p-.3-i*.03)/.15)));
+      ctx.globalAlpha=fp;ctx.fillStyle=colors[i];ctx.font='9px Courier New';ctx.textAlign='center';
+      ctx.fillText('forward',gx+gpuW/2,125);ctx.fillText('backward',gx+gpuW/2,140);
+      ctx.fillText('grad_'+i,gx+gpuW/2,158);ctx.globalAlpha=1;
+    }
+  }
+  
+  // AllReduce
+  if(p>.55){
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.55)/.2)));
+    drawBox(cx-60,205,120,28,'AllReduce\n梯度平均','#00B894',ap);
+    for(let i=0;i<gpus;i++){const gx=sx+i*(gpuW+gap);drawArrow(gx+gpuW/2,195,cx,205,colors[i],ap*.3)}
+  }
+  
+  // Update
+  if(p>.8){
+    const up=easeInOut(Math.max(0,Math.min(1,(p-.8)/.2)));
+    drawBox(cx-55,245,110,25,'各卡 optimizer.step()','#00B894',up);
+    drawArrow(cx,233,cx,245,'#00B894',up*.4);
+  }
+}
+
+// Step 1: Model/Pipeline/Tensor Parallel
+function renderStep1(p){
+  const cx=W/2,colW=W/3;
+  const methods=[{name:'模型并行',color:'#EF4444'},{name:'流水线并行',color:'#F59E0B'},{name:'张量并行',color:'#0984E3'}];
+  
+  for(let m=0;m<3;m++){
+    const d=m*.15,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.25)));
+    const mx=colW/2+m*colW;
+    ctx.globalAlpha=ap;ctx.fillStyle=methods[m].color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(methods[m].name,mx,18);ctx.globalAlpha=1;
+    
+    if(m===0){// Model parallel: layers on different GPUs
+      const layers=['Layer 0-1','Layer 2-3','Layer 4-5'];
+      const gc=['#EF4444','#F59E0B','#0984E3'];
+      layers.forEach((l,i)=>{
+        const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-i*.08)/.12)));
+        drawBox(mx-35,35+i*40,70,28,`GPU${i}\n${l}`,gc[i],lp);
+        if(i>0)drawArrow(mx,35+(i-1)*40+28,mx,35+i*40,gc[i],lp*.3);
+      });
+      if(p>d+.4){const np=easeInOut(Math.max(0,Math.min(1,(p-d-.4)/.1)));ctx.globalAlpha=np;ctx.fillStyle='#EF4444';ctx.font='10px PingFang SC';ctx.textAlign='center';ctx.fillText('串行→气泡多',mx,170);ctx.globalAlpha=1}
+    }else if(m===1){// Pipeline: micro-batches
+      const gpuN=3,mbN=4;
+      for(let g=0;g<gpuN;g++) for(let mb=0;mb<mbN;mb++){
+        const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-(g+mb)*.04)/.1)));
+        if(g<=mb&&mb<g+2){// Active
+          ctx.globalAlpha=lp;ctx.fillStyle=['#EF4444','#F59E0B','#0984E3'][g]+'66';
+          ctx.fillRect(mx-38+mb*20,35+g*35,18,28);ctx.globalAlpha=1;
+        }
+      }
+      // Labels
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.15)/.1)));
+      ctx.globalAlpha=lp;ctx.fillStyle='#94A3B8';ctx.font='9px Courier New';ctx.textAlign='right';
+      for(let g=0;g<gpuN;g++)ctx.fillText(`GPU${g}`,mx-42,50+g*35);
+      ctx.textAlign='center';for(let mb=0;mb<mbN;mb++)ctx.fillText(`mb${mb}`,mx-28+mb*20,35+gpuN*35+10);
+      ctx.globalAlpha=1;
+      if(p>d+.4){const np=easeInOut(Math.max(0,Math.min(1,(p-d-.4)/.1)));ctx.globalAlpha=np;ctx.fillStyle='#F59E0B';ctx.font='10px PingFang SC';ctx.textAlign='center';ctx.fillText('流水减少气泡',mx,170);ctx.globalAlpha=1}
+    }else{// Tensor parallel
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-d-.1)/.2)));
+      drawBox(mx-40,35,80,25,'Linear(4096,4096)','#94A3B8',lp);
+      if(p>d+.2){
+        const sp=easeInOut(Math.max(0,Math.min(1,(p-d-.2)/.15)));
+        drawBox(mx-45,80,40,25,'W₁\nGPU0','#0984E3',sp);
+        drawBox(mx+5,80,40,25,'W₂\nGPU1','#6C5CE7',sp);
+        drawArrow(mx-20,60,mx-25,80,'#0984E3',sp*.3);
+        drawArrow(mx+20,60,mx+25,80,'#6C5CE7',sp*.3);
+      }
+      if(p>d+.35){
+        const rp=easeInOut(Math.max(0,Math.min(1,(p-d-.35)/.15)));
+        drawBox(mx-35,120,70,25,'AllGather\n合并结果','#00B894',rp);
+      }
+      if(p>d+.4){const np=easeInOut(Math.max(0,Math.min(1,(p-d-.4)/.1)));ctx.globalAlpha=np;ctx.fillStyle='#0984E3';ctx.font='10px PingFang SC';ctx.textAlign='center';ctx.fillText('层内切分',mx,170);ctx.globalAlpha=1}
+    }
+  }
+}
+
+// Step 2: ZeRO Stages
+function renderStep2(p){
+  const cx=W/2,stages=[0,1,2,3],stageW=W/4;
+  const labels=['标准 DDP','ZeRO-1','ZeRO-2','ZeRO-3'];
+  const savings=['16Φ/GPU','~4Φ+12Φ/N','~2Φ+14Φ/N','16Φ/N'];
+  const colors=['#94A3B8','#EF4444','#F59E0B','#00B894'];
+  const parts=['参数 2Φ','梯度 2Φ','优化器 12Φ'];
+  const partC=['#0984E3','#6C5CE7','#F59E0B'];
+  
+  for(let s=0;s<4;s++){
+    const d=s*.12,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.25)));
+    const mx=stageW/2+s*stageW;
+    
+    ctx.globalAlpha=ap;ctx.fillStyle=colors[s];ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(labels[s],mx,18);ctx.font='10px Courier New';ctx.fillText(savings[s],mx,33);ctx.globalAlpha=1;
+    
+    // Memory bars
+    const barW=50,barTop=45,unitH=20;
+    const sharded=[[false,false,false],[false,false,true],[false,true,true],[true,true,true]];
+    
+    for(let j=0;j<3;j++){
+      const bp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-j*.05)/.12)));
+      const by=barTop+j*(unitH+4);
+      const isShard=sharded[s][j];
+      ctx.globalAlpha=bp;
+      ctx.fillStyle=isShard?partC[j]+'33':partC[j]+'88';
+      ctx.strokeStyle=partC[j];ctx.lineWidth=1;
+      const bw2=isShard?barW/4:barW;
+      drawRR(mx-barW/2,by,bw2,unitH,3);ctx.fill();drawRR(mx-barW/2,by,bw2,unitH,3);ctx.stroke();
+      if(isShard){ctx.setLineDash([2,2]);drawRR(mx-barW/2+bw2,by,barW-bw2,unitH,3);ctx.stroke();ctx.setLineDash([])}
+      ctx.fillStyle=partC[j];ctx.font='9px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(parts[j]+(isShard?' ÷N':''),mx,by+unitH/2+3);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Arrow showing progression
+  if(p>.8){
+    const ap=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=ap;ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(stageW/2+10,H-40);ctx.lineTo(stageW/2+3*stageW-10,H-40);ctx.stroke();
+    ctx.beginPath();const ex=stageW/2+3*stageW-10;ctx.moveTo(ex,H-40);ctx.lineTo(ex-8,H-46);ctx.moveTo(ex,H-40);ctx.lineTo(ex-8,H-34);ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='12px PingFang SC';ctx.textAlign='center';ctx.fillText('显存节省递增 → 通信开销递增',cx,H-22);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Mixed Precision
+function renderStep3(p){
+  const cx=W/2;
+  const types=[
+    {name:'FP32',bits:32,mantissa:23,exp:8,color:'#0984E3',range:'±3.4×10³⁸',prec:'7位'},
+    {name:'FP16',bits:16,mantissa:10,exp:5,color:'#F59E0B',range:'±65504',prec:'3-4位'},
+    {name:'BF16',bits:16,mantissa:7,exp:8,color:'#6C5CE7',range:'±3.4×10³⁸',prec:'2-3位'}
+  ];
+  const colW=W/3;
+  
+  for(let i=0;i<3;i++){
+    const d=i*.12,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.25)));
+    const mx=colW/2+i*colW;
+    
+    ctx.globalAlpha=ap;ctx.fillStyle=types[i].color;ctx.font='bold 15px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(types[i].name,mx,20);
+    ctx.font='11px Courier New';ctx.fillText(`${types[i].bits} bits`,mx,38);
+    ctx.globalAlpha=1;
+    
+    // Bit layout bar
+    const barW=90,barH=20,bx=mx-barW/2,by=48;
+    if(p>d+.1){
+      const bp=easeInOut(Math.max(0,Math.min(1,(p-d-.1)/.15)));
+      ctx.globalAlpha=bp;
+      // Sign
+      ctx.fillStyle='#EF4444'+'88';ctx.fillRect(bx,by,8,barH);
+      // Exponent
+      const expW=types[i].exp/types[i].bits*(barW-8);
+      ctx.fillStyle='#00B894'+'88';ctx.fillRect(bx+8,by,expW,barH);
+      // Mantissa
+      ctx.fillStyle=types[i].color+'88';ctx.fillRect(bx+8+expW,by,barW-8-expW,barH);
+      // Labels
+      ctx.fillStyle='#fff';ctx.font='8px Courier New';ctx.textAlign='center';
+      ctx.fillText('S',bx+4,by+barH/2+3);
+      ctx.fillText(`E${types[i].exp}`,bx+8+expW/2,by+barH/2+3);
+      ctx.fillText(`M${types[i].mantissa}`,bx+8+expW+(barW-8-expW)/2,by+barH/2+3);
+      ctx.globalAlpha=1;
+    }
+    
+    // Range and precision
+    if(p>d+.2){
+      const rp=easeInOut(Math.max(0,Math.min(1,(p-d-.2)/.12)));
+      ctx.globalAlpha=rp;ctx.fillStyle=types[i].color;ctx.font='10px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(`范围: ${types[i].range}`,mx,by+barH+15);
+      ctx.fillText(`精度: ${types[i].prec}有效数字`,mx,by+barH+30);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Mixed precision flow
+  if(p>.6){
+    const fp=easeInOut(Math.max(0,Math.min(1,(p-.6)/.3)));
+    const fy=145;
+    ctx.globalAlpha=fp;ctx.fillStyle='#F59E0B';ctx.font='bold 13px PingFang SC';ctx.textAlign='center';ctx.fillText('混合精度训练流程',cx,fy);ctx.globalAlpha=1;
+    
+    const flow=[{l:'FP16 前向',c:'#F59E0B'},{l:'FP16 反向',c:'#F59E0B'},{l:'Scale梯度',c:'#EF4444'},{l:'FP32更新参数',c:'#0984E3'}];
+    flow.forEach((f,i)=>{
+      const d2=.65+i*.06,fp2=easeInOut(Math.max(0,Math.min(1,(p-d2)/.12)));
+      const fx=40+i*(W-80)/4;
+      drawBox(fx,fy+15,80,24,f.l,f.c,fp2);
+      if(i>0){const pfx=40+(i-1)*(W-80)/4;drawArrow(pfx+80,fy+27,fx,fy+27,f.c,fp2*.3)}
+    });
+  }
+}
+
+// Step 4: Gradient Accumulation
+function renderStep4(p){
+  const cx=W/2,N=4;
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=tp;ctx.fillStyle='#F59E0B';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillText(`梯度累积 (N=${N} 步)`,cx,18);ctx.globalAlpha=1;
+  
+  const stepW=W/(N+1),stepH=160;
+  for(let i=0;i<N;i++){
+    const d=.1+i*.15,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.2)));
+    const sx=stepW/2+i*stepW;
+    
+    // Step label
+    ctx.globalAlpha=ap;ctx.fillStyle=i<N-1?'#F59E0B':'#00B894';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(`Step ${i+1}`,sx,38);ctx.globalAlpha=1;
+    
+    // micro-batch
+    drawBox(sx-30,45,60,20,`batch_${i}`,'#94A3B8',ap);
+    // Forward
+    drawBox(sx-30,72,60,20,'forward','#0984E3',ap);
+    drawArrow(sx,65,sx,72,'#94A3B8',ap*.3);
+    // Loss/N
+    drawBox(sx-30,99,60,20,'loss/N','#EF4444',ap);
+    drawArrow(sx,92,sx,99,'#0984E3',ap*.3);
+    // Backward (accumulate)
+    drawBox(sx-30,126,60,20,'backward','#6C5CE7',ap);
+    drawArrow(sx,119,sx,126,'#EF4444',ap*.3);
+    
+    // Accumulation arrow
+    if(i<N-1 && p>d+.12){
+      const aap=easeInOut(Math.max(0,Math.min(1,(p-d-.12)/.1)));
+      ctx.globalAlpha=aap;ctx.fillStyle='#F59E0B';ctx.font='10px PingFang SC';ctx.textAlign='center';ctx.fillText('梯度累积',sx+stepW/2,155);
+      ctx.strokeStyle='#F59E0B'+'66';ctx.lineWidth=1;ctx.setLineDash([3,3]);
+      ctx.beginPath();ctx.moveTo(sx+30,136);ctx.lineTo(sx+stepW-30,136);ctx.stroke();ctx.setLineDash([]);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Final update
+  if(p>.8){
+    const up=easeInOut(Math.max(0,Math.min(1,(p-.8)/.2)));
+    const ux=stepW/2+(N-1)*stepW;
+    drawBox(cx-60,175,120,26,'optimizer.step()\nzero_grad()','#00B894',up);
+    drawArrow(ux,146,cx,175,'#6C5CE7',up*.3);
+    
+    ctx.globalAlpha=up;ctx.fillStyle='#00B894';ctx.font='12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(`等效 batch_size = micro_batch × ${N}`,cx,215);ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: Quantization + ONNX
+function renderStep5(p){
+  const cx=W/2;
+  // Two sections: Quantization (left) and ONNX (right)
+  const leftX=cx-110,rightX=cx+110;
+  
+  // Quantization
+  const qp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=qp;ctx.fillStyle='#EF4444';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillText('INT8 量化',leftX,18);ctx.globalAlpha=1;
+  
+  const qStages=[
+    {l:'FP32 模型\n~100MB',y:30,c:'#0984E3'},{l:'quantize_dynamic\n{Linear} → qint8',y:75,c:'#F59E0B'},
+    {l:'INT8 模型\n~25MB',y:120,c:'#00B894'},{l:'CPU推理加速\n2-4x',y:165,c:'#00B894'}
+  ];
+  qStages.forEach((s,i)=>{const d=.05+i*.1,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.15)));drawBox(leftX-55,s.y,110,35,s.l,s.c,ap);if(i>0)drawArrow(leftX,qStages[i-1].y+35,leftX,s.y,s.c,ap*.3)});
+  
+  // Compression bar
+  if(p>.45){
+    const bp=easeInOut(Math.max(0,Math.min(1,(p-.45)/.15)));
+    ctx.globalAlpha=bp;
+    const by=210;
+    ctx.fillStyle='#0984E3'+'44';drawRR(leftX-50,by,100,12,3);ctx.fill();
+    ctx.fillStyle='#00B894'+'88';drawRR(leftX-50,by,25,12,3);ctx.fill();
+    ctx.fillStyle='#94A3B8';ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText('FP32 → INT8: 4x 压缩',leftX,by+25);
+    ctx.globalAlpha=1;
+  }
+  
+  // ONNX
+  ctx.globalAlpha=qp;ctx.fillStyle='#6C5CE7';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillText('ONNX 导出',rightX,18);ctx.globalAlpha=1;
+  
+  const oStages=[
+    {l:'PyTorch 模型',y:30,c:'#6C5CE7'},{l:'torch.onnx.export\n(tracing)',y:75,c:'#F59E0B'},
+    {l:'model.onnx',y:120,c:'#00B894'},{l:'ONNXRuntime\nTensorRT',y:165,c:'#0984E3'}
+  ];
+  oStages.forEach((s,i)=>{const d=.15+i*.1,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.15)));drawBox(rightX-55,s.y,110,35,s.l,s.c,ap);if(i>0)drawArrow(rightX,oStages[i-1].y+35,rightX,s.y,s.c,ap*.3)});
+  
+  // Features
+  if(p>.6){
+    const fp=easeInOut(Math.max(0,Math.min(1,(p-.6)/.15)));
+    ctx.globalAlpha=fp;ctx.fillStyle='#0984E3';ctx.font='10px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('支持动态 batch',rightX,210);ctx.fillText('跨框架部署',rightX,225);
+    ctx.globalAlpha=1;
+  }
+  
+  // Divider
+  ctx.strokeStyle='rgba(255,255,255,.08)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx,15);ctx.lineTo(cx,240);ctx.stroke();
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const s=performance.now(),d=2500;function t(n){animProgress=Math.min(1,(n-s)/d);render();if(animProgress<1)animId=requestAnimationFrame(t)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(t)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(idx=>()=>{currentStep=idx;updateUI();startAnim()})(i);d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

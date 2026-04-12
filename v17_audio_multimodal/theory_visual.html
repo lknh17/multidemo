@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V17 - 音频理解与全模态模型：原理可视化</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;overflow-x:hidden}
+.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}
+.badge{background:linear-gradient(135deg,#e040fb,#7c4dff);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px}
+.title{font-size:18px;font-weight:600;flex:1}
+.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}
+.dots{display:flex;gap:6px;margin-left:16px}
+.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}
+.dot.active{background:#e040fb;box-shadow:0 0 8px #e040fb}
+.dot.done{background:#7c4dff}
+.main{display:flex;height:calc(100vh - 136px);overflow:hidden}
+.canvas-area{flex:6;background:#0d1117;position:relative;display:flex;align-items:center;justify-content:center}
+canvas{border-radius:8px}
+.info-panel{flex:4;padding:24px;overflow-y:auto;background:#111827;border-left:1px solid #222}
+.step-title{font-size:20px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,#e040fb,#7c4dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.8;color:#ccc;margin-bottom:16px}
+.formula{background:#1a1e2e;border:1px solid #333;border-radius:8px;padding:12px 16px;font-family:"Courier New",monospace;font-size:14px;color:#7dd3fc;margin:12px 0;overflow-x:auto;white-space:pre-wrap}
+.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}
+.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}
+.btn:hover{border-color:#e040fb;box-shadow:0 0 12px rgba(224,64,251,.3);transform:scale(1.05)}
+.btn:disabled{opacity:.3;cursor:default;transform:none;box-shadow:none}
+.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}
+.highlight{color:#e040fb}.highlight2{color:#7c4dff}.highlight3{color:#00e5ff}
+</style>
+</head>
+<body>
+<div class="header">
+<span class="badge">V17</span>
+<span class="title">音频理解与全模态模型</span>
+<span class="page-type">原理可视化</span>
+<div class="dots" id="dots"></div>
+</div>
+<div class="main">
+<div class="canvas-area"><canvas id="canvas"></canvas></div>
+<div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div></div>
+</div>
+<div class="controls">
+<button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button>
+<div class="step-counter" id="stepCounter">Step 1/7</div>
+<button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button>
+<button class="btn" onclick="replay()">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-40}
+window.addEventListener('resize',resize);resize();
+
+const steps=[
+{title:"Mel 频谱图：从声波到频率表示",
+desc:`<p>音频处理的第一步是将<span class="highlight">时域波形</span>转换为<span class="highlight2">频域表示</span>。</p>
+<p>Mel 频谱图的计算过程：</p>
+<p>1. <b>STFT</b>：将音频切分为短帧（25ms 窗口，10ms 步长），对每帧做 FFT</p>
+<p>2. <b>功率谱</b>：取幅度的平方 |X|²</p>
+<p>3. <b>Mel 滤波</b>：用三角滤波器组将线性频率映射到 Mel 尺度</p>
+<p>4. <b>取对数</b>：log(Mel) 压缩动态范围</p>
+<div class="formula">f_mel = 2595 × log₁₀(1 + f/700)
+
+Mel 尺度模拟人耳对音高的感知：
+低频分辨率高（语音基频区域），高频分辨率低</div>`,
+render(p){drawMelSpectrogram(p)}},
+
+{title:"Audio Spectrogram Transformer (AST)",
+desc:`<p><span class="highlight">AST</span> 将 Mel 频谱视为 2D "图像"，用 <span class="highlight2">ViT</span> 风格架构处理。</p>
+<p><b>Patch 化</b>：将 [n_mels × T] 的频谱切分为 2D patch</p>
+<p>每个 patch 大小 (freq_patch × time_patch)，展平后线性投影到 D 维</p>
+<div class="formula">Patch_ij = Mel[i×pf : (i+1)×pf, j×pt : (j+1)×pt]
+z_ij = W_E · flatten(Patch_ij) + b_E
+
+频率维 patch 数：n_mels / pf
+时间维 patch 数：T / pt
+总 patch 数：N = Nf × Nt</div>
+<p>加入 <span class="highlight3">[CLS] token</span> 和 2D 位置编码后送入 Transformer。</p>`,
+render(p){drawAST(p)}},
+
+{title:"2D 位置编码：频率 + 时间分离",
+desc:`<p>AST 使用<span class="highlight">分离的 2D 位置编码</span>：频率维和时间维独立编码。</p>
+<div class="formula">p_ij = p^freq_i + p^time_j
+
+频率位置：编码 "哪个频率段"
+时间位置：编码 "哪个时间段"
+两者相加构成 2D 位置信息</div>
+<p>优势：支持<span class="highlight2">可变长度</span>输入。训练时用 10 秒音频，推理时可处理 30 秒。</p>
+<p>只需截断或扩展时间维位置编码，频率维保持不变。</p>`,
+render(p){drawPositionEncoding(p)}},
+
+{title:"CLAP：音频-文本对比学习",
+desc:`<p><span class="highlight">CLAP</span> = CLIP 的音频版本，学习音频和文本的对齐空间。</p>
+<p><b>双塔架构</b>：</p>
+<p>• 音频塔：AST → 线性投影 → L2 归一化</p>
+<p>• 文本塔：Transformer → 线性投影 → L2 归一化</p>
+<div class="formula">L_CLAP = ½(L_a→t + L_t→a)
+
+L_a→t = -1/N Σᵢ log[exp(aᵢ·tᵢ/τ) / Σⱼ exp(aᵢ·tⱼ/τ)]
+
+正例：同一对的音频-文本 (对角线)
+负例：不同对的组合 (非对角线)</div>`,
+render(p){drawCLAP(p)}},
+
+{title:"全模态 Q-Former 融合",
+desc:`<p>使用<span class="highlight">Q-Former</span> 架构融合图像+文本+音频三种模态。</p>
+<p><b>核心机制</b>：</p>
+<p>1. 各模态编码器独立编码 → 加模态类型 Embedding</p>
+<p>2. 拼接所有模态 token 作为 KV</p>
+<p>3. <span class="highlight2">可学习 Query Token</span> 通过 Cross-Attention 聚合信息</p>
+<div class="formula">Q' = CrossAttn(Q_learnable, [h_I; h_T; h_A])
+
+Q_learnable ∈ R^{M×d}  (M=32 个查询)
+最终输出 = MeanPool(Q')  ∈ R^d</div>
+<p>Q-Former 像一个"信息管家"，用固定数量的 Query 从任意数量的多模态 token 中提取关键信息。</p>`,
+render(p){drawQFormer(p)}},
+
+{title:"模态缺失处理：Modality Dropout",
+desc:`<p>现实场景中经常<span class="highlight">缺少某些模态</span>：无图像（纯音频）、无音频（纯视觉）等。</p>
+<p><b>Modality Dropout</b>：训练时随机以概率 p 丢弃每个模态。</p>
+<div class="formula">训练时（p_drop=0.1）：
+  P(保留图像) = 0.9
+  P(保留文本) = 0.9
+  P(保留音频) = 0.9
+  约束：至少保留一个模态
+
+效果：
+  模型学会从部分模态中推理
+  不同模态组合都能产生有意义的表征</div>
+<p>这使得模型在<span class="highlight2">推理时</span>即使只有部分模态也能正常工作。</p>`,
+render(p){drawModalityDropout(p)}},
+
+{title:"音频事件检测：帧级 + 片段级",
+desc:`<p><span class="highlight">音频事件检测</span>需要同时输出帧级和片段级预测。</p>
+<p><b>帧级预测</b>：每个时间帧独立分类</p>
+<p><b>注意力池化</b>：自适应加权聚合帧级特征</p>
+<div class="formula">帧级：P(y_t = c | x) = σ(W_c · h_t)
+
+注意力池化：
+  α_t = softmax(w^T · h_t)
+  pooled = Σ_t α_t · h_t
+
+片段级：ŷ_c = σ(W_c · pooled)
+
+注意力权重 α_t 自动聚焦于事件发生的时间段</div>`,
+render(p){drawAudioEvent(p)}}
+];
+
+function drawRoundRect(x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill()}if(stroke){ctx.strokeStyle=stroke;ctx.stroke()}}
+function drawArrow(x1,y1,x2,y2,color='#555'){const a=Math.atan2(y2-y1,x2-x1),l=8;ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-l*Math.cos(a-0.3),y2-l*Math.sin(a-0.3));ctx.lineTo(x2-l*Math.cos(a+0.3),y2-l*Math.sin(a+0.3));ctx.fill()}
+
+function drawMelSpectrogram(p){
+ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2;
+// Waveform
+const waveY=cy-120,waveH=60;
+ctx.fillStyle='#1a1e2e';drawRoundRect(cx-250,waveY-waveH-20,500,waveH*2+40,8,'#1a1e2e','#333');
+ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.textAlign='center';
+ctx.fillText('时域波形 x(t)',cx,waveY-waveH-30);
+if(p>0.1){
+ctx.strokeStyle='#00e5ff';ctx.lineWidth=2;ctx.beginPath();
+for(let i=0;i<400;i++){const x=cx-200+i,t=i/400*4*Math.PI;const amp=Math.sin(t*3)*Math.exp(-t*0.3)*waveH*0.6*Math.min(1,p*2);ctx.lineTo(x,waveY+amp)}
+ctx.stroke()}
+// Arrow
+if(p>0.3){drawArrow(cx,waveY+waveH+20,cx,cy-20,'#e040fb');ctx.fillStyle='#e040fb';ctx.font='12px sans-serif';ctx.fillText('STFT → |X|² → Mel滤波 → log',cx+80,cy-5)}
+// Mel spectrogram
+if(p>0.5){
+const mW=400,mH=120,mx=cx-mW/2,my=cy+20;
+ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.fillText('Mel 频谱图 [n_mels × T]',cx,my-8);
+for(let f=0;f<24;f++)for(let t=0;t<60;t++){const val=Math.sin(f*0.5+t*0.1)*0.5+Math.random()*0.3+0.2;const prog=Math.min(1,(p-0.5)*3);const alpha=prog*val;const r=Math.floor(val*200+50),g=Math.floor((1-val)*100),b=Math.floor((1-val)*200+50);ctx.fillStyle=`rgba(${r},${g},${b},${alpha})`;ctx.fillRect(mx+t*(mW/60),my+f*(mH/24),mW/60+1,mH/24+1)}
+ctx.strokeStyle='#555';ctx.strokeRect(mx,my,mW,mH);
+ctx.fillStyle='#aaa';ctx.font='11px sans-serif';ctx.textAlign='left';
+ctx.fillText('频率(Mel)',mx-50,my+mH/2);ctx.textAlign='center';ctx.fillText('时间',cx,my+mH+15)}
+// Mel scale
+if(p>0.8){const sx=cx+230,sy=cy+20;
+ctx.fillStyle='#7c4dff';ctx.font='11px sans-serif';ctx.textAlign='left';
+ctx.fillText('Mel 尺度特点:',sx,sy);ctx.fillText('低频: 密集 (语音基频)',sx,sy+18);ctx.fillText('高频: 稀疏',sx,sy+36)}
+}
+
+function drawAST(p){
+ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2;
+// Mel spectrogram with patches
+const mW=200,mH=120,mx=50,my=cy-60;
+ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.textAlign='center';
+ctx.fillText('Mel频谱 [128×T]',mx+mW/2,my-10);
+for(let f=0;f<8;f++)for(let t=0;t<12;t++){const val=Math.sin(f*0.8+t*0.3)*0.4+0.5;const r=Math.floor(val*200+50),g=50,b=Math.floor((1-val)*200+50);ctx.fillStyle=`rgba(${r},${g},${b},0.8)`;ctx.fillRect(mx+t*(mW/12),my+f*(mH/8),mW/12,mH/8)}
+// Patch grid
+if(p>0.2){ctx.strokeStyle='#e040fb';ctx.lineWidth=2;
+for(let i=0;i<=4;i++){ctx.beginPath();ctx.moveTo(mx,my+i*mH/4);ctx.lineTo(mx+mW,my+i*mH/4);ctx.stroke()}
+for(let j=0;j<=6;j++){ctx.beginPath();ctx.moveTo(mx+j*mW/6,my);ctx.lineTo(mx+j*mW/6,my+mH);ctx.stroke()}
+ctx.fillStyle='#e040fb';ctx.font='11px sans-serif';ctx.fillText('4×6 = 24 patches',mx+mW/2,my+mH+15)}
+// Flatten + projection
+if(p>0.4){drawArrow(mx+mW+20,cy,mx+mW+80,cy,'#7c4dff');ctx.fillStyle='#7c4dff';ctx.font='11px sans-serif';ctx.fillText('展平+投影',mx+mW+50,cy-10)}
+// Token sequence
+if(p>0.5){const sx=mx+mW+100,sw=20,sh=25;
+// CLS token
+drawRoundRect(sx,cy-sh/2,sw,sh,4,'#00e5ff','#00e5ff');ctx.fillStyle='#000';ctx.font='9px sans-serif';ctx.textAlign='center';ctx.fillText('C',sx+sw/2,cy+4);
+// Patches
+for(let i=0;i<Math.min(24,Math.floor((p-0.5)*60));i++){const x=sx+(i+1)*(sw+3);if(x>W-60)break;drawRoundRect(x,cy-sh/2,sw,sh,4,'#2a2e3e','#e040fb');ctx.fillStyle='#e040fb';ctx.font='8px sans-serif';ctx.fillText(i+'',x+sw/2,cy+3)}
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';ctx.fillText('[CLS] + 24 patch tokens',sx+200,cy-25)}
+// Transformer
+if(p>0.8){const tx=sx+100,ty=cy+50;drawRoundRect(tx,ty,200,40,8,'#1a1e2e','#e040fb');ctx.fillStyle='#e040fb';ctx.font='13px sans-serif';ctx.textAlign='center';ctx.fillText('Transformer × L layers',tx+100,ty+25);drawArrow(tx+100,cy+sh/2+5,tx+100,ty,'#555');
+drawArrow(tx+100,ty+45,tx+100,ty+70,'#00e5ff');ctx.fillStyle='#00e5ff';ctx.font='12px sans-serif';ctx.fillText('h_audio = H[CLS] ∈ R^D',tx+100,ty+85)}
+}
+
+function drawPositionEncoding(p){
+ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2;
+// Freq PE
+const fW=80,fH=200,fx=cx-200,fy=cy-100;
+ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.textAlign='center';
+ctx.fillText('频率位置编码',fx+fW/2,fy-15);
+for(let i=0;i<8;i++){const alpha=Math.min(1,p*2);const hue=i*45;ctx.fillStyle=`hsla(${hue},70%,60%,${alpha})`;ctx.fillRect(fx,fy+i*fH/8,fW,fH/8-2);ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.fillText(`f${i}`,fx+fW/2,fy+i*fH/8+fH/16+3)}
+// Time PE
+const tW=300,tH=60,tx=cx-50,ty=cy-100;
+if(p>0.3){ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.fillText('时间位置编码',tx+tW/2,ty-15);
+for(let j=0;j<12;j++){const alpha=Math.min(1,(p-0.3)*3);const hue=120+j*20;ctx.fillStyle=`hsla(${hue},70%,60%,${alpha})`;ctx.fillRect(tx+j*tW/12,ty,tW/12-2,tH);ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.fillText(`t${j}`,tx+j*tW/12+tW/24,ty+tH/2+3)}}
+// Combined
+if(p>0.6){const gy=cy+40;ctx.fillStyle='#e040fb';ctx.font='14px sans-serif';ctx.fillText('p_ij = p^freq_i + p^time_j',cx+50,gy-10);
+for(let i=0;i<4;i++)for(let j=0;j<6;j++){const alpha=Math.min(1,(p-0.6)*3);const hue=(i*45+120+j*20)%360;ctx.fillStyle=`hsla(${hue},60%,50%,${alpha})`;ctx.fillRect(cx-50+j*50,gy+i*35,45,30);ctx.fillStyle='#fff';ctx.font='9px sans-serif';ctx.fillText(`${i},${j}`,cx-50+j*50+22,gy+i*35+18)}}
+// Variable length note
+if(p>0.85){ctx.fillStyle='#00e5ff';ctx.font='12px sans-serif';ctx.textAlign='left';ctx.fillText('✓ 时间维可扩展：推理时处理更长音频',cx-50,cy+200);ctx.fillText('✓ 频率维固定：n_mels 不变',cx-50,cy+220)}
+}
+
+function drawCLAP(p){
+ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2;
+// Audio tower
+const aX=cx-180,aY=40;
+drawRoundRect(aX-60,aY,120,40,8,p>0.1?'#e040fb33':'#1a1e2e','#e040fb');
+ctx.fillStyle='#e040fb';ctx.font='13px sans-serif';ctx.textAlign='center';ctx.fillText('音频塔 (AST)',aX,aY+25);
+if(p>0.2){drawArrow(aX,aY+45,aX,aY+75,'#e040fb');drawRoundRect(aX-50,aY+80,100,30,6,'#1a1e2e','#e040fb');ctx.fillText('线性投影',aX,aY+100)}
+if(p>0.3){drawArrow(aX,aY+115,aX,aY+145,'#e040fb');drawRoundRect(aX-50,aY+150,100,30,6,'#1a1e2e','#e040fb');ctx.fillText('L2 归一化',aX,aY+170)}
+// Text tower
+const tX=cx+180;
+drawRoundRect(tX-60,aY,120,40,8,p>0.1?'#7c4dff33':'#1a1e2e','#7c4dff');
+ctx.fillStyle='#7c4dff';ctx.font='13px sans-serif';ctx.fillText('文本塔 (Transformer)',tX,aY+25);
+if(p>0.2){drawArrow(tX,aY+45,tX,aY+75,'#7c4dff');drawRoundRect(tX-50,aY+80,100,30,6,'#1a1e2e','#7c4dff');ctx.fillText('线性投影',tX,aY+100)}
+if(p>0.3){drawArrow(tX,aY+115,tX,aY+145,'#7c4dff');drawRoundRect(tX-50,aY+150,100,30,6,'#1a1e2e','#7c4dff');ctx.fillText('L2 归一化',tX,aY+170)}
+// Similarity matrix
+if(p>0.5){const my=aY+210,mS=30,N=4;
+ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.fillText('相似度矩阵 (â·t̂)/τ',cx,my-10);
+for(let i=0;i<N;i++)for(let j=0;j<N;j++){const isDiag=i===j;const alpha=Math.min(1,(p-0.5)*3);const val=isDiag?0.8:0.2+Math.random()*0.2;const r=Math.floor(val*255),g=Math.floor(val*100),b=Math.floor((1-val)*200);ctx.fillStyle=`rgba(${r},${g},${b},${alpha})`;ctx.fillRect(cx-N*mS/2+j*mS,my+i*mS,mS-2,mS-2);if(isDiag&&p>0.7){ctx.strokeStyle='#00e5ff';ctx.lineWidth=2;ctx.strokeRect(cx-N*mS/2+j*mS,my+i*mS,mS-2,mS-2)}}
+ctx.fillStyle='#e040fb';ctx.font='11px sans-serif';ctx.textAlign='right';
+for(let i=0;i<N;i++)ctx.fillText(`a${i}`,cx-N*mS/2-5,my+i*mS+20);
+ctx.textAlign='center';ctx.fillStyle='#7c4dff';
+for(let j=0;j<N;j++)ctx.fillText(`t${j}`,cx-N*mS/2+j*mS+14,my-2)}
+if(p>0.8){ctx.fillStyle='#00e5ff';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText('对角线 = 正例 (最大化)',cx,aY+360);ctx.fillText('非对角线 = 负例 (最小化)',cx,aY+378)}
+}
+
+function drawQFormer(p){
+ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2;
+// Three encoders
+const encY=30,encH=40;
+const encs=[{x:cx-200,color:'#e040fb',name:'ViT (图像)',tokens:'N_I'},
+{x:cx,color:'#7c4dff',name:'LLM (文本)',tokens:'N_T'},
+{x:cx+200,color:'#00e5ff',name:'AST (音频)',tokens:'N_A'}];
+encs.forEach((e,i)=>{const a=Math.min(1,p*3);drawRoundRect(e.x-60,encY,120,encH,8,e.color+'33',e.color);ctx.globalAlpha=a;ctx.fillStyle=e.color;ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText(e.name,e.x,encY+25);ctx.globalAlpha=1});
+// Type embeddings + projection
+if(p>0.2){encs.forEach(e=>{drawArrow(e.x,encY+encH+5,e.x,encY+encH+35,e.color);drawRoundRect(e.x-45,encY+encH+40,90,25,4,'#1a1e2e',e.color);ctx.fillStyle=e.color;ctx.font='10px sans-serif';ctx.fillText('+type_embed',e.x,encY+encH+57)})}
+// Concatenate
+if(p>0.4){const catY=encY+encH+90;
+encs.forEach(e=>drawArrow(e.x,encY+encH+70,cx,catY,'#555'));
+drawRoundRect(cx-150,catY,300,30,6,'#1a1e2e','#aaa');ctx.fillStyle='#aaa';ctx.font='12px sans-serif';ctx.fillText('拼接 KV = [h_I; h_T; h_A]',cx,catY+20)}
+// Q-Former
+if(p>0.6){const qy=encY+encH+150;
+// Learnable queries
+drawRoundRect(cx-220,qy,100,35,6,'#ff9800','#ff9800');ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.fillText('Q (M=32)',cx-170,qy+22);
+drawArrow(cx-115,qy+17,cx-80,qy+17,'#ff9800');
+// Cross attention box
+drawRoundRect(cx-80,qy-10,160,55,8,'#1a1e2e','#e040fb');ctx.fillStyle='#e040fb';ctx.font='13px sans-serif';ctx.fillText('Cross-Attn',cx,qy+10);ctx.font='10px sans-serif';ctx.fillText('× 3 layers',cx,qy+30);
+drawArrow(cx,encY+encH+125,cx,qy-15,'#aaa')}
+// Output
+if(p>0.8){const oy=encY+encH+220;
+drawArrow(cx+85,encY+encH+167,cx+150,oy,'#00e5ff');
+drawRoundRect(cx+100,oy,120,30,6,'#00e5ff33','#00e5ff');ctx.fillStyle='#00e5ff';ctx.font='12px sans-serif';ctx.fillText('MeanPool(Q\')',cx+160,oy+20);
+drawArrow(cx+160,oy+35,cx+160,oy+55,'#00e5ff');
+ctx.fillStyle='#00e5ff';ctx.font='13px sans-serif';ctx.fillText('全模态表征 ∈ R^d',cx+160,oy+72)}
+}
+
+function drawModalityDropout(p){
+ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2-20;
+const modals=[{name:'图像',color:'#e040fb',x:cx-180},{name:'文本',color:'#7c4dff',x:cx},{name:'音频',color:'#00e5ff',x:cx+180}];
+// Title
+ctx.fillStyle='#aaa';ctx.font='14px sans-serif';ctx.textAlign='center';ctx.fillText('Modality Dropout (p=0.1)',cx,30);
+// Training scenarios
+const scenarios=[
+{name:'全模态',keep:[1,1,1]},
+{name:'无音频',keep:[1,1,0]},
+{name:'无图像',keep:[0,1,1]},
+{name:'仅文本',keep:[0,1,0]},
+];
+const sIdx=Math.min(3,Math.floor(p*4));
+const sy=60;
+scenarios.forEach((s,si)=>{
+const y=sy+si*90;const active=si<=sIdx;
+ctx.fillStyle=active?'#fff':'#555';ctx.font='12px sans-serif';ctx.textAlign='left';
+ctx.fillText(s.name,30,y+25);
+modals.forEach((m,mi)=>{const x=m.x-30;const kept=s.keep[mi];
+const alpha=active?(kept?1:0.15):0.3;
+drawRoundRect(x,y,60,40,6,kept&&active?m.color+'44':'#1a1e2e',active?(kept?m.color:'#333'):'#222');
+ctx.globalAlpha=alpha;ctx.fillStyle=kept?m.color:'#555';ctx.font='11px sans-serif';ctx.textAlign='center';
+ctx.fillText(m.name,x+30,y+25);
+if(!kept&&active){ctx.strokeStyle='#ff4444';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x+5,y+5);ctx.lineTo(x+55,y+35);ctx.stroke();ctx.beginPath();ctx.moveTo(x+55,y+5);ctx.lineTo(x+5,y+35);ctx.stroke()}
+ctx.globalAlpha=1});
+// Arrow to result
+if(active){const rx=cx+260;drawArrow(cx+220,y+20,rx,y+20,'#555');drawRoundRect(rx,y+5,60,30,4,'#1a1e2e','#aaa');ctx.fillStyle='#aaa';ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText('表征',rx+30,y+24)}});
+}
+
+function drawAudioEvent(p){
+ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2;
+// Audio features timeline
+const tW=500,tH=80,tx=cx-tW/2,ty=40;
+ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.textAlign='center';ctx.fillText('音频帧级特征 h_t [T×D]',cx,ty-8);
+for(let t=0;t<20;t++){const val=Math.sin(t*0.5)*0.3+(t>5&&t<12?0.7:0.1);const alpha=Math.min(1,p*2);const h=val*tH;ctx.fillStyle=`rgba(224,64,251,${alpha*val})`;ctx.fillRect(tx+t*tW/20,ty+tH-h,tW/20-2,h)}
+ctx.strokeStyle='#333';ctx.strokeRect(tx,ty,tW,tH);
+// Frame predictions
+if(p>0.3){const fy=ty+tH+30;
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';ctx.fillText('帧级预测 P(y_t)',cx,fy-5);
+for(let t=0;t<20;t++){const isEvent=t>5&&t<12;const alpha=Math.min(1,(p-0.3)*3);
+ctx.fillStyle=isEvent?`rgba(0,229,255,${alpha})`:`rgba(100,100,100,${alpha})`;
+ctx.fillRect(tx+t*tW/20,fy,tW/20-2,25);
+ctx.fillStyle='#fff';ctx.font='9px sans-serif';ctx.fillText(isEvent?'1':'0',tx+t*tW/20+10,fy+16)}}
+// Attention pooling
+if(p>0.6){const ay=ty+tH+80;
+ctx.fillStyle='#ff9800';ctx.font='12px sans-serif';ctx.fillText('注意力权重 α_t',cx,ay);
+ctx.beginPath();ctx.strokeStyle='#ff9800';ctx.lineWidth=2;
+for(let t=0;t<20;t++){const w=(t>5&&t<12)?0.12:0.02;const x=tx+t*tW/20+10,y=ay+10+40*(1-w*8);
+if(t===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}
+ctx.stroke();
+// Arrow
+drawArrow(cx,ay+55,cx,ay+80,'#ff9800');
+ctx.fillStyle='#ff9800';ctx.font='12px sans-serif';ctx.fillText('加权池化',cx+60,ay+72)}
+// Clip prediction
+if(p>0.8){const cy2=ty+tH+175;
+drawRoundRect(cx-80,cy2,160,40,8,'#00e5ff33','#00e5ff');
+ctx.fillStyle='#00e5ff';ctx.font='13px sans-serif';ctx.fillText('片段级: "事件X" (85%)',cx,cy2+25)}
+}
+
+// Animation
+function animate(){animProgress+=0.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}
+function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('stepTitle').innerHTML=steps[currentStep].title;document.getElementById('stepDesc').innerHTML=steps[currentStep].desc;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))})}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});
+init();
+</script>
+</body>
+</html>

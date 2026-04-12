@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v01 Transformer 基础 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(108,92,231,.25);border-left:3px solid var(--primary);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(9,132,227,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(9,132,227,.5);background:rgba(9,132,227,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(9,132,227,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(9,132,227,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+.shape-tag{display:inline-block;background:rgba(108,92,231,.2);border:1px solid rgba(108,92,231,.4);padding:2px 8px;border-radius:6px;font-size:11px;font-family:'Courier New',monospace;color:var(--primary);margin:2px;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v01</span>
+  <h1>Transformer 基础</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'scaled_dot_product_attention 函数',
+   desc:'核心注意力运算：Q·K^T → 缩放 → 掩码 → Softmax → 加权V。所有操作都是矩阵运算，GPU 可高度并行化。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">scaled_dot_product_attention</span>(query, key, value, mask):',hl:false},
+     {text:'    d_k = query.size(-1)  <span class="cm"># 每个头的维度</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 步骤1: Q * K^T / sqrt(d_k)</span>',hl:false},
+     {text:'    scores = torch.matmul(query, key.transpose(-2, -1))',hl:true},
+     {text:'    scores = scores / math.sqrt(d_k)  <span class="cm"># 缩放</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 步骤2: 应用掩码（可选）</span>',hl:false},
+     {text:'    <span class="kw">if</span> mask <span class="kw">is not</span> None:',hl:false},
+     {text:'        scores = scores.masked_fill(mask == 0, <span class="num">-inf</span>)',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 步骤3: Softmax 归一化</span>',hl:false},
+     {text:'    attention_weights = F.softmax(scores, dim=-1)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 步骤4: 加权求和 Value</span>',hl:false},
+     {text:'    output = torch.matmul(attention_weights, value)',hl:true},
+     {text:'    <span class="kw">return</span> output, attention_weights',hl:false},
+   ],
+   highlightLines:[4,5,12,15]},
+  {title:'MultiHeadAttention 的 view/transpose',
+   desc:'将 d_model 维度拆成 n_heads 个头的关键操作：view 改变形状 + transpose 交换维度，让每个头的数据在内存中连续排列。',
+   code:[
+     {text:'<span class="cm"># 步骤1: 线性投影</span>',hl:false},
+     {text:'Q = self.W_q(query)  <span class="cm"># [B, L, d_model]</span>',hl:true},
+     {text:'K = self.W_k(key)',hl:false},
+     {text:'V = self.W_v(value)',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 步骤2: 拆分多头</span>',hl:false},
+     {text:'Q = Q.view(B, -1, n_heads, d_k)  <span class="cm"># [B,L,H,dk]</span>',hl:true},
+     {text:'Q = Q.transpose(1, 2)  <span class="cm"># [B,H,L,dk]</span>',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 步骤3: 各头并行计算注意力</span>',hl:false},
+     {text:'attn_out, weights = scaled_dot_product_attention(',hl:true},
+     {text:'    Q, K, V, mask=mask)',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 步骤4: 拼接多头</span>',hl:false},
+     {text:'attn_out = attn_out.transpose(1,2).contiguous()',hl:true},
+     {text:'attn_out = attn_out.view(B, -1, d_model)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 步骤5: 输出投影</span>',hl:false},
+     {text:'output = self.W_o(attn_out)  <span class="cm"># [B,L,d_model]</span>',hl:true},
+   ],
+   highlightLines:[1,6,7,10,14,15,18]},
+  {title:'MiniTransformer 编码器前向传播',
+   desc:'编码器将输入序列转化为上下文感知的表示。数据流：Embedding → 缩放 → 位置编码 → N层Encoder → 最终归一化。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">encode</span>(self, src, src_mask):',hl:false},
+     {text:'    <span class="cm"># Embedding + 缩放</span>',hl:false},
+     {text:'    x = self.embedding(src) * sqrt(d_model)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 位置编码</span>',hl:false},
+     {text:'    x = self.pos_encoding(x)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># N 个编码器层</span>',hl:false},
+     {text:'    <span class="kw">for</span> layer <span class="kw">in</span> self.encoder_layers:',hl:false},
+     {text:'        x = layer(x, mask=src_mask)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 最终归一化</span>',hl:false},
+     {text:'    x = self.encoder_norm(x)',hl:true},
+     {text:'    <span class="kw">return</span> x  <span class="cm"># [B, L, d_model]</span>',hl:false},
+   ],
+   highlightLines:[2,5,9,12]},
+  {title:'解码器 + Cross-Attention',
+   desc:'解码器含三个子层：(1)因果自注意力 (2)Cross-Attention(Q来自解码器,K/V来自编码器) (3)FFN。Cross-Attention让解码器"参考"编码器的输出。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">forward</span>(self, x, encoder_output, ...):',hl:false},
+     {text:'    <span class="cm"># Sub-layer 1: Masked Self-Attention</span>',hl:false},
+     {text:'    residual = x',hl:false},
+     {text:'    x = self.norm1(x)',hl:false},
+     {text:'    x, _ = self.self_attention(x, x, x, mask)',hl:true},
+     {text:'    x = residual + x  <span class="cm"># 残差连接</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># Sub-layer 2: Cross-Attention</span>',hl:false},
+     {text:'    residual = x',hl:false},
+     {text:'    x = self.norm2(x)',hl:false},
+     {text:'    x, _ = self.cross_attention(',hl:true},
+     {text:'        query=x,  <span class="cm"># Q来自解码器</span>',hl:true},
+     {text:'        key=encoder_output,  <span class="cm"># K来自编码器</span>',hl:true},
+     {text:'        value=encoder_output  <span class="cm"># V来自编码器</span>',hl:true},
+     {text:'    )',hl:false},
+     {text:'    x = residual + x',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># Sub-layer 3: FFN</span>',hl:false},
+     {text:'    residual = x',hl:false},
+     {text:'    x = residual + self.ffn(self.norm3(x))',hl:true},
+   ],
+   highlightLines:[4,5,10,11,12,13,19]},
+  {title:'Teacher Forcing 训练循环',
+   desc:'训练时解码器的输入是真实的上一个token（而非模型预测），加速收敛但引入Exposure Bias。Loss用CrossEntropy对每个位置的预测与真实target计算。',
+   code:[
+     {text:'<span class="kw">for</span> batch <span class="kw">in</span> dataloader:',hl:false},
+     {text:'    src = batch[<span class="str">"src"</span>].to(device)  <span class="cm"># 乱序</span>',hl:false},
+     {text:'    tgt_input = batch[<span class="str">"tgt_input"</span>]  <span class="cm"># BOS+排序</span>',hl:false},
+     {text:'    tgt_output = batch[<span class="str">"tgt_output"</span>]  <span class="cm"># 排序+EOS</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    tgt_mask = generate_causal_mask(L)',hl:true},
+     {text:'    logits = model(src, tgt_input, tgt_mask)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># CrossEntropy Loss</span>',hl:false},
+     {text:'    loss = criterion(logits.view(-1, V), tgt.view(-1))',hl:true},
+     {text:'',hl:false},
+     {text:'    optimizer.zero_grad()',hl:false},
+     {text:'    loss.backward()  <span class="cm"># 反向传播</span>',hl:true},
+     {text:'    clip_grad_norm_(model.parameters(), 1.0)',hl:true},
+     {text:'    optimizer.step()',hl:false},
+     {text:'    scheduler.step()',hl:false},
+   ],
+   highlightLines:[5,6,9,12,13]},
+  {title:'贪心解码 vs Beam Search',
+   desc:'推理时自回归生成：每步预测一个token。贪心每步选概率最高的（简单快速但局部最优）。Beam Search维护K个候选序列（更可能全局最优但更慢）。',
+   code:[
+     {text:'<span class="cm"># 贪心解码</span>',hl:false},
+     {text:'encoder_output = model.encode(src)',hl:true},
+     {text:'decoder_input = [BOS]',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="kw">for</span> step <span class="kw">in</span> range(max_len):',hl:false},
+     {text:'    logits = model.decode(decoder_input, enc_out)',hl:true},
+     {text:'    next_token = logits[:, -1, :].argmax()',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="kw">if</span> next_token == EOS: <span class="kw">break</span>',hl:false},
+     {text:'    decoder_input = cat([decoder_input, next_token])',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># Beam Search: 维护 K 个候选</span>',hl:false},
+     {text:'beams = [(BOS_seq, score=0.0)]',hl:false},
+     {text:'<span class="kw">for</span> step: 每个beam扩展topK → 保留全局topK',hl:true},
+   ],
+   highlightLines:[1,5,6,9,13]},
+];
+
+function resize(){const r=window.devicePixelRatio||1;const rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0);}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+function renderStep0(p){
+  const cx=W/2,topY=30;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  // Show tensor shapes flowing through attention
+  const stages=[
+    {label:'Q [B,H,Lq,dk]',color:'#6C5CE7',x:cx-140,y:topY+20},
+    {label:'K^T [B,H,dk,Lk]',color:'#0984E3',x:cx+140,y:topY+20},
+    {label:'scores [B,H,Lq,Lk]',color:'#F59E0B',x:cx,y:topY+90},
+    {label:'÷ √d_k',color:'#EF4444',x:cx,y:topY+140},
+    {label:'Softmax → α [B,H,Lq,Lk]',color:'#10B981',x:cx,y:topY+190},
+    {label:'V [B,H,Lk,dv]',color:'#0984E3',x:cx+160,y:topY+190},
+    {label:'output [B,H,Lq,dv]',color:'#00B894',x:cx,y:topY+260},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'22';ctx.strokeStyle=s.color;ctx.lineWidth=1.5;
+    const tw=ctx.measureText(s.label).width+24;
+    drawRoundRect(s.x-tw/2,s.y-14,tw,28,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='12px Courier New';
+    ctx.fillText(s.label,s.x,s.y+5);
+    ctx.globalAlpha=1;
+  }
+  // Arrows
+  if(p>.15){const ap=easeInOut((p-.15)/.15);ctx.strokeStyle=`rgba(249,158,11,${ap})`;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(cx-60,topY+40);ctx.lineTo(cx-10,topY+78);ctx.stroke();ctx.beginPath();ctx.moveTo(cx+60,topY+40);ctx.lineTo(cx+10,topY+78);ctx.stroke();}
+  // matmul label
+  if(p>.2){ctx.globalAlpha=easeInOut((p-.2)/.1);ctx.fillStyle='#F59E0B';ctx.font='bold 11px PingFang SC';ctx.fillText('matmul',cx-80,topY+65);ctx.globalAlpha=1;}
+}
+
+function renderStep1(p){
+  const cx=W/2;
+  // Show view and transpose visually
+  const stages=[
+    {label:'[B, L, d_model]',sub:'线性投影后',color:'#6C5CE7',y:30},
+    {label:'[B, L, H, d_k]',sub:'view 拆分',color:'#F59E0B',y:90},
+    {label:'[B, H, L, d_k]',sub:'transpose(1,2)',color:'#0984E3',y:150},
+    {label:'各头独立 Attention',sub:'并行计算',color:'#10B981',y:210},
+    {label:'[B, L, d_model]',sub:'transpose+view 拼接',color:'#00B894',y:270},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.18;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'1A';ctx.strokeStyle=s.color;
+    drawRoundRect(cx-110,s.y,220,42,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 13px Courier New';ctx.textAlign='center';
+    ctx.fillText(s.label,cx,s.y+18);
+    ctx.fillStyle='rgba(255,255,255,.5)';ctx.font='11px PingFang SC';
+    ctx.fillText(s.sub,cx,s.y+34);
+    if(i>0){ctx.strokeStyle=s.color+'66';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+42);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=20;
+  const stages=[
+    {label:'src [B, 10]',color:'#94A3B8',y:topY},
+    {label:'Embedding → [B, 10, 128]',color:'#6C5CE7',y:topY+55},
+    {label:'× √128 缩放',color:'#F59E0B',y:topY+110},
+    {label:'+ PosEncoding → [B, 10, 128]',color:'#0984E3',y:topY+165},
+    {label:'EncoderBlock ×3',color:'#10B981',y:topY+220},
+    {label:'LayerNorm → [B, 10, 128]',color:'#00B894',y:topY+275},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'1A';ctx.strokeStyle=s.color;
+    drawRoundRect(cx-140,s.y,280,38,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='13px Courier New';ctx.textAlign='center';
+    ctx.fillText(s.label,cx,s.y+24);
+    if(i>0){ctx.strokeStyle=s.color+'44';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+38);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=15;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(0,184,148,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.fillText('解码器 Block 三子层',cx,topY);
+  const boxes=[
+    {label:'1. Masked Self-Attn',sub:'Q=K=V=decoder (因果掩码)',color:'#6C5CE7'},
+    {label:'+ 残差',sub:'',color:'#EF4444'},
+    {label:'2. Cross-Attention',sub:'Q=decoder, K=V=encoder',color:'#0984E3'},
+    {label:'+ 残差',sub:'',color:'#EF4444'},
+    {label:'3. FFN',sub:'Linear→GELU→Linear',color:'#10B981'},
+    {label:'+ 残差',sub:'',color:'#EF4444'},
+  ];
+  let y=topY+25;
+  for(let i=0;i<boxes.length;i++){
+    const delay=.1+i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const b=boxes[i];
+    const bh=b.sub?45:28;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=b.color+'1A';ctx.strokeStyle=b.color+'88';
+    drawRoundRect(cx-130,y,260,bh,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=b.color;ctx.font='12px PingFang SC';
+    ctx.fillText(b.label,cx,y+16);
+    if(b.sub){ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='11px PingFang SC';ctx.fillText(b.sub,cx,y+32);}
+    ctx.globalAlpha=1;
+    y+=bh+8;
+  }
+  // Encoder arrow
+  if(p>.4){
+    const ap=easeInOut((p-.4)/.2);
+    ctx.globalAlpha=ap;ctx.strokeStyle='#0984E3';ctx.lineWidth=2;ctx.setLineDash([4,4]);
+    const crossY=topY+25+2*53+45+8+22;
+    ctx.beginPath();ctx.moveTo(cx+140,crossY);ctx.lineTo(cx+180,crossY);ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='11px PingFang SC';ctx.textAlign='left';
+    ctx.fillText('← Encoder输出',cx+185,crossY+4);
+    ctx.setLineDash([]);ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=20;
+  // Training loop visualization
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(249,158,11,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.fillText('Teacher Forcing 训练循环',cx,topY);
+  const items=[
+    {label:'输入: [5,2,8,1,3]',color:'#6C5CE7'},
+    {label:'目标输入: [BOS,1,2,3,5,8]',color:'#0984E3'},
+    {label:'模型前向 → logits',color:'#10B981'},
+    {label:'CE Loss(logits, [1,2,3,5,8,EOS])',color:'#F59E0B'},
+    {label:'loss.backward() → 梯度',color:'#EF4444'},
+    {label:'clip_grad_norm → optimizer.step',color:'#00B894'},
+  ];
+  let y=topY+30;
+  for(let i=0;i<items.length;i++){
+    const delay=.1+i*.13;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=items[i].color+'15';ctx.strokeStyle=items[i].color;
+    drawRoundRect(cx-140,y,280,34,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=items[i].color;ctx.font='12px Courier New';
+    ctx.fillText(items[i].label,cx,y+22);
+    if(i>0){ctx.strokeStyle=items[i].color+'44';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,y-4);ctx.lineTo(cx,y);ctx.stroke();}
+    ctx.globalAlpha=1;
+    y+=44;
+  }
+}
+
+function renderStep5(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(0,184,148,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.fillText('自回归生成过程',cx,topY);
+  // Show step-by-step generation
+  const genSteps=['[BOS]','[BOS,1]','[BOS,1,2]','[BOS,1,2,3]','[BOS,1,2,3,5]','[BOS,1,2,3,5,8,EOS]'];
+  const preds=['→ 1','→ 2','→ 3','→ 5','→ 8','→ EOS (停止)'];
+  let y=topY+30;
+  for(let i=0;i<genSteps.length;i++){
+    const delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='rgba(108,92,231,.1)';ctx.strokeStyle='rgba(108,92,231,.4)';
+    drawRoundRect(30,y,W/2-50,30,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='12px Courier New';ctx.textAlign='left';
+    ctx.fillText(`Step ${i}: ${genSteps[i]}`,40,y+20);
+    // Prediction
+    ctx.fillStyle='#00B894';ctx.textAlign='left';
+    ctx.fillText(preds[i],W/2-10,y+20);
+    ctx.globalAlpha=1;
+    y+=38;
+  }
+  // Beam search note
+  if(p>.85){
+    const bp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=bp;ctx.font='13px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('Beam Search: 每步保留 K 个候选，选全局最优路径',cx,y+20);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+
+function updateCodePanel(){
+  const panel=document.getElementById('codePanel');
+  const s=steps[currentStep];
+  panel.innerHTML=s.code.map((line,i)=>{
+    const cls=s.highlightLines.includes(i)?'code-line highlight':'code-line';
+    return `<div class="${cls}">${line.text||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress);}
+
+function startAnim(){
+  animProgress=0;const start=performance.now(),duration=2000;
+  function tick(now){animProgress=Math.min(1,(now-start)/duration);render();if(animProgress<1)animId=requestAnimationFrame(tick);}
+  if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick);
+}
+
+function updateUI(){
+  const s=steps[currentStep];
+  document.getElementById('infoTitle').textContent=s.title;
+  document.getElementById('infoDesc').innerHTML=s.desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCodePanel();
+  const dotsEl=document.getElementById('dots');dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){const d=document.createElement('span');if(i===currentStep)d.className='active';d.onclick=()=>{currentStep=i;updateUI();startAnim();};dotsEl.appendChild(d);}
+}
+
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim();}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim();}}
+function replay(){startAnim();}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep();});
+
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V24 内容安全与合规 - 原理可视化</title>
+<style>
+:root{--primary:#f44336;--accent:#ef9a9a;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(244,67,54,.15),rgba(239,154,154,.1));border-bottom:1px solid rgba(244,67,54,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,#f44336,#ef9a9a);padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}
+.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(239,154,154,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(244,67,54,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,#f44336,#ef9a9a);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(244,67,54,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:15px;color:var(--warn);text-align:center;line-height:1.8}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(244,67,54,.5);background:rgba(244,67,54,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}
+.btn:hover{background:rgba(244,67,54,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(244,67,54,.3)}.btn:active{transform:scale(.97)}
+.btn.accent{border-color:rgba(239,154,154,.5);background:rgba(239,154,154,.1)}.btn.accent:hover{background:rgba(239,154,154,.3);box-shadow:0 0 20px rgba(239,154,154,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v24</span><h1>内容安全与合规</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+<div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter">Step 1/6</div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'多标签安全分类',desc:'一张图/一段文本可能同时触发<strong>多个</strong>安全类别。<br><br>使用<strong>独立 Sigmoid</strong>（非 Softmax），每个类别独立输出概率。<br><br>动画展示：8 个安全类别的独立检测流程。',formula:'P(y_k=1|x) = σ(w_k^T f(x) + b_k)\nL = -Σ [y_k log p_k + (1-y_k) log(1-p_k)]'},
+{title:'阈值优化 & ROC/AUC',desc:'默认阈值 0.5 通常不是最优。对每个类别寻找<strong>最大化 F1</strong> 的阈值。<br><br><strong>ROC 曲线</strong>：绘制 TPR vs FPR，AUC 衡量整体性能。<br><br>高风险类别（如 CSAM）需要极低阈值→宁可误报不可漏报。',formula:'τ* = argmax_τ F1(τ) = 2·P(τ)·R(τ) / (P(τ)+R(τ))\nAUC = P(ŷ_pos > ŷ_neg)'},
+{title:'FGSM & PGD 对抗攻击',desc:'<strong>FGSM</strong>：单步攻击，沿损失梯度方向添加 ε 大小的扰动。<br><br><strong>PGD</strong>：多步迭代攻击，每步投影回 ε-ball。是目前最常用的一阶攻击。<br><br>动画展示：扰动从原始图像逐步演化的过程。',formula:'FGSM: x_adv = x + ε·sign(∇_x L)\nPGD: x^(t+1) = Π(x^(t) + α·sign(∇_x L))'},
+{title:'水印嵌入与检测',desc:'在图像的<strong>中频域</strong>（DWT LH/HL 子带或 DCT 中频系数）嵌入水印比特。<br><br>嵌入强度 α 控制<strong>不可见性 vs 鲁棒性</strong>的平衡。<br><br>检测时提取系数，计算与原始水印的相关性 ρ。',formula:'C̃_LH(i,j) = C_LH(i,j) + α·w_k\nρ = Σ ŵ_k·w_k / (||ŵ||·||w||)'},
+{title:'Platt Scaling 校准',desc:'模型输出的置信度通常<strong>未校准</strong>：70% 的置信度不代表 70% 的准确率。<br><br><strong>Platt Scaling</strong>：p = σ(a·z + b)，在验证集上学习 a, b。<br><br><strong>温度缩放</strong>：p = σ(z/T)，T>1 平滑分布。<br><br>用 <strong>ECE</strong>（Expected Calibration Error）衡量校准质量。',formula:'Platt: p = σ(a·z + b)\nTemp:  p = σ(z / T)\nECE = Σ |B_m|/N · |acc(B_m) - conf(B_m)|'},
+{title:'级联安全检查',desc:'生产系统采用<strong>级联策略</strong>降低延迟和成本。<br><br>快速规则过滤 → 轻量模型筛查 → 重量级模型深度检查。<br><br>只有<strong>不确定区间</strong>的样本才进入下一级，大部分请求被前两级快速处理。',formula:'Rule check → Fast model → Deep model\nhigh confidence → reject\nlow confidence → accept\nuncertain → escalate'}
+];
+
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function ease(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function hsl(h,s,l){return`hsl(${h},${s}%,${l}%)`}
+function RR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+const cats=['NSFW','暴力','垃圾','仇恨','自残','恐怖','违禁','正常'];
+const colors=['#f44336','#e91e63','#ff9800','#9c27b0','#795548','#607d8b','#ff5722','#4caf50'];
+const cx=W/2,sy=30;
+ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+ctx.fillStyle=`rgba(244,67,54,${ease(Math.min(1,p/.2))})`;ctx.fillText('多标签安全分类（独立 Sigmoid）',cx,sy);
+const bw=90,bh=32,gap=10,cols=4;
+const totalW=cols*(bw+gap)-gap,sx=cx-totalW/2;
+for(let i=0;i<8;i++){const row=Math.floor(i/cols),col=i%cols;const delay=.15+i*.06;const ap=ease(Math.max(0,Math.min(1,(p-delay)/.25)));
+const x=sx+col*(bw+gap),y=sy+25+row*55;ctx.globalAlpha=ap;
+ctx.fillStyle=colors[i]+'33';ctx.strokeStyle=colors[i];RR(x,y,bw,bh,6);ctx.fill();ctx.stroke();
+ctx.fillStyle=colors[i];ctx.font='12px PingFang SC';ctx.fillText(cats[i],x+bw/2,y+21);
+const barW=bw-10,barY=y+bh+5;ctx.fillStyle=colors[i]+'44';RR(x+5,barY,barW,8,3);ctx.fill();
+const prob=(.2+Math.random()*.6)*ap;ctx.fillStyle=colors[i];RR(x+5,barY,barW*prob,8,3);ctx.fill();
+ctx.globalAlpha=1}
+if(p>.8){ctx.font='13px PingFang SC';ctx.fillStyle=`rgba(239,154,154,${ease((p-.8)/.2)})`;ctx.fillText('每个类别独立 Sigmoid → 可同时触发多个安全标签',cx,sy+170)}
+}
+
+function renderStep1(p){
+const cx=W/2,sy=30;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+ctx.fillStyle=`rgba(244,67,54,${ease(Math.min(1,p/.2))})`;ctx.fillText('ROC 曲线 & 阈值扫描',cx,sy);
+const ox=60,oy=sy+30,pw=W-140,ph=H-120;
+ctx.strokeStyle='rgba(255,255,255,.15)';ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(ox,oy+ph);ctx.lineTo(ox+pw,oy+ph);ctx.stroke();
+ctx.fillStyle='#94A3B8';ctx.font='11px PingFang SC';ctx.textAlign='center';ctx.fillText('FPR',ox+pw/2,oy+ph+18);
+ctx.save();ctx.translate(ox-15,oy+ph/2);ctx.rotate(-Math.PI/2);ctx.fillText('TPR',0,0);ctx.restore();
+const ap=ease(Math.max(0,Math.min(1,(p-.2)/.5)));
+if(ap>0){ctx.strokeStyle='#f44336';ctx.lineWidth=2.5;ctx.beginPath();
+const pts=[[0,0],[.05,.4],[.1,.6],[.2,.75],[.3,.85],[.5,.92],[.7,.96],[1,1]];
+for(let i=0;i<pts.length;i++){const x=ox+pts[i][0]*pw*ap,y=oy+ph-pts[i][1]*ph*ap;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
+ctx.setLineDash([4,4]);ctx.strokeStyle='rgba(255,255,255,.2)';ctx.beginPath();ctx.moveTo(ox,oy+ph);ctx.lineTo(ox+pw,oy);ctx.stroke();ctx.setLineDash([])}
+if(p>.7){ctx.fillStyle=`rgba(239,154,154,${ease((p-.7)/.3)})`;ctx.font='13px PingFang SC';ctx.fillText('AUC = 0.91',ox+pw-60,oy+30)}
+}
+
+function renderStep2(p){
+const cx=W/2,sy=20;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+ctx.fillStyle=`rgba(244,67,54,${ease(Math.min(1,p/.2))})`;ctx.fillText('FGSM / PGD 对抗攻击',cx,sy);
+const imgSz=60,gap=30;
+const drawImg=(x,y,noise,label,c)=>{ctx.fillStyle='#1a1f2e';ctx.strokeStyle=c;RR(x,y,imgSz,imgSz,6);ctx.fill();ctx.stroke();
+for(let i=0;i<20;i++){ctx.fillStyle=c+'44';const px=x+5+Math.random()*(imgSz-10),py=y+5+Math.random()*(imgSz-10);
+ctx.fillRect(px,py,3+Math.random()*noise*10,3+Math.random()*noise*10)}
+ctx.fillStyle=c;ctx.font='11px PingFang SC';ctx.fillText(label,x+imgSz/2,y+imgSz+15)};
+const ap1=ease(Math.max(0,Math.min(1,(p-.1)/.3)));
+ctx.globalAlpha=ap1;drawImg(cx-imgSz*2-gap,sy+30,0,'原始图','#4caf50');ctx.globalAlpha=1;
+if(p>.3){const ap2=ease((p-.3)/.3);ctx.globalAlpha=ap2;
+ctx.strokeStyle='#ff9800';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(cx-imgSz-gap+5,sy+30+imgSz/2);ctx.lineTo(cx-gap/2,sy+30+imgSz/2);ctx.stroke();
+ctx.font='11px PingFang SC';ctx.fillStyle='#ff9800';ctx.fillText('+ε·sign(∇)',cx-imgSz/2-gap/2,sy+25+imgSz/2);
+drawImg(cx-gap/2+5,sy+30,.3,'FGSM','#ff9800');ctx.globalAlpha=1}
+if(p>.6){const ap3=ease((p-.6)/.3);ctx.globalAlpha=ap3;
+ctx.strokeStyle='#f44336';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(cx+imgSz/2+gap/2+10,sy+30+imgSz/2);ctx.lineTo(cx+imgSz+gap,sy+30+imgSz/2);ctx.stroke();
+ctx.font='11px PingFang SC';ctx.fillStyle='#f44336';ctx.fillText('×N steps',cx+imgSz*3/4+gap/2+5,sy+25+imgSz/2);
+drawImg(cx+imgSz+gap+5,sy+30,.6,'PGD','#f44336');ctx.globalAlpha=1}
+if(p>.85){ctx.font='12px PingFang SC';ctx.fillStyle=`rgba(239,154,154,${ease((p-.85)/.15)})`;ctx.fillText('PGD = 多步迭代 FGSM + 投影回 ε-ball',cx,sy+imgSz+70)}
+}
+
+function renderStep3(p){
+const cx=W/2,sy=20;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+ctx.fillStyle=`rgba(244,67,54,${ease(Math.min(1,p/.2))})`;ctx.fillText('水印嵌入 — DWT 域',cx,sy);
+const bw=100,bh=50,by=sy+40;
+const blocks=[{n:'原始图像',c:'#4caf50',x:cx-bw*2},{n:'DWT',c:'#2196f3',x:cx-bw*.7},{n:'嵌入 w_k',c:'#f44336',x:cx+bw*.5},{n:'IDWT',c:'#2196f3',x:cx+bw*1.7}];
+for(let i=0;i<blocks.length;i++){const delay=.1+i*.15;const ap=ease(Math.max(0,Math.min(1,(p-delay)/.25)));
+ctx.globalAlpha=ap;const b=blocks[i];ctx.fillStyle=b.c+'22';ctx.strokeStyle=b.c;
+RR(b.x,by,bw,bh,6);ctx.fill();ctx.stroke();ctx.fillStyle=b.c;ctx.font='12px PingFang SC';ctx.fillText(b.n,b.x+bw/2,by+30);
+if(i>0){ctx.strokeStyle=b.c+'66';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(blocks[i-1].x+bw+2,by+bh/2);ctx.lineTo(b.x-2,by+bh/2);ctx.stroke()}
+ctx.globalAlpha=1}
+if(p>.6){const wp=ease((p-.6)/.3);ctx.globalAlpha=wp;
+const subY=by+bh+30;const labels=['LL','LH','HL','HH'];const colors=['#aaa','#f44336','#f44336','#aaa'];const sz=40;
+for(let i=0;i<4;i++){const row=Math.floor(i/2),col=i%2;const x=cx-sz-5+col*(sz+10),y=subY+row*(sz+10);
+ctx.fillStyle=colors[i]+'33';ctx.strokeStyle=colors[i];RR(x,y,sz,sz,4);ctx.fill();ctx.stroke();
+ctx.fillStyle=colors[i];ctx.font='11px Courier New';ctx.fillText(labels[i],x+sz/2,y+sz/2+4)}
+ctx.font='11px PingFang SC';ctx.fillStyle='#ef9a9a';ctx.fillText('在 LH/HL 中频嵌入',cx,subY+2*(sz+10)+15);ctx.globalAlpha=1}
+}
+
+function renderStep4(p){
+const cx=W/2,sy=20;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+ctx.fillStyle=`rgba(244,67,54,${ease(Math.min(1,p/.2))})`;ctx.fillText('Platt Scaling 校准',cx,sy);
+const ox=80,oy=sy+40,pw=W-180,ph=H-140;
+ctx.strokeStyle='rgba(255,255,255,.15)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(ox,oy+ph);ctx.lineTo(ox+pw,oy+ph);ctx.stroke();
+ctx.fillStyle='#94A3B8';ctx.font='11px PingFang SC';ctx.fillText('Confidence',ox+pw/2,oy+ph+18);
+ctx.save();ctx.translate(ox-15,oy+ph/2);ctx.rotate(-Math.PI/2);ctx.fillText('Accuracy',0,0);ctx.restore();
+const ap=ease(Math.max(0,Math.min(1,(p-.2)/.3)));
+ctx.setLineDash([4,4]);ctx.strokeStyle='rgba(255,255,255,.2)';ctx.beginPath();ctx.moveTo(ox,oy+ph);ctx.lineTo(ox+pw,oy);ctx.stroke();ctx.setLineDash([]);
+if(ap>0){const bins=10;
+ctx.fillStyle='rgba(244,67,54,.3)';
+for(let i=0;i<bins;i++){const conf=(i+.5)/bins,acc=conf*.7+.15;const x=ox+conf*pw-8,y=oy+ph-acc*ph*ap,h=acc*ph*ap;
+RR(x,y,16,h,3);ctx.fill()}
+ctx.font='10px PingFang SC';ctx.fillStyle='#f44336';ctx.fillText('未校准(偏高)',ox+pw-50,oy+15)}
+if(p>.5){const cp=ease((p-.5)/.3);ctx.fillStyle=`rgba(76,175,80,${cp*.4})`;
+for(let i=0;i<10;i++){const conf=(i+.5)/10,acc=conf*.95+.025;const x=ox+conf*pw+2,y=oy+ph-acc*ph*cp,h=acc*ph*cp;
+RR(x,y,12,h,3);ctx.fill()}
+ctx.fillStyle=`rgba(76,175,80,${cp})`;ctx.font='10px PingFang SC';ctx.fillText('校准后(对齐)',ox+pw-50,oy+30)}
+if(p>.85){ctx.font='12px PingFang SC';ctx.fillStyle=`rgba(239,154,154,${ease((p-.85)/.15)})`;ctx.fillText('校准后：置信度 ≈ 真实准确率',cx,oy+ph+35)}
+}
+
+function renderStep5(p){
+const cx=W/2,sy=20;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+ctx.fillStyle=`rgba(244,67,54,${ease(Math.min(1,p/.2))})`;ctx.fillText('级联安全检查',cx,sy);
+const bw=150,bh=36,gap=20;let y=sy+35;
+const stages=[{n:'规则过滤 (关键词)',c:'#ff9800',t:.1},{n:'轻量模型 (快速)',c:'#2196f3',t:.25},{n:'重量级模型 (深度)',c:'#f44336',t:.45},{n:'人工审核',c:'#9c27b0',t:.65}];
+for(let i=0;i<stages.length;i++){const s=stages[i];const ap=ease(Math.max(0,Math.min(1,(p-s.t)/.2)));
+ctx.globalAlpha=ap;ctx.fillStyle=s.c+'22';ctx.strokeStyle=s.c;RR(cx-bw/2,y,bw,bh,8);ctx.fill();ctx.stroke();
+ctx.fillStyle=s.c;ctx.font='12px PingFang SC';ctx.fillText(s.n,cx,y+23);
+if(i<stages.length-1&&ap>.5){ctx.strokeStyle=s.c+'66';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,y+bh);ctx.lineTo(cx,y+bh+gap);ctx.stroke()}
+const rateDelay=s.t+.1;const rp=ease(Math.max(0,Math.min(1,(p-rateDelay)/.15)));
+if(rp>0){const pct=['60%','25%','10%','5%'][i];ctx.fillStyle=`rgba(76,175,80,${rp})`;ctx.font='11px PingFang SC';ctx.textAlign='left';
+ctx.fillText(`→ ${pct} 到达`,cx+bw/2+10,y+23);ctx.textAlign='center'}
+ctx.globalAlpha=1;y+=bh+gap}
+if(p>.85){ctx.font='12px PingFang SC';ctx.fillStyle=`rgba(239,154,154,${ease((p-.85)/.15)})`;ctx.fillText('逐级过滤：大部分请求被前两级快速处理',cx,y+15)}
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),duration=2000;function tick(now){animProgress=Math.min(1,(now-start)/duration);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;
+const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';
+document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const s=document.createElement('span');if(i===currentStep)s.className='active';s.onclick=()=>{currentStep=i;updateUI();startAnim()};d.appendChild(s)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

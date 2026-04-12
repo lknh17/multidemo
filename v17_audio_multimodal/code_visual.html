@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V17 - 音频理解与全模态模型：代码讲解</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;overflow-x:hidden}
+.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}
+.badge{background:linear-gradient(135deg,#e040fb,#7c4dff);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px}
+.title{font-size:18px;font-weight:600;flex:1}
+.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}
+.dots{display:flex;gap:6px;margin-left:16px}
+.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}
+.dot.active{background:#e040fb;box-shadow:0 0 8px #e040fb}
+.dot.done{background:#7c4dff}
+.main{display:flex;height:calc(100vh - 136px);overflow:hidden}
+.code-panel{flex:4;padding:16px;overflow-y:auto;background:#0d1117;border-right:1px solid #222;font-family:'Courier New',monospace;font-size:13px;line-height:1.6}
+.code-line{padding:2px 8px;border-radius:3px;white-space:pre}.code-line.highlight{background:#e040fb22;border-left:3px solid #e040fb}
+.kw{color:#ff79c6}.fn{color:#50fa7b}.st{color:#f1fa8c}.cm{color:#6272a4}.num{color:#bd93f9}.op{color:#ff79c6}.ty{color:#8be9fd}
+.canvas-area{flex:6;position:relative;display:flex;align-items:center;justify-content:center;background:#111827}
+canvas{border-radius:8px}
+.info-box{position:absolute;bottom:16px;left:16px;right:16px;background:#1a1e2eee;border:1px solid #333;border-radius:8px;padding:12px 16px}
+.info-title{font-size:14px;font-weight:700;color:#e040fb;margin-bottom:6px}
+.info-text{font-size:13px;line-height:1.6;color:#ccc}
+.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}
+.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}
+.btn:hover{border-color:#e040fb;box-shadow:0 0 12px rgba(224,64,251,.3);transform:scale(1.05)}
+.btn:disabled{opacity:.3;cursor:default;transform:none;box-shadow:none}
+.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header">
+<span class="badge">V17</span>
+<span class="title">音频理解与全模态模型</span>
+<span class="page-type">代码讲解</span>
+<div class="dots" id="dots"></div>
+</div>
+<div class="main">
+<div class="code-panel" id="codePanel"></div>
+<div class="canvas-area"><canvas id="canvas"></canvas>
+<div class="info-box"><div class="info-title" id="infoTitle"></div><div class="info-text" id="infoText"></div></div>
+</div>
+</div>
+<div class="controls">
+<button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button>
+<div class="step-counter" id="stepCounter">Step 1/6</div>
+<button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button>
+<button class="btn" onclick="replay()">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-120}
+window.addEventListener('resize',resize);resize();
+
+const steps=[
+{title:"MelSpectrogramExtractor.forward",
+info:"Mel 频谱提取：STFT → 功率谱 → Mel 滤波 → 对数",
+code:[
+{text:'def forward(self, waveform):',hl:true},
+{text:'    # waveform: [B, T] 原始音频',hl:false},
+{text:'    ',hl:false},
+{text:'    # 1. STFT — 短时傅里叶变换',hl:true},
+{text:'    window = torch.hann_window(self.n_fft)',hl:false},
+{text:'    stft = torch.stft(waveform, self.n_fft,',hl:false},
+{text:'        self.hop_length, window=window,',hl:false},
+{text:'        return_complex=True)',hl:false},
+{text:'    # stft: [B, n_fft//2+1, T\']',hl:false},
+{text:'    ',hl:false},
+{text:'    # 2. 功率谱',hl:true},
+{text:'    power = stft.abs() ** 2  # [B, F, T\']',hl:false},
+{text:'    ',hl:false},
+{text:'    # 3. Mel 滤波',hl:true},
+{text:'    mel = torch.matmul(self.mel_filters, power)',hl:false},
+{text:'    # mel_filters: [n_mels, F]',hl:false},
+{text:'    # mel: [B, n_mels, T\']',hl:false},
+{text:'    ',hl:false},
+{text:'    # 4. 取对数',hl:true},
+{text:'    log_mel = torch.log(mel + 1e-9)',hl:false},
+{text:'    return log_mel  # [B, 128, T\']',hl:false}],
+render(p){drawMelFlow(p)}},
+
+{title:"AudioPatchEmbed + 2D Position",
+info:"将 Mel 频谱切分为 2D patch 并添加分离式位置编码",
+code:[
+{text:'class AudioPatchEmbed(nn.Module):',hl:false},
+{text:'    def __init__(self, n_mels, tp, fp, d):',hl:false},
+{text:'        # 2D 卷积实现 patch 切分',hl:true},
+{text:'        self.proj = nn.Conv2d(1, d,',hl:true},
+{text:'            kernel_size=(fp, tp),',hl:false},
+{text:'            stride=(fp, tp))',hl:false},
+{text:'',hl:false},
+{text:'    def forward(self, mel):',hl:true},
+{text:'        # mel: [B, 128, T]',hl:false},
+{text:'        x = mel.unsqueeze(1)',hl:false},
+{text:'        # → [B, 1, 128, T]',hl:false},
+{text:'        x = self.proj(x)',hl:true},
+{text:'        # → [B, D, 8, T/16]  (fp=16, tp=16)',hl:false},
+{text:'        x = x.flatten(2).transpose(1,2)',hl:true},
+{text:'        # → [B, N_patches, D]',hl:false},
+{text:'',hl:false},
+{text:'# 位置编码: 频率+时间分离',hl:true},
+{text:'pos = freq_pe[:, :Nf].unsqueeze(2)',hl:false},
+{text:'    + time_pe[:, :Nt].unsqueeze(1)',hl:false},
+{text:'# → [1, Nf, Nt, D] → reshape → [1, N, D]',hl:false}],
+render(p){drawPatchEmbed(p)}},
+
+{title:"AudioSpectrogramTransformer.forward",
+info:"AST 完整前向传播：Patch → CLS → PE → Transformer → 表征",
+code:[
+{text:'def forward(self, mel_spec):',hl:true},
+{text:'    # 1. Patch Embedding',hl:true},
+{text:'    patches, Nf, Nt = self.patch_embed(mel_spec)',hl:false},
+{text:'    # patches: [B, N, D]',hl:false},
+{text:'',hl:false},
+{text:'    # 2. 加 CLS token',hl:true},
+{text:'    cls = self.cls_token.expand(B, -1, -1)',hl:false},
+{text:'    x = torch.cat([cls, patches], dim=1)',hl:false},
+{text:'    # → [B, 1+N, D]',hl:false},
+{text:'',hl:false},
+{text:'    # 3. 2D 位置编码',hl:true},
+{text:'    pe = freq_pe ⊕ time_pe  # 外积',hl:false},
+{text:'    x = x + [cls_pe; pe]',hl:false},
+{text:'',hl:false},
+{text:'    # 4. Transformer 编码',hl:true},
+{text:'    for block in self.blocks:',hl:false},
+{text:'        x = block(x)  # Self-Attn + FFN',hl:false},
+{text:'',hl:false},
+{text:'    # 5. 取 CLS 作为音频表征',hl:true},
+{text:'    return self.norm(x[:, 0])  # [B, D]',hl:false}],
+render(p){drawASTForward(p)}},
+
+{title:"CLAPModel.forward: 对比学习",
+info:"CLAP 双塔编码 → 投影归一化 → 对称 InfoNCE Loss",
+code:[
+{text:'def forward(self, mel_spec, token_ids):',hl:true},
+{text:'    # 音频塔',hl:true},
+{text:'    audio_feat = self.audio_encoder(mel_spec)',hl:false},
+{text:'    audio_proj = self.audio_proj(audio_feat)',hl:false},
+{text:'    audio_proj = F.normalize(audio_proj, dim=-1)',hl:false},
+{text:'',hl:false},
+{text:'    # 文本塔',hl:true},
+{text:'    text_feat = self.text_encoder(token_ids)',hl:false},
+{text:'    text_proj = self.text_proj(text_feat)',hl:false},
+{text:'    text_proj = F.normalize(text_proj, dim=-1)',hl:false},
+{text:'',hl:false},
+{text:'    # 相似度矩阵',hl:true},
+{text:'    logits = audio_proj @ text_proj.T',hl:false},
+{text:'    logits = logits * temperature',hl:false},
+{text:'',hl:false},
+{text:'    # 对称 InfoNCE',hl:true},
+{text:'    labels = torch.arange(B)',hl:false},
+{text:'    loss = (CE(logits, labels)',hl:false},
+{text:'          + CE(logits.T, labels)) / 2',hl:false}],
+render(p){drawCLAPForward(p)}},
+
+{title:"OmniModalQFormer.forward: 全模态融合",
+info:"Q-Former 用可学习 Query 聚合多模态 token",
+code:[
+{text:'def forward(self, img, txt, aud):',hl:true},
+{text:'    # 投影 + 模态类型标记',hl:true},
+{text:'    tokens = []',hl:false},
+{text:'    if img is not None:',hl:false},
+{text:'        tokens.append(img_proj(img)+img_type)',hl:false},
+{text:'    if txt is not None:',hl:false},
+{text:'        tokens.append(txt_proj(txt)+txt_type)',hl:false},
+{text:'    if aud is not None:',hl:false},
+{text:'        tokens.append(aud_proj(aud)+aud_type)',hl:false},
+{text:'',hl:false},
+{text:'    # 拼接 KV',hl:true},
+{text:'    kv = torch.cat(tokens, dim=1)',hl:false},
+{text:'    # kv: [B, N_total, D]',hl:false},
+{text:'',hl:false},
+{text:'    # Cross-Attention 融合',hl:true},
+{text:'    queries = self.query_tokens  # [1,M,D]',hl:false},
+{text:'    for layer in self.cross_layers:',hl:false},
+{text:'        queries = layer(queries, kv)',hl:false},
+{text:'',hl:false},
+{text:'    return queries.mean(dim=1)  # [B,D]',hl:true}],
+render(p){drawQFormerForward(p)}},
+
+{title:"ModalityDropout + OmniModalModel",
+info:"模态随机丢弃训练 + 端到端全模态分类",
+code:[
+{text:'class ModalityDropout(nn.Module):',hl:false},
+{text:'    def forward(self, img, txt, aud, p=0.1):',hl:true},
+{text:'        if self.training:',hl:false},
+{text:'            keep_img = random() > p',hl:true},
+{text:'            keep_txt = random() > p',hl:false},
+{text:'            keep_aud = random() > p',hl:false},
+{text:'            # 至少保留一个模态',hl:true},
+{text:'            if not any: keep_txt = True',hl:false},
+{text:'        return img, txt, aud',hl:false},
+{text:'',hl:false},
+{text:'class OmniModalModel(nn.Module):',hl:false},
+{text:'    def forward(self, img, tokens, mel):',hl:true},
+{text:'        i = self.vision_enc(img)',hl:false},
+{text:'        t = self.text_enc(tokens)',hl:false},
+{text:'        a = self.audio_enc(mel)',hl:false},
+{text:'        i,t,a = self.mod_drop(i,t,a)',hl:true},
+{text:'        fused = self.qformer(i,t,a)',hl:true},
+{text:'        logits = self.classifier(fused)',hl:true},
+{text:'        return {\'logits\': logits}',hl:false}],
+render(p){drawOmniForward(p)}}
+];
+
+function drawRR(x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill()}if(stroke){ctx.strokeStyle=stroke;ctx.stroke()}}
+function drawArr(x1,y1,x2,y2,c='#555'){const a=Math.atan2(y2-y1,x2-x1),l=7;ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.fillStyle=c;ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-l*Math.cos(a-0.3),y2-l*Math.sin(a-0.3));ctx.lineTo(x2-l*Math.cos(a+0.3),y2-l*Math.sin(a+0.3));ctx.fill()}
+function label(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+function drawMelFlow(p){ctx.clearRect(0,0,W,H);
+const stages=[{name:'waveform\n[B, T]',x:30,c:'#00e5ff'},{name:'STFT\n[B, F, T\']',x:W*0.25,c:'#e040fb'},{name:'|X|²\n[B, F, T\']',x:W*0.45,c:'#7c4dff'},{name:'Mel Filter\n[B, 128, T\']',x:W*0.65,c:'#ff9800'},{name:'log\n[B, 128, T\']',x:W*0.85,c:'#00e5ff'}];
+const cy=H/2-30;
+stages.forEach((s,i)=>{const prog=Math.min(1,p*(stages.length)/(i+1));if(prog<=0)return;ctx.globalAlpha=Math.min(1,prog);drawRR(s.x,cy-25,W*0.15,50,8,'#1a1e2e',s.c);const lines=s.name.split('\n');label(lines[0],s.x+W*0.075,cy,s.c,12);if(lines[1])label(lines[1],s.x+W*0.075,cy+16,'#888',10);if(i>0)drawArr(stages[i-1].x+W*0.15+5,cy,s.x-5,cy,s.c);ctx.globalAlpha=1})}
+
+function drawPatchEmbed(p){ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=H/2-30;
+// Mel input
+drawRR(20,cy-30,100,60,6,'#1a1e2e','#00e5ff');label('[B,128,T]',70,cy+5,'#00e5ff',11);
+if(p>0.2){drawArr(125,cy,165,cy,'#e040fb');drawRR(170,cy-30,100,60,6,'#1a1e2e','#e040fb');label('unsqueeze',220,cy-5,'#e040fb',10);label('[B,1,128,T]',220,cy+12,'#888',9)}
+if(p>0.4){drawArr(275,cy,315,cy,'#7c4dff');drawRR(320,cy-30,110,60,6,'#1a1e2e','#7c4dff');label('Conv2d',375,cy-5,'#7c4dff',11);label('[B,D,8,T/16]',375,cy+12,'#888',9)}
+if(p>0.6){drawArr(435,cy,475,cy,'#ff9800');drawRR(480,cy-30,120,60,6,'#1a1e2e','#ff9800');label('flatten+T',540,cy-5,'#ff9800',11);label('[B,N,D]',540,cy+12,'#888',9)}
+if(p>0.8){const py=cy+60;label('+ 2D Position Encoding',cx,py+10,'#e040fb',13);label('freq_pe[:, :Nf] ⊕ time_pe[:, :Nt]',cx,py+30,'#aaa',11)}}
+
+function drawASTForward(p){ctx.clearRect(0,0,W,H);
+const cx=W/2,cy=30;let y=cy;
+const steps=[
+{name:'Mel [B,128,T]',c:'#00e5ff',h:30},
+{name:'Patch Embed → [B,N,D]',c:'#e040fb',h:30},
+{name:'+ CLS → [B,1+N,D]',c:'#7c4dff',h:30},
+{name:'+ 2D PE',c:'#ff9800',h:30},
+{name:'Transformer ×4',c:'#e040fb',h:40},
+{name:'CLS output → [B,D]',c:'#00e5ff',h:30}];
+steps.forEach((s,i)=>{const prog=Math.min(1,p*(steps.length+1)/(i+1));if(prog<=0)return;ctx.globalAlpha=Math.min(1,prog);drawRR(cx-90,y,180,s.h,6,'#1a1e2e',s.c);label(s.name,cx,y+s.h/2+4,s.c,11);if(i>0)drawArr(cx,y-5,cx,y,'#555');y+=s.h+20;ctx.globalAlpha=1})}
+
+function drawCLAPForward(p){ctx.clearRect(0,0,W,H);
+const cx=W/2;
+// Two towers
+const aX=cx-120,tX=cx+120,ty=20;
+if(p>0){drawRR(aX-60,ty,120,30,6,'#e040fb33','#e040fb');label('AST',aX,ty+20,'#e040fb');drawRR(tX-60,ty,120,30,6,'#7c4dff33','#7c4dff');label('TextEnc',tX,ty+20,'#7c4dff')}
+if(p>0.2){drawArr(aX,ty+35,aX,ty+55,'#e040fb');drawRR(aX-50,ty+60,100,25,4,'#1a1e2e','#e040fb');label('Proj+Norm',aX,ty+77,'#e040fb',10);
+drawArr(tX,ty+35,tX,ty+55,'#7c4dff');drawRR(tX-50,ty+60,100,25,4,'#1a1e2e','#7c4dff');label('Proj+Norm',tX,ty+77,'#7c4dff',10)}
+if(p>0.5){const my=ty+110;label('Similarity = a @ t.T × τ',cx,my,'#ff9800',13);
+const N=4,s=25;for(let i=0;i<N;i++)for(let j=0;j<N;j++){const v=i===j?0.8:0.2;const r=Math.floor(v*200+50),g=50,b=Math.floor((1-v)*200);ctx.fillStyle=`rgb(${r},${g},${b})`;ctx.fillRect(cx-N*s/2+j*s,my+15+i*s,s-2,s-2)}}
+if(p>0.8){const ly=ty+230;label('Loss = ½(CE(sim,I) + CE(sim.T,I))',cx,ly,'#00e5ff',12)}}
+
+function drawQFormerForward(p){ctx.clearRect(0,0,W,H);
+const cx=W/2,y=20;
+// Three inputs
+const inputs=[{x:cx-150,c:'#e040fb',n:'Img'},{x:cx,c:'#7c4dff',n:'Txt'},{x:cx+150,c:'#00e5ff',n:'Aud'}];
+inputs.forEach(i=>{drawRR(i.x-35,y,70,25,4,'#1a1e2e',i.c);label(i.n,i.x,y+17,i.c,11)});
+if(p>0.2){inputs.forEach(i=>{drawArr(i.x,y+30,i.x,y+55,i.c);label('+type',i.x+30,y+45,i.c,9)});
+drawArr(cx-150,y+55,cx,y+75,'#555');drawArr(cx,y+55,cx,y+75,'#555');drawArr(cx+150,y+55,cx,y+75,'#555');
+drawRR(cx-80,y+80,160,25,4,'#1a1e2e','#aaa');label('KV = concat [B,N_total,D]',cx,y+97,'#aaa',10)}
+if(p>0.5){drawRR(cx-120,y+130,60,25,4,'#ff9800','#ff9800');label('Q(32)',cx-90,y+147,'#fff',10);
+drawArr(cx-55,y+142,cx-30,y+142,'#ff9800');
+drawRR(cx-30,y+125,130,35,6,'#1a1e2e','#e040fb');label('CrossAttn×3',cx+35,y+147,'#e040fb',11);
+drawArr(cx,y+107,cx+35,y+125,'#aaa')}
+if(p>0.8){drawArr(cx+105,y+142,cx+140,y+142,'#00e5ff');drawRR(cx+145,y+130,100,25,4,'#00e5ff33','#00e5ff');label('mean→[B,D]',cx+195,y+147,'#00e5ff',10)}}
+
+function drawOmniForward(p){ctx.clearRect(0,0,W,H);
+const cx=W/2,y=15;
+// Encoders
+const encs=[{x:cx-150,c:'#e040fb',n:'ViT(img)'},{x:cx,c:'#7c4dff',n:'TxtEnc'},{x:cx+150,c:'#00e5ff',n:'AST(mel)'}];
+encs.forEach(e=>{drawRR(e.x-45,y,90,25,4,'#1a1e2e',e.c);label(e.n,e.x,y+17,e.c,10)});
+if(p>0.2){drawArr(cx,y+30,cx,y+50,'#555');drawRR(cx-60,y+55,120,25,4,'#ff9800','#ff9800');label('ModDrop(p=0.1)',cx,y+72,'#fff',10)}
+if(p>0.5){drawArr(cx,y+85,cx,y+100,'#555');drawRR(cx-50,y+105,100,30,6,'#1a1e2e','#e040fb');label('Q-Former',cx,y+125,'#e040fb',12)}
+if(p>0.7){drawArr(cx,y+140,cx,y+155,'#555');drawRR(cx-50,y+160,100,25,4,'#1a1e2e','#7c4dff');label('Classifier',cx,y+177,'#7c4dff',11)}
+if(p>0.9){drawArr(cx,y+190,cx,y+205,'#00e5ff');label('logits [B,C]',cx,y+220,'#00e5ff',12)}}
+
+// Code rendering
+function renderCode(){const panel=document.getElementById('codePanel');panel.innerHTML='';steps[currentStep].code.forEach(line=>{const div=document.createElement('div');div.className='code-line'+(line.hl?' highlight':'');div.innerHTML=line.text.replace(/\b(def|class|self|return|for|if|not|in|import|from|None|True|False|and|or)\b/g,'<span class="kw">$1</span>').replace(/(#.*)/g,'<span class="cm">$1</span>').replace(/(\d+\.?\d*)/g,'<span class="num">$1</span>');panel.appendChild(div)})}
+
+function animate(){animProgress+=0.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}
+function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('infoTitle').textContent=steps[currentStep].title;document.getElementById('infoText').textContent=steps[currentStep].info;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))});renderCode()}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});
+init();
+</script>
+</body>
+</html>

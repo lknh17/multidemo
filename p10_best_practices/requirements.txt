@@ -1,0 +1,7 @@
+# p10 最佳实践总结 — 依赖
+torch>=2.0.0
+transformers>=4.36.0
+datasets>=2.14.0
+accelerate>=0.25.0
+tqdm>=4.65.0
+numpy>=1.24.0

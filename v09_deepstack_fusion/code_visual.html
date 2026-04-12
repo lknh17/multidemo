@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v09 DeepStack 深层融合 - 代码可视化</title>
+<style>
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:14px; color:var(--warn); text-align:left; line-height:1.8; white-space:pre-wrap; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v09</span>
+  <h1>DeepStack 深层融合</h1>
+  <span class="tag">代码可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/5</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'MultiLayerEncoder.forward_with_intermediates',
+    desc: '<strong>MultiLayerEncoder</strong> 继承自 nn.Module，包含多个 TransformerEncoderLayer。<br><br>核心方法 <strong>forward_with_intermediates</strong>：<br>1. 可选的 input_proj 对输入做投影<br>2. 逐层执行 TransformerEncoderLayer<br>3. 在 <strong>extract_layers</strong> 指定的层，保存中间特征<br>4. 取 CLS token（x[:,0]）作为该层的表示<br>5. 最终做 LayerNorm 输出',
+    formula: 'def forward_with_intermediates(x, extract_layers):\n  if self.input_proj: x = input_proj(x)\n  intermediates = {}\n  for i, layer in enumerate(self.layers):\n    x = layer(x)  # TransformerEncoderLayer\n    if i in extract_layers:\n      intermediates[i] = x[:, 0]  # CLS token\n  x = self.norm(x)\n  return x, intermediates' },
+  { title: 'ConcatFusion / WeightedSumFusion',
+    desc: '<strong>ConcatFusion</strong>：将所有层的特征在最后维度拼接，然后线性投影降维。<br>• 输入：list of [B, D] → cat → [B, D*num_layers] → proj → [B, embed_dim]<br><br><strong>WeightedSumFusion</strong>：可学习权重 softmax 归一化后加权求和。<br>• weights 初始化为均匀分布<br>• softmax(weights) → 加权和 → 投影<br>• 好处：自动学习哪些层更重要',
+    formula: '# ConcatFusion\ndef forward(layer_features):\n  return self.proj(cat(layer_features, dim=-1))\n\n# WeightedSumFusion  \ndef forward(layer_features):\n  w = softmax(self.weights, dim=0)\n  stacked = stack(layer_features, dim=0)\n  fused = (stacked * w.view(-1,1,1)).sum(0)\n  return self.proj(fused)' },
+  { title: 'AttentionFusion：可学习 query 聚合',
+    desc: '<strong>AttentionFusion</strong> 用可学习的 query token 通过多头注意力聚合各层特征：<br><br>1. <strong>query</strong>: nn.Parameter [1, 1, D]，可学习参数<br>2. 各层特征 stack 为 KV：[B, num_layers, D]<br>3. query expand 到 batch: [B, 1, D]<br>4. <strong>MultiheadAttention</strong>(Q=query, KV=层特征) → [B, 1, D]<br>5. squeeze + 线性投影 → [B, embed_dim]<br><br>注意力权重自动学习各层的重要性。',
+    formula: '# AttentionFusion\ndef forward(layer_features):\n  B = layer_features[0].size(0)\n  kv = stack(layer_features, dim=1)  # [B, n, D]\n  q = self.query.expand(B, -1, -1)  # [B, 1, D]\n  out, _ = self.attn(q, kv, kv)     # [B, 1, D]\n  return self.proj(out.squeeze(1))   # [B, embed_dim]' },
+  { title: 'GatedFusion：门控选择性融合',
+    desc: '<strong>GatedFusion</strong> 为每层特征设计独立的门控网络：<br><br>1. 每层有一个 gate = Linear + Sigmoid<br>2. gate(feat) 输出 [0,1] 范围的门控值<br>3. <strong>gated_feat = σ(gate(feat)) × feat</strong>：选择性保留信息<br>4. 所有层的 gated_feat 求平均<br>5. 投影到 embed_dim<br><br>门控值接近 0 → 抑制该层；接近 1 → 保留该层。网络自动学习每层每个维度的重要性。',
+    formula: '# GatedFusion\ndef forward(layer_features):\n  gated = []\n  for gate, feat in zip(self.gates, layer_features):\n    g = gate(feat)  # Linear→Sigmoid → [B,D]\n    gated.append(g * feat)  # 门控选择\n  fused = sum(gated) / len(gated)  # 平均\n  return self.proj(fused)  # [B, embed_dim]' },
+  { title: 'DeepStackModel.forward 完整数据流',
+    desc: '<strong>DeepStackModel.forward(images, input_ids)</strong> 的完整流程：<br><br>1. <strong>图像路径</strong>：PatchEmbed → +CLS → +PosEmbed → forward_with_intermediates<br>2. <strong>文本路径</strong>：TokenEmbed → +PosEmbed → forward_with_intermediates → mean pooling<br>3. <strong>各层 embedding</strong>：每层 intermediate 经过各自投影头 + L2 normalize<br>4. <strong>融合 embedding</strong>：intermediate 送入 fusion module + L2 normalize<br>5. <strong>输出</strong>：layer_img/txt_embs, fused_img/txt, logit_scale<br>6. <strong>Loss</strong>：各层 InfoNCE + 融合层 InfoNCE',
+    formula: '# DeepStackModel.forward\nimages → patch_embed → +cls → +pos\n  → img_encoder.forward_with_intermediates\n  → img_intermediates\n\ninput_ids → tok_embed → +pos\n  → txt_encoder.forward_with_intermediates\n  → txt_intermediates (mean pooling)\n\nfor i, layer_idx in enumerate(layer_indices):\n  img_emb_i = normalize(proj_i(img_inter[l]))\n  txt_emb_i = normalize(proj_i(txt_inter[l]))\n\nfused_img = normalize(fusion(img_feats))\nfused_txt = normalize(fusion(txt_feats))' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+function drawArrow(x1,y1,x2,y2,color,alpha){
+  ctx.globalAlpha=alpha; ctx.strokeStyle=color; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  const a=Math.atan2(y2-y1,x2-x1);
+  ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a-.3),y2-8*Math.sin(a-.3)); ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a+.3),y2-8*Math.sin(a+.3)); ctx.stroke();
+  ctx.globalAlpha=1;
+}
+function drawBox(x,y,w,h,label,color,alpha){
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle=color+'22'; ctx.strokeStyle=color;
+  drawRoundRect(x,y,w,h,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle=color; ctx.font='12px PingFang SC'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  const lines=label.split('\n');
+  lines.forEach((l,i)=>ctx.fillText(l,x+w/2,y+h/2+(i-(lines.length-1)/2)*14));
+  ctx.globalAlpha=1;
+}
+function drawData(x,y,w,h,label,color,alpha){
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle=color+'33';
+  ctx.beginPath();
+  ctx.moveTo(x+10,y); ctx.lineTo(x+w-10,y); ctx.lineTo(x+w,y+h/2); ctx.lineTo(x+w-10,y+h); ctx.lineTo(x+10,y+h); ctx.lineTo(x,y+h/2); ctx.closePath();
+  ctx.fill(); ctx.strokeStyle=color; ctx.stroke();
+  ctx.fillStyle=color; ctx.font='11px Courier New'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label,x+w/2,y+h/2);
+  ctx.globalAlpha=1;
+}
+
+// Step 0: forward_with_intermediates
+function renderStep0(p) {
+  const cx=W/2, startY=20;
+  const layers=6, layerH=28, gap=6;
+  const extractLayers=[1,3,5];
+  const colors=['#EF4444','#F59E0B','#6C5CE7'];
+  
+  // Input
+  const ip=easeInOut(Math.min(1,p/.15));
+  drawData(cx-50,startY,100,25,'x [B,L,D]','#94A3B8',ip);
+  
+  // input_proj
+  if(p>.1){
+    const pp=easeInOut(Math.max(0,Math.min(1,(p-.1)/.1)));
+    drawBox(cx-40,startY+32,80,22,'input_proj','#64748B',pp);
+    drawArrow(cx,startY+25,cx,startY+32,'#94A3B8',pp*.5);
+  }
+  
+  // Layers
+  for(let i=0;i<layers;i++){
+    const delay=.15+i*.08;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const y=startY+62+i*(layerH+gap);
+    const isExtract=extractLayers.includes(i);
+    const color=isExtract?colors[extractLayers.indexOf(i)]:'#64748B';
+    
+    drawBox(cx-50,y,100,layerH,`TransformerLayer ${i}`,color,ap);
+    
+    if(i>0) drawArrow(cx,y-gap,cx,y,color,ap*.4);
+    
+    // Extract branch
+    if(isExtract && p>delay+.1){
+      const ep=easeInOut(Math.max(0,Math.min(1,(p-delay-.1)/.15)));
+      const ei=extractLayers.indexOf(i);
+      drawArrow(cx+55,y+layerH/2,cx+90,y+layerH/2,color,ep);
+      drawData(cx+95,y+2,90,layerH-4,`inter[${i}]=x[:,0]`,color,ep);
+      
+      // Store icon
+      ctx.globalAlpha=ep;
+      ctx.fillStyle=color; ctx.font='bold 11px PingFang SC'; ctx.textAlign='left';
+      ctx.fillText('→ 保存到 dict',cx+190,y+layerH/2+4);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Final norm
+  if(p>.8){
+    const np=easeInOut((p-.8)/.15);
+    const ny=startY+62+layers*(layerH+gap)+5;
+    drawBox(cx-40,ny,80,22,'LayerNorm','#00B894',np);
+    drawArrow(cx,ny-gap-5,cx,ny,'#00B894',np*.4);
+    
+    // Output
+    drawData(cx-50,ny+30,100,25,'return x, inter','#00B894',np);
+  }
+}
+
+// Step 1: ConcatFusion / WeightedSumFusion
+function renderStep1(p) {
+  const halfW=W/2;
+  
+  // === Left: ConcatFusion ===
+  const lx=halfW/2;
+  const lp0=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=lp0; ctx.fillStyle='#EF4444'; ctx.font='bold 15px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText('ConcatFusion',lx,20); ctx.globalAlpha=1;
+  
+  // Input features
+  const feats=3, featW=70, featH=24, fy=35;
+  for(let i=0;i<feats;i++){
+    const delay=.05+i*.05;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    drawData(lx-35,fy+i*(featH+6),featW,featH,`[B,${128}]`,['#EF4444','#F59E0B','#6C5CE7'][i],ap);
+  }
+  
+  // Cat operation
+  if(p>.25){
+    const cp=easeInOut(Math.max(0,Math.min(1,(p-.25)/.2)));
+    const catY=fy+feats*(featH+6)+10;
+    drawArrow(lx,catY-10,lx,catY,'#F59E0B',cp*.5);
+    drawData(lx-55,catY,110,featH,`cat → [B,${128*3}]`,'#F59E0B',cp);
+    
+    // Proj
+    if(p>.4){
+      const pp=easeInOut(Math.max(0,Math.min(1,(p-.4)/.15)));
+      drawArrow(lx,catY+featH+2,lx,catY+featH+12,'#EF4444',pp*.5);
+      drawBox(lx-40,catY+featH+14,80,24,'Linear proj','#EF4444',pp);
+      drawData(lx-35,catY+featH+46,70,featH,'[B,256]','#00B894',pp);
+    }
+  }
+  
+  // === Right: WeightedSumFusion ===
+  const rx=halfW+halfW/2;
+  const rp0=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=rp0; ctx.fillStyle='#F59E0B'; ctx.font='bold 15px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText('WeightedSumFusion',rx,20); ctx.globalAlpha=1;
+  
+  // Input features + weights
+  for(let i=0;i<feats;i++){
+    const delay=.05+i*.05;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    drawData(rx-55,fy+i*(featH+6),70,featH,`[B,${128}]`,['#EF4444','#F59E0B','#6C5CE7'][i],ap);
+    
+    // Weight
+    if(p>.2){
+      const wp=easeInOut(Math.max(0,Math.min(1,(p-.2-i*.05)/.15)));
+      ctx.globalAlpha=wp; ctx.fillStyle='#F59E0B'; ctx.font='12px Courier New'; ctx.textAlign='left';
+      const w=[0.25,0.35,0.40][i];
+      ctx.fillText(`× ${w.toFixed(2)}`,rx+25,fy+i*(featH+6)+featH/2+4);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Softmax + weighted sum
+  if(p>.35){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-.35)/.2)));
+    const sumY=fy+feats*(featH+6)+10;
+    drawBox(rx-45,sumY-5,90,24,'softmax(w)→Σ','#F59E0B',sp);
+    drawData(rx-35,sumY+25,70,featH,'[B,128]','#F59E0B',sp);
+    
+    if(p>.55){
+      const pp=easeInOut(Math.max(0,Math.min(1,(p-.55)/.15)));
+      drawBox(rx-40,sumY+55,80,24,'Linear proj','#F59E0B',pp);
+      drawData(rx-35,sumY+85,70,featH,'[B,256]','#00B894',pp);
+    }
+  }
+  
+  // Divider
+  ctx.strokeStyle='rgba(255,255,255,.1)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(halfW,0); ctx.lineTo(halfW,H); ctx.stroke();
+}
+
+// Step 2: AttentionFusion
+function renderStep2(p) {
+  const cx=W/2, startY=20;
+  
+  // Title
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=tp; ctx.fillStyle='#0984E3'; ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText('AttentionFusion 数据流',cx,startY); ctx.globalAlpha=1;
+  
+  // Layer features as KV
+  const feats=3, featW=80, featH=28, kvX=cx-120, kvY=50;
+  for(let i=0;i<feats;i++){
+    const delay=.1+i*.06;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    drawData(kvX,kvY+i*(featH+8),featW,featH,`feat_${i+1} [B,D]`,['#EF4444','#F59E0B','#6C5CE7'][i],ap);
+  }
+  
+  // Stack → KV
+  if(p>.3){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-.3)/.15)));
+    const stackY=kvY+feats*(featH+8)+10;
+    drawBox(kvX-5,stackY,90,25,'stack → KV','#94A3B8',sp);
+    ctx.globalAlpha=sp; ctx.fillStyle='#94A3B8'; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText('[B, 3, D]',kvX+40,stackY+38);
+    ctx.globalAlpha=1;
+    
+    for(let i=0;i<feats;i++) drawArrow(kvX+featW/2,kvY+i*(featH+8)+featH,kvX+40,stackY,['#EF4444','#F59E0B','#6C5CE7'][i],sp*.3);
+  }
+  
+  // Learnable query
+  if(p>.35){
+    const qp=easeInOut(Math.max(0,Math.min(1,(p-.35)/.15)));
+    const qX=cx+60, qY=kvY+20;
+    ctx.globalAlpha=qp;
+    ctx.fillStyle='#0984E3'+'33'; ctx.strokeStyle='#0984E3';
+    ctx.beginPath(); ctx.arc(qX,qY,20,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#0984E3'; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('Q',qX,qY+5);
+    ctx.font='11px Courier New';
+    ctx.fillText('nn.Parameter',qX,qY+35);
+    ctx.fillText('[1, 1, D]',qX,qY+50);
+    ctx.globalAlpha=1;
+  }
+  
+  // MultiheadAttention
+  if(p>.5){
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.5)/.2)));
+    const attnX=cx-30, attnY=kvY+feats*(featH+8)+60;
+    drawBox(attnX,attnY,120,35,'MultiheadAttention\n(Q, KV, KV)','#0984E3',ap);
+    
+    drawArrow(kvX+40,kvY+feats*(featH+8)+48,attnX+30,attnY,'#94A3B8',ap*.4);
+    drawArrow(cx+60,kvY+70,attnX+90,attnY,'#0984E3',ap*.4);
+    
+    // Output
+    if(p>.7){
+      const op=easeInOut(Math.max(0,Math.min(1,(p-.7)/.15)));
+      drawData(attnX+10,attnY+45,100,25,'[B, 1, D]','#0984E3',op);
+      
+      // Squeeze + proj
+      if(p>.8){
+        const fp=easeInOut(Math.max(0,Math.min(1,(p-.8)/.1)));
+        drawBox(attnX+15,attnY+78,90,24,'squeeze + proj','#00B894',fp);
+        drawData(attnX+20,attnY+110,80,25,'[B, embed_dim]','#00B894',fp);
+      }
+    }
+  }
+}
+
+// Step 3: GatedFusion
+function renderStep3(p) {
+  const cx=W/2, startY=20;
+  
+  ctx.globalAlpha=easeInOut(Math.min(1,p/.15));
+  ctx.fillStyle='#6C5CE7'; ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText('GatedFusion 门控选择性融合',cx,startY);
+  ctx.globalAlpha=1;
+  
+  const feats=3, colors=['#EF4444','#F59E0B','#6C5CE7'];
+  const colW=W/3;
+  
+  for(let i=0;i<feats;i++){
+    const delay=i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const mx=colW/2+i*colW;
+    
+    // Input feature
+    drawData(mx-40,45,80,25,`feat_${i+1} [B,D]`,colors[i],ap);
+    
+    // Gate network
+    if(p>delay+.15){
+      const gp=easeInOut(Math.max(0,Math.min(1,(p-delay-.15)/.15)));
+      drawBox(mx-35,85,70,22,'Linear','#94A3B8',gp);
+      drawArrow(mx,70,mx,85,colors[i],gp*.4);
+      
+      drawBox(mx-35,115,70,22,'Sigmoid σ','#F59E0B',gp);
+      drawArrow(mx,107,mx,115,'#94A3B8',gp*.4);
+      
+      // Gate value bar
+      if(p>delay+.25){
+        const vp=easeInOut(Math.max(0,Math.min(1,(p-delay-.25)/.15)));
+        const gateV=[0.3,0.85,0.95][i];
+        ctx.globalAlpha=vp;
+        ctx.fillStyle='rgba(255,255,255,.1)';
+        drawRoundRect(mx-30,145,60,14,4); ctx.fill();
+        ctx.fillStyle=colors[i]+'88';
+        drawRoundRect(mx-30,145,60*gateV,14,4); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='10px Courier New'; ctx.textAlign='center';
+        ctx.fillText(`gate=${gateV}`,mx,156);
+        ctx.globalAlpha=1;
+      }
+    }
+    
+    // Multiply: gate * feat
+    if(p>delay+.35){
+      const mp=easeInOut(Math.max(0,Math.min(1,(p-delay-.35)/.15)));
+      ctx.globalAlpha=mp; ctx.fillStyle=colors[i]; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+      ctx.fillText('⊙',mx,178);
+      drawData(mx-40,185,80,25,`gated_${i+1}`,colors[i],mp);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Sum + average + proj
+  if(p>.7){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-.7)/.15)));
+    drawBox(cx-50,225,100,25,'sum / 3','#94A3B8',sp);
+    for(let i=0;i<feats;i++){
+      const mx=colW/2+i*colW;
+      drawArrow(mx,210,cx,225,colors[i],sp*.3);
+    }
+    
+    if(p>.8){
+      const pp=easeInOut(Math.max(0,Math.min(1,(p-.8)/.1)));
+      drawBox(cx-40,260,80,22,'Linear proj','#6C5CE7',pp);
+      drawArrow(cx,250,cx,260,'#94A3B8',pp*.4);
+      drawData(cx-45,290,90,25,'[B, embed_dim]','#00B894',pp);
+    }
+  }
+}
+
+// Step 4: DeepStackModel.forward complete
+function renderStep4(p) {
+  const cx=W/2;
+  const bw=110, bh=26;
+  
+  // Two columns: Image path (left) and Text path (right)
+  const imgX=cx-90, txtX=cx+90;
+  
+  const stages=[
+    {label:'images [B,3,H,W]',x:imgX,y:10,color:'#0984E3',t:0},
+    {label:'input_ids [B,L]',x:txtX,y:10,color:'#00B894',t:0},
+    {label:'PatchEmbed',x:imgX,y:45,color:'#0984E3',t:.05},
+    {label:'TokenEmbed',x:txtX,y:45,color:'#00B894',t:.05},
+    {label:'+CLS +Pos',x:imgX,y:78,color:'#0984E3',t:.1},
+    {label:'+Pos',x:txtX,y:78,color:'#00B894',t:.1},
+    {label:'Encoder+intermediates',x:imgX,y:111,color:'#6C5CE7',t:.15},
+    {label:'Encoder+intermediates',x:txtX,y:111,color:'#6C5CE7',t:.15},
+    {label:'层投影 → L2Norm',x:imgX-30,y:150,color:'#F59E0B',t:.25},
+    {label:'层投影 → L2Norm',x:txtX+30,y:150,color:'#F59E0B',t:.25},
+    {label:'Fusion Module',x:imgX,y:190,color:'#6C5CE7',t:.35},
+    {label:'Fusion Module',x:txtX,y:190,color:'#6C5CE7',t:.35},
+    {label:'L2 Normalize',x:imgX,y:225,color:'#00B894',t:.45},
+    {label:'L2 Normalize',x:txtX,y:225,color:'#00B894',t:.45},
+    {label:'各层 InfoNCE Loss',x:cx,y:268,color:'#EF4444',t:.55},
+    {label:'融合 InfoNCE Loss',x:cx,y:300,color:'#EF4444',t:.65},
+    {label:'Total Loss → Backward',x:cx,y:335,color:'#00B894',t:.8},
+  ];
+  
+  for(let i=0;i<stages.length;i++){
+    const s=stages[i];
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.15)));
+    drawBox(s.x-bw/2,s.y,bw,bh,s.label,s.color,ap);
+  }
+  
+  // Vertical arrows
+  const arrowPairs=[[0,2],[1,3],[2,4],[3,5],[4,6],[5,7],[6,8],[7,9],[6,10],[7,11],[10,12],[11,13],[14,16],[15,16]];
+  for(const [a,b] of arrowPairs){
+    const sa=stages[a], sb=stages[b];
+    const t=Math.max(sa.t,sb.t);
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-t)/.1)));
+    if(ap>0) drawArrow(sa.x,sa.y+bh,sb.x,sb.y,sa.color,ap*.3);
+  }
+  
+  // Cross arrows for losses
+  if(p>.55){
+    const lp=easeInOut(Math.max(0,Math.min(1,(p-.55)/.1)));
+    ctx.setLineDash([3,3]);
+    drawArrow(imgX,stages[8].y+bh,cx-bw/2,stages[14].y+bh/2,'#EF4444',lp*.3);
+    drawArrow(txtX,stages[9].y+bh,cx+bw/2,stages[14].y+bh/2,'#EF4444',lp*.3);
+    ctx.setLineDash([]);
+  }
+  if(p>.65){
+    const lp=easeInOut(Math.max(0,Math.min(1,(p-.65)/.1)));
+    ctx.setLineDash([3,3]);
+    drawArrow(imgX,stages[12].y+bh,cx-bw/2,stages[15].y+bh/2,'#EF4444',lp*.3);
+    drawArrow(txtX,stages[13].y+bh,cx+bw/2,stages[15].y+bh/2,'#EF4444',lp*.3);
+    ctx.setLineDash([]);
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2500;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; } else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

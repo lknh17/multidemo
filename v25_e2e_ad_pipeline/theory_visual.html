@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>V25 - 端到端广告管线：原理可视化</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,sans-serif;overflow-x:hidden}.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}.badge{background:linear-gradient(135deg,#ff5722,#ffc107);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px}.title{font-size:18px;font-weight:600;flex:1}.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}.dots{display:flex;gap:6px;margin-left:16px}.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}.dot.active{background:#ff5722;box-shadow:0 0 8px #ff5722}.dot.done{background:#ffc107}.main{display:flex;height:calc(100vh - 136px)}.canvas-area{flex:6;background:#0d1117;display:flex;align-items:center;justify-content:center}canvas{border-radius:8px}.info-panel{flex:4;padding:24px;overflow-y:auto;background:#111827;border-left:1px solid #222}.step-title{font-size:20px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,#ff5722,#ffc107);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.8;color:#ccc}.formula{background:#1a1e2e;border:1px solid #333;border-radius:8px;padding:12px;font-family:monospace;font-size:14px;color:#7dd3fc;margin:12px 0;white-space:pre-wrap}.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}.btn:hover{border-color:#ff5722;box-shadow:0 0 12px rgba(255,87,34,.3)}.btn:disabled{opacity:.3}.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}.hl{color:#ff5722}.hl2{color:#ffc107}.hl3{color:#00e5ff}</style></head>
+<body>
+<div class="header"><span class="badge">V25 Capstone</span><span class="title">端到端广告多模态管线</span><span class="page-type">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div></div></div>
+<div class="controls"><button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button><div class="step-counter" id="stepCounter"></div><button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button><button class="btn" onclick="replay()">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-40}window.addEventListener('resize',resize);resize();
+function RR(x,y,w,h,r,f,s){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(f){ctx.fillStyle=f;ctx.fill()}if(s){ctx.strokeStyle=s;ctx.stroke()}}
+function arr(x1,y1,x2,y2,c='#555'){const a=Math.atan2(y2-y1,x2-x1),l=7;ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.fillStyle=c;ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-l*Math.cos(a-.3),y2-l*Math.sin(a-.3));ctx.lineTo(x2-l*Math.cos(a+.3),y2-l*Math.sin(a+.3));ctx.fill()}
+function txt(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+const steps=[
+{title:"多模态统一编码 (Encode)",desc:`<p><span class="hl">统一编码器</span>将视觉(V01-V05)、文本(V03)、音频(V17)映射到同一 embedding 空间。</p><div class="formula">e_vis = ViT(Image)           → CLS token
+e_txt = TransformerEnc(Text) → mean pool
+e_aud = MLP(AudioFeats)
+e_ad  = CrossAttn(Q_fuse, [e_vis; e_txt; e_aud])</div><p>这是整条管线的基础——统一表示是后续检索/排序的前提。</p>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-20;
+const mods=[{n:'🖼 图像',c:'#ff5722',y:cy-80},{n:'📝 文本',c:'#ffc107',y:cy},{n:'🔊 音频',c:'#00e5ff',y:cy+80}];
+mods.forEach((m,i)=>{const alpha=Math.min(1,p*3-i*0.5);if(alpha<=0)return;ctx.globalAlpha=alpha;RR(30,m.y-20,100,40,6,m.c+'22',m.c);txt(m.n,80,m.y+5,m.c,13);if(p>0.3){RR(150,m.y-15,80,30,4,'#1a1e2e',m.c);txt('编码器',190,m.y+5,'#888',10)}if(p>0.5){arr(235,m.y,280,m.y,m.c);RR(285,m.y-12,60,24,4,m.c+'33',m.c);txt('e_'+['vis','txt','aud'][i],315,m.y+5,m.c,10)}ctx.globalAlpha=1});
+if(p>0.7){mods.forEach(m=>arr(350,m.y,390,cy,'#555'));RR(395,cy-25,120,50,8,'#ff572233','#ff5722');txt('注意力融合',455,cy-5,'#ff5722',12);txt('e_unified',455,cy+15,'#ffc107',11)}
+if(p>0.9){arr(520,cy,560,cy,'#ff5722');RR(565,cy-15,70,30,4,'#ffc10733','#ffc107');txt('L2 Norm',600,cy+5,'#ffc107',10)}}},
+
+{title:"ANN 召回检索 (Retrieve)",desc:`<p><span class="hl">近似最近邻</span>在海量广告库中快速找到 Top-K 候选。</p><div class="formula">C_recall = TopK(sim(e_query, e_ad), k=100)
+sim(a, b) = a^T b / (||a|| · ||b||)
+
+速度关键：
+- Flat Index: O(N), 精确但慢
+- IVF Index: O(N/C), 聚类加速
+- HNSW: O(log N), 图搜索</div><p>目标是<span class="hl2">高召回率</span>，宁可多召不可遗漏优质广告。</p>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2;
+// Query
+RR(20,cy-20,80,40,6,'#ff572233','#ff5722');txt('Query',60,cy+5,'#ff5722',12);
+if(p>0.2){arr(105,cy,160,cy,'#ff5722')}
+// Ad Index
+if(p>0.3){RR(170,30,W-200,H-60,8,'#1a1e2e','#333');txt('广告向量库 (N=100K+)',cx+30,25,'#aaa',12);
+const N=80;for(let i=0;i<N;i++){const x=185+Math.random()*(W-230),y=50+Math.random()*(H-100);ctx.fillStyle='#33333388';ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fill()}}
+// Highlight top-K
+if(p>0.6){const topK=12;for(let i=0;i<topK;i++){const angle=i/topK*Math.PI*2;const r=60+Math.random()*40;const x=cx+50+r*Math.cos(angle),y=cy+r*Math.sin(angle);ctx.fillStyle='#ffc107';ctx.beginPath();ctx.arc(x,y,5,0,Math.PI*2);ctx.fill()}
+ctx.strokeStyle='#ffc10744';ctx.lineWidth=2;ctx.setLineDash([4,4]);ctx.beginPath();ctx.arc(cx+50,cy,110,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);txt(`Top-${topK} 候选`,cx+50,cy+130,'#ffc107',13)}}},
+
+{title:"交叉注意力精排 (Rerank)",desc:`<p><span class="hl">精排阶段</span>用交叉编码器对候选进行细粒度打分(V13)。</p><div class="formula">s_rerank(q, d) = MLP(CrossAttn(q, d))
+
+召回阶段：双塔独立编码（快但粗）
+精排阶段：交叉编码（慢但准）
+
+CrossEncoder([q; SEP; d]) → 更深层的交互建模
+精排后取 Top-20 进入下一阶段</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-10;
+// Query on left
+RR(20,cy-15,70,30,4,'#ff572233','#ff5722');txt('Query',55,cy+5,'#ff5722',11);
+// Candidates
+if(p>0.2){const K=8;for(let i=0;i<K;i++){const y=30+i*(H-80)/K;const alpha=Math.min(1,(p-0.2)*3);ctx.globalAlpha=alpha;RR(130,y,70,25,3,'#1a1e2e','#555');txt(`Ad ${i+1}`,165,y+16,'#888',10);ctx.globalAlpha=1}txt('候选 K=100→',130,20,'#aaa',10)}
+// Cross attention
+if(p>0.5){const K=8;for(let i=0;i<K;i++){const y=30+i*(H-80)/K;arr(95,cy,125,y+12,'#ff572244')}
+RR(220,cy-60,110,120,6,'#00e5ff22','#00e5ff');txt('CrossAttn',275,cy-20,'#00e5ff',12);txt('交叉编码器',275,cy,'#888',10);txt('细粒度交互',275,cy+20,'#888',10)}
+// Scored results
+if(p>0.8){const scores=[0.95,0.88,0.82,0.71,0.65];const colors=['#ff5722','#ff5722','#ffc107','#ffc107','#aaa'];
+for(let i=0;i<5;i++){const y=cy-60+i*28;RR(360,y,140,22,3,'#1a1e2e',colors[i]);txt(`Ad: score=${scores[i]}`,430,y+15,colors[i],10)}
+txt('Top-20 精排结果',430,cy+90,'#ffc107',11)}}},
+
+{title:"CTR 预估 (DeepFM)",desc:`<p><span class="hl">DeepFM</span> 结合 FM 的特征交叉与 DNN 的非线性(V04)。</p><div class="formula">ŷ_CTR = σ(y_FM + y_DNN)
+
+FM（二阶交叉）:
+y_FM = w₀ + Σ wᵢxᵢ + Σᵢ<ⱼ ⟨vᵢ,vⱼ⟩xᵢxⱼ
+
+DNN（深层非线性）:
+y_DNN = MLP([e_user; e_ad; e_context])
+
+Loss = BCE(ŷ, y_click)</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2;
+// Input features
+const inputs=[{n:'User',c:'#ff5722'},{n:'Ad',c:'#ffc107'},{n:'Context',c:'#00e5ff'}];
+inputs.forEach((inp,i)=>{const x=40+i*90,y=30;const alpha=Math.min(1,p*3-i*0.3);ctx.globalAlpha=alpha;RR(x,y,75,28,4,inp.c+'22',inp.c);txt(inp.n,x+37,y+18,inp.c,11);ctx.globalAlpha=1});
+// Concat
+if(p>0.3){arr(cx,65,cx,90,'#555');RR(cx-50,95,100,25,4,'#1a1e2e','#aaa');txt('Concat',cx,112,'#aaa',10)}
+// FM branch
+if(p>0.5){arr(cx-30,125,cx-80,155,'#ff5722');RR(cx-130,160,100,40,6,'#ff572222','#ff5722');txt('FM Layer',cx-80,175,'#ff5722',11);txt('二阶交叉',cx-80,192,'#888',9)}
+// DNN branch
+if(p>0.5){arr(cx+30,125,cx+80,155,'#ffc107');RR(cx+30,160,100,40,6,'#ffc10722','#ffc107');txt('DNN',cx+80,175,'#ffc107',11);txt('深层MLP',cx+80,192,'#888',9)}
+// Merge
+if(p>0.7){arr(cx-80,205,cx,235,'#555');arr(cx+80,205,cx,235,'#555');RR(cx-30,240,60,25,4,'#1a1e2e','#00e5ff');txt('σ(+)',cx,257,'#00e5ff',11)}
+if(p>0.9){arr(cx,270,cx,295,'#00e5ff');RR(cx-40,300,80,28,6,'#00e5ff22','#00e5ff');txt('CTR=0.12',cx,318,'#00e5ff',12)}}},
+
+{title:"多目标排序 (Pareto)",desc:`<p><span class="hl">多目标优化</span>平衡 CTR、相关性、多样性、新鲜度(V14,V22)。</p><div class="formula">s_final = α_ctr·s_ctr + α_rel·s_rel
+       + α_div·s_div + α_fresh·s_fresh
+
+Pareto 最优：不存在能同时改善所有目标的解
+MGDA：min ||Σ αₘ ∇L_m||²
+      s.t. αₘ ≥ 0, Σαₘ = 1
+
+多样性 (MMR): λ·rel(d) - (1-λ)·max sim(d,d')
+新鲜度: exp(-γ · age(d))</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2;
+// 4 objectives
+const objs=[{n:'CTR',c:'#ff5722',v:0.85},{n:'相关性',c:'#ffc107',v:0.72},{n:'多样性',c:'#00e5ff',v:0.6},{n:'新鲜度',c:'#e040fb',v:0.9}];
+objs.forEach((o,i)=>{const y=30+i*45;const w=o.v*200*Math.min(1,p*2);const alpha=Math.min(1,p*3-i*0.3);ctx.globalAlpha=alpha;
+txt(o.n,45,y+16,o.c,12);RR(80,y,200,22,4,'#1a1e2e','#333');RR(80,y,w,22,4,o.c+'66',o.c);txt((o.v*100).toFixed(0)+'%',290,y+16,'#fff',10);ctx.globalAlpha=1});
+// Pareto front
+if(p>0.6){const px=cx+80,py=cy+40;ctx.strokeStyle='#333';ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(px-80,py+60);ctx.lineTo(px+100,py+60);ctx.stroke();
+ctx.beginPath();ctx.moveTo(px-80,py+60);ctx.lineTo(px-80,py-60);ctx.stroke();
+txt('CTR →',px+50,py+75,'#aaa',10);txt('相关性 ↑',px-100,py-40,'#aaa',10);
+// Pareto points
+const pts=[[0.2,0.9],[0.4,0.8],[0.6,0.65],[0.75,0.5],[0.9,0.3]];
+ctx.strokeStyle='#ffc107';ctx.lineWidth=2;ctx.beginPath();
+pts.forEach(([x,y],i)=>{const sx=px-80+x*170,sy=py+60-y*110;if(i===0)ctx.moveTo(sx,sy);else ctx.lineTo(sx,sy)});ctx.stroke();
+pts.forEach(([x,y])=>{const sx=px-80+x*170,sy=py+60-y*110;ctx.fillStyle='#ff5722';ctx.beginPath();ctx.arc(sx,sy,4,0,Math.PI*2);ctx.fill()});
+txt('Pareto Front',px+20,py-55,'#ffc107',11)}}},
+
+{title:"安全过滤 & 质量门控 (Filter)",desc:`<p><span class="hl">级联安全检查</span>(V24) + <span class="hl2">质量评估</span>(V18)，确保合规与质量。</p><div class="formula">安全过滤（级联）:
+Pass(d) = ∧ [SafetyCheck_k(d) > τ_k]
+  Level 1: 关键词快速过滤（μs 级）
+  Level 2: 语义分类器（ms 级）
+  Level 3: 人工审核（兜底）
+
+质量门控:
+q = [清晰度, 相关性, 美观度, 信息量, 可读性]
+overall = MLP([features; q]) > threshold</div>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-20;
+// Input
+RR(20,cy-15,80,30,4,'#1a1e2e','#aaa');txt('候选广告',60,cy+5,'#aaa',11);
+// Safety cascade
+if(p>0.2){arr(105,cy,140,cy,'#ff5722');
+const checks=[{n:'关键词',c:'#4caf50',y:cy-50},{n:'分类器',c:'#ffc107',y:cy},{n:'人工审核',c:'#ff5722',y:cy+50}];
+checks.forEach((ck,i)=>{const alpha=Math.min(1,(p-0.2)*4-i*0.4);if(alpha<=0)return;ctx.globalAlpha=alpha;
+RR(145,ck.y-15,80,30,4,ck.c+'22',ck.c);txt(ck.n,185,ck.y+5,ck.c,10);
+if(i<2){arr(185,ck.y+18,185,checks[i+1].y-18,ck.c+'88')}ctx.globalAlpha=1});
+txt('安全过滤',185,cy-75,'#ff5722',12)}
+// Quality gate
+if(p>0.6){arr(230,cy,270,cy,'#ffc107');RR(275,cy-40,100,80,6,'#ffc10722','#ffc107');txt('质量门控',325,cy-15,'#ffc107',11);
+const dims=['清晰度','相关性','美观度'];dims.forEach((d,i)=>{txt(d,325,cy+5+i*15,'#888',9)});txt('overall > τ',325,cy+55,'#ffc107',9)}
+// Output
+if(p>0.85){arr(380,cy,420,cy,'#00e5ff');
+const results=[{n:'✓ 安全+高质',c:'#4caf50',y:cy-25},{n:'✗ 不安全',c:'#ff4444',y:cy+5},{n:'✗ 低质量',c:'#888',y:cy+35}];
+results.forEach(r=>{txt(r.n,470,r.y+5,r.c,11)})}}},
+
+{title:"端到端投放 & 在线学习 (Serve + Learn)",desc:`<p>最终阶段：<span class="hl">投放决策</span> + <span class="hl2">实时反馈学习</span>，形成闭环。</p><div class="formula">投放决策:
+  选取 final_score 最高的 K 条广告展示
+
+在线学习闭环:
+  θ_{t+1} = θ_t - η·∇L(x_t, y_t; θ_t)
+  EMA: θ̄ = β·θ̄ + (1-β)·θ_{t+1}
+
+监控指标:
+  - 实时 CTR / CVR / RPM
+  - 安全拦截率
+  - 延迟 P99
+  - A/B 实验 δ 显著性检验</div><p>这是 V01-V24 所有知识的<span class="hl">完整闭环</span>：从编码到投放再到学习更新。</p>`,render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2;
+// Full pipeline flow (circular)
+const stages=[{n:'编码',c:'#ff5722',a:Math.PI*1.2},{n:'召回',c:'#ffc107',a:Math.PI*0.8},{n:'精排',c:'#00e5ff',a:Math.PI*0.4},{n:'过滤',c:'#e040fb',a:0},{n:'投放',c:'#4caf50',a:-Math.PI*0.4},{n:'反馈',c:'#ff9800',a:-Math.PI*0.8}];
+const R=Math.min(W,H)*0.3;
+stages.forEach((s,i)=>{const alpha=Math.min(1,p*(stages.length+2)/(i+1));if(alpha<=0)return;
+const x=cx+R*Math.cos(s.a),y=cy-R*Math.sin(s.a);ctx.globalAlpha=alpha;
+RR(x-40,y-18,80,36,8,s.c+'33',s.c);txt(s.n,x,y+5,s.c,13);
+if(i>0&&p>0.4){const prev=stages[i-1];const px=cx+R*Math.cos(prev.a),py=cy-R*Math.sin(prev.a);arr(px+35,py,x-35,y,'#555')}ctx.globalAlpha=1});
+// Close the loop
+if(p>0.8){const last=stages[5],first=stages[0];const lx=cx+R*Math.cos(last.a),ly=cy-R*Math.sin(last.a);const fx=cx+R*Math.cos(first.a),fy=cy-R*Math.sin(first.a);
+ctx.strokeStyle='#ff5722';ctx.lineWidth=2;ctx.setLineDash([6,4]);ctx.beginPath();ctx.moveTo(lx-35,ly);ctx.lineTo(fx-35,fy);ctx.stroke();ctx.setLineDash([]);txt('在线更新',cx-R-30,cy,'#ff9800',11)}
+// Center label
+if(p>0.5){txt('E2E Ad Pipeline',cx,cy-8,'#fff',16);txt('V25 Capstone',cx,cy+12,'#ffc107',12)}}}
+];
+
+function animate(){animProgress+=.012;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}
+function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('stepTitle').innerHTML=steps[currentStep].title;document.getElementById('stepDesc').innerHTML=steps[currentStep].desc;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))})}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});init();
+</script></body></html>

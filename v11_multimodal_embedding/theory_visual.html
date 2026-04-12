@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v11 多模态 Embedding - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}
+.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:center;line-height:1.8}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}
+.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v11</span><h1>多模态 Embedding 生成</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main">
+  <div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+  <div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'Embedding 提取策略对比',desc:'从 Transformer 输出中提取固定长度 embedding 有三种常用策略：<br><br>• <strong>[CLS] Token</strong>：取第一个特殊 token 的输出，最常用<br>• <strong>Mean Pooling</strong>：所有 token 输出取平均，信息更全面<br>• <strong>Weighted Pooling</strong>：用可学习权重对各 token 加权平均<br><br>[CLS] 简单高效；Mean Pooling 在句子级任务表现更好；Weighted Pooling 最灵活但参数更多。',formula:'[CLS]:   emb = output[:, 0]\nMean:    emb = output.mean(dim=1)\nWeighted: emb = Σ w_i · output[:, i]'},
+{title:'L2 归一化与余弦相似度',desc:'将 embedding 映射到<strong>单位超球面</strong>上：<br><br><strong>L2 归一化</strong>：emb = emb / ||emb||₂<br><br>归一化后的好处：<br>• 内积 = 余弦相似度（计算更快）<br>• 消除向量模长的影响，只比较方向<br>• 便于设置统一的相似度阈值<br><br>在检索系统中，所有 embedding 都预先 L2 归一化，搜索时直接用内积。',formula:'emb_norm = emb / ||emb||₂\n\n归一化后:\ncos_sim(a, b) = a · b / (||a|| · ||b||)\n             = a_norm · b_norm  (内积)'},
+{title:'FAISS 索引结构',desc:'FAISS 提供多种索引类型，在速度和精度间权衡：<br><br>• <strong>Flat (精确)</strong>：暴力搜索，100% 精确，O(N) 时间<br>• <strong>IVF (聚类)</strong>：先聚类再搜索，只搜索最近的几个聚类<br>• <strong>HNSW (图)</strong>：构建近邻图，沿图搜索，O(logN) 时间<br>• <strong>PQ (量化)</strong>：向量压缩，内存减少 10-100x<br><br>实际使用常组合：<strong>IVF + PQ</strong> 或 <strong>HNSW + PQ</strong>。',formula:'IndexFlatIP: 精确内积搜索\nIndexIVFFlat: nprobe 个聚类内搜索\nIndexHNSW: 图上贪心搜索\nIndexPQ: 子空间量化压缩'},
+{title:'ANN 检索过程',desc:'近似最近邻 (ANN) 检索的典型流程（以 IVF 为例）：<br><br>1. <strong>Query 编码</strong>：将查询（文本/图像）编码为 embedding<br>2. <strong>定位聚类</strong>：找到与 query 最近的 nprobe 个聚类中心<br>3. <strong>近邻搜索</strong>：在这些聚类内做精确搜索<br>4. <strong>返回 Top-K</strong>：按相似度排序返回前 K 个结果<br><br>nprobe 越大越精确但越慢，是速度-精度的关键参数。',formula:'query_emb = encode(query)  # 编码\nnearby_clusters = find_clusters(query, nprobe)\ncandidates = search_in_clusters(nearby_clusters)\ntop_k = sort_by_similarity(candidates)[:K]'},
+{title:'评估指标',desc:'检索系统的三个核心评估指标：<br><br><strong>Recall@K</strong>：在 Top-K 结果中，<strong>能否找到</strong>正确答案<br>• Recall@10 = 0.95 → 95% 的查询在前 10 个结果中找到了正确匹配<br><br><strong>NDCG@K</strong>：<strong>排序质量</strong>，正确结果排得越靠前分数越高<br>• 使用 log 折扣因子：1/log₂(rank+1)<br><br><strong>MRR</strong>：<strong>首个正确结果的位置</strong>的倒数的平均<br>• 第 1 位找到 → 1.0，第 3 位找到 → 0.33',formula:'Recall@K = |正确 ∩ TopK| / |正确|\nNDCG@K = DCG / IDCG\n  DCG = Σ rel_i / log₂(i+1)\nMRR = (1/N) Σ 1/rank_first_correct'},
+{title:'完整 Pipeline',desc:'多模态 Embedding 检索的完整流程分为<strong>离线</strong>和<strong>在线</strong>两部分：<br><br><strong>离线阶段</strong>：<br>1. 用训练好的模型编码所有候选数据 → embedding 库<br>2. 用 FAISS 建立索引（IVF/HNSW/PQ）<br><br><strong>在线阶段</strong>：<br>1. 用户查询 → 编码为 embedding<br>2. FAISS 检索 Top-K 候选<br>3. 可选：用精排模型 Reranker 重排<br>4. 返回最终结果',formula:'[离线] data → Encoder → embeddings → FAISS.build()\n[在线] query → Encoder → emb → FAISS.search()\n  → Top-K candidates → Reranker → Final results'}
+];
+
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+function drawBox(x,y,w,h,label,color,alpha){ctx.globalAlpha=alpha;ctx.fillStyle=color+'22';ctx.strokeStyle=color;drawRR(x,y,w,h,8);ctx.fill();ctx.stroke();ctx.fillStyle=color;ctx.font='12px PingFang SC';ctx.textAlign='center';ctx.textBaseline='middle';const ls=label.split('\n');ls.forEach((l,i)=>ctx.fillText(l,x+w/2,y+h/2+(i-(ls.length-1)/2)*14));ctx.globalAlpha=1}
+function drawArrow(x1,y1,x2,y2,color,alpha){ctx.globalAlpha=alpha;ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a-.3),y2-7*Math.sin(a-.3));ctx.moveTo(x2,y2);ctx.lineTo(x2-7*Math.cos(a+.3),y2-7*Math.sin(a+.3));ctx.stroke();ctx.globalAlpha=1}
+
+// Step 0: Embedding strategies
+function renderStep0(p){
+  const cx=W/2;
+  const methods=[{name:'[CLS] Token',color:'#EF4444'},{name:'Mean Pooling',color:'#0984E3'},{name:'Weighted Pooling',color:'#6C5CE7'}];
+  const colW=W/3;
+  
+  // Transformer output tokens
+  for(let m=0;m<3;m++){
+    const d=m*.12,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.25)));
+    const mx=colW/2+m*colW;
+    ctx.globalAlpha=ap;ctx.fillStyle=methods[m].color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';ctx.fillText(methods[m].name,mx,18);ctx.globalAlpha=1;
+    
+    const tokens=5,tw=35,th=22,ty=30;
+    for(let t=0;t<tokens;t++){
+      const tp2=easeInOut(Math.max(0,Math.min(1,(p-d-.05-t*.03)/.12)));
+      const tx=mx-(tokens*tw)/2+t*tw+2;
+      ctx.globalAlpha=tp2;
+      ctx.fillStyle=(m===0&&t===0)?methods[m].color+'66':'rgba(255,255,255,.08)';
+      ctx.strokeStyle=(m===0&&t===0)?methods[m].color:'rgba(255,255,255,.15)';
+      drawRR(tx,ty,tw-4,th,4);ctx.fill();ctx.stroke();
+      if(m===0&&t===0){ctx.fillStyle=methods[m].color;ctx.font='9px Courier New';ctx.textAlign='center';ctx.fillText('CLS',tx+tw/2-2,ty+th/2+3)}
+      if(m===1){ctx.fillStyle='rgba(0,132,227,.4)';drawRR(tx,ty,tw-4,th,4);ctx.fill()}
+      if(m===2){
+        const w=[0.3,0.15,0.25,0.2,0.1][t];
+        ctx.fillStyle=`rgba(108,92,231,${w})`;drawRR(tx,ty,(tw-4)*w*2.5,th,4);ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
+    
+    // Arrow to embedding
+    if(p>d+.2){
+      const ep=easeInOut(Math.max(0,Math.min(1,(p-d-.2)/.15)));
+      drawArrow(mx,ty+th+4,mx,ty+th+18,methods[m].color,ep*.5);
+      drawBox(mx-35,ty+th+22,70,22,'embedding',methods[m].color,ep);
+    }
+  }
+  
+  // Comparison note
+  if(p>.85){
+    const np=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=np;ctx.fillStyle='#00B894';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('[CLS]简单高效 | Mean信息全面 | Weighted最灵活',cx,H-20);ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: L2 normalization
+function renderStep1(p){
+  const cx=W/2;
+  // Unit sphere visualization
+  const sp=easeInOut(Math.min(1,p/.3));
+  const centerX=cx,centerY=H/2-20,radius=Math.min(W,H)/3;
+  
+  ctx.globalAlpha=sp*.3;ctx.strokeStyle='#6C5CE7';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(centerX,centerY,radius,0,Math.PI*2);ctx.stroke();
+  ctx.globalAlpha=1;
+  
+  // Axes
+  ctx.globalAlpha=sp*.2;ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(centerX-radius-20,centerY);ctx.lineTo(centerX+radius+20,centerY);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(centerX,centerY-radius-20);ctx.lineTo(centerX,centerY+radius+20);ctx.stroke();
+  ctx.globalAlpha=1;
+  
+  // Before normalization: random vectors
+  const vectors=[{x:0.5,y:0.3,c:'#EF4444'},{x:-0.3,y:0.8,c:'#F59E0B'},{x:0.7,y:-0.2,c:'#0984E3'},{x:-0.4,y:-0.6,c:'#6C5CE7'}];
+  
+  for(let i=0;i<vectors.length;i++){
+    const d=.2+i*.08;
+    const vp=easeInOut(Math.max(0,Math.min(1,(p-d)/.3)));
+    const v=vectors[i];
+    const len=Math.sqrt(v.x*v.x+v.y*v.y);
+    const normX=v.x/len,normY=v.y/len;
+    
+    // Interpolate from original to normalized
+    const t=p>.6?easeInOut(Math.max(0,Math.min(1,(p-.6)/.3))):0;
+    const drawX=centerX+lerp(v.x,normX,t)*radius;
+    const drawY=centerY-lerp(v.y,normY,t)*radius;
+    
+    ctx.globalAlpha=vp;
+    ctx.strokeStyle=v.c;ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(centerX,centerY);ctx.lineTo(drawX,drawY);ctx.stroke();
+    ctx.fillStyle=v.c;ctx.beginPath();ctx.arc(drawX,drawY,5,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=1;
+  }
+  
+  // Labels
+  ctx.globalAlpha=sp;ctx.font='12px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle='#6C5CE7';ctx.fillText('单位球面 ||emb||=1',centerX,centerY+radius+30);
+  if(p>.6){const np=easeInOut((p-.6)/.2);ctx.globalAlpha=np;ctx.fillStyle='#00B894';ctx.fillText('→ L2归一化后: 向量映射到球面上',centerX,centerY+radius+50)}
+  ctx.globalAlpha=1;
+}
+
+// Step 2: FAISS index types
+function renderStep2(p){
+  const types=[
+    {name:'Flat 精确',color:'#EF4444',desc:'暴力搜索 O(N)',icon:'grid'},
+    {name:'IVF 聚类',color:'#F59E0B',desc:'聚类+局部搜索',icon:'cluster'},
+    {name:'HNSW 图',color:'#0984E3',desc:'近邻图 O(logN)',icon:'graph'},
+    {name:'PQ 量化',color:'#6C5CE7',desc:'向量压缩 10-100x',icon:'compress'}
+  ];
+  const colW=W/4;
+  
+  for(let i=0;i<4;i++){
+    const d=i*.12,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.25)));
+    const mx=colW/2+i*colW;
+    
+    ctx.globalAlpha=ap;ctx.fillStyle=types[i].color;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(types[i].name,mx,20);
+    ctx.font='11px PingFang SC';ctx.fillStyle=types[i].color+'BB';ctx.fillText(types[i].desc,mx,38);
+    ctx.globalAlpha=1;
+    
+    // Visualization
+    const vy=55,vh=120;
+    if(i===0){// Grid of dots
+      for(let r=0;r<6;r++) for(let c=0;c<6;c++){
+        const dp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-(r+c)*.01)/.15)));
+        ctx.globalAlpha=dp*.6;ctx.fillStyle='#EF4444';
+        ctx.beginPath();ctx.arc(mx-30+c*12,vy+r*18,3,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
+      }
+    }else if(i===1){// Clusters
+      const clusters=[{x:-20,y:20,r:25},{x:20,y:50,r:30},{x:-10,y:80,r:20}];
+      clusters.forEach((cl,ci)=>{
+        const cp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-ci*.08)/.15)));
+        ctx.globalAlpha=cp*.2;ctx.fillStyle='#F59E0B';
+        ctx.beginPath();ctx.arc(mx+cl.x,vy+cl.y,cl.r,0,Math.PI*2);ctx.fill();
+        ctx.globalAlpha=cp;ctx.strokeStyle='#F59E0B';ctx.setLineDash([3,3]);ctx.beginPath();ctx.arc(mx+cl.x,vy+cl.y,cl.r,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+        for(let j=0;j<5;j++){const a=j/5*Math.PI*2,r2=cl.r*.6;ctx.fillStyle='#F59E0B';ctx.beginPath();ctx.arc(mx+cl.x+Math.cos(a)*r2,vy+cl.y+Math.sin(a)*r2,2,0,Math.PI*2);ctx.fill()}
+        ctx.globalAlpha=1;
+      });
+    }else if(i===2){// Graph
+      const nodes=[[0,0],[-25,30],[25,25],[-15,60],[20,60],[0,90]];
+      const edges=[[0,1],[0,2],[1,2],[1,3],[2,4],[3,4],[3,5],[4,5]];
+      edges.forEach(([a,b],ei)=>{
+        const ep=easeInOut(Math.max(0,Math.min(1,(p-d-.15-ei*.02)/.1)));
+        ctx.globalAlpha=ep*.4;ctx.strokeStyle='#0984E3';ctx.lineWidth=1;
+        ctx.beginPath();ctx.moveTo(mx+nodes[a][0],vy+10+nodes[a][1]);ctx.lineTo(mx+nodes[b][0],vy+10+nodes[b][1]);ctx.stroke();ctx.globalAlpha=1;
+      });
+      nodes.forEach(([nx,ny],ni)=>{
+        const np=easeInOut(Math.max(0,Math.min(1,(p-d-.1-ni*.03)/.12)));
+        ctx.globalAlpha=np;ctx.fillStyle='#0984E3';ctx.beginPath();ctx.arc(mx+nx,vy+10+ny,4,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
+      });
+    }else{// PQ compression
+      const bp=easeInOut(Math.max(0,Math.min(1,(p-d-.1)/.2)));
+      ctx.globalAlpha=bp;
+      // Original vector
+      ctx.fillStyle='#6C5CE7'+'44';drawRR(mx-35,vy,70,15,3);ctx.fill();ctx.strokeStyle='#6C5CE7';drawRR(mx-35,vy,70,15,3);ctx.stroke();
+      ctx.fillStyle='#6C5CE7';ctx.font='9px Courier New';ctx.textAlign='center';ctx.fillText('256-dim float32',mx,vy+10);
+      // Arrow
+      ctx.fillText('↓ 量化',mx,vy+30);
+      // Compressed
+      const subW=15;for(let s=0;s<4;s++){ctx.fillStyle=['#EF4444','#F59E0B','#0984E3','#6C5CE7'][s]+'44';ctx.fillRect(mx-32+s*(subW+2),vy+40,subW,12)}
+      ctx.fillStyle='#6C5CE7';ctx.fillText('4×uint8 = 4B',mx,vy+65);
+      ctx.fillText('压缩 256x!',mx,vy+80);
+      ctx.globalAlpha=1;
+    }
+  }
+}
+
+// Step 3: ANN search process
+function renderStep3(p){
+  const cx=W/2;
+  // Query
+  const qp=easeInOut(Math.min(1,p/.15));
+  drawBox(10,15,80,25,'Query','#0984E3',qp);
+  drawArrow(95,27,130,27,'#0984E3',qp*.5);
+  drawBox(135,15,80,25,'Encoder','#6C5CE7',qp);
+  
+  if(p>.15){
+    const ep=easeInOut(Math.max(0,Math.min(1,(p-.15)/.15)));
+    drawArrow(220,27,260,27,'#6C5CE7',ep*.5);
+    drawBox(265,15,80,25,'query_emb','#00B894',ep);
+  }
+  
+  // Clusters
+  if(p>.3){
+    const cp=easeInOut(Math.max(0,Math.min(1,(p-.3)/.25)));
+    const clusters=[[80,110,30,'#EF4444'],[200,100,35,'#F59E0B'],[320,120,28,'#0984E3'],[140,170,32,'#6C5CE7'],[270,180,25,'#94A3B8']];
+    const highlight=[1,3]; // nprobe=2
+    clusters.forEach(([cx2,cy,r,c],i)=>{
+      const isHl=highlight.includes(i);
+      ctx.globalAlpha=cp*(isHl?.5:.15);ctx.fillStyle=c;
+      ctx.beginPath();ctx.arc(cx2,cy,r,0,Math.PI*2);ctx.fill();
+      if(isHl&&p>.5){
+        const hp=easeInOut(Math.max(0,Math.min(1,(p-.5)/.15)));
+        ctx.globalAlpha=hp;ctx.strokeStyle='#00B894';ctx.lineWidth=2;ctx.setLineDash([4,4]);
+        ctx.beginPath();ctx.arc(cx2,cy,r+4,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+      }
+      // Points inside
+      for(let j=0;j<6;j++){const a=j/6*Math.PI*2,d2=r*.6;ctx.globalAlpha=cp*.6;ctx.fillStyle=c;ctx.beginPath();ctx.arc(cx2+Math.cos(a)*d2,cy+Math.sin(a)*d2,2.5,0,Math.PI*2);ctx.fill()}
+      ctx.globalAlpha=1;
+    });
+    
+    // Labels
+    if(p>.45){
+      const lp=easeInOut(Math.max(0,Math.min(1,(p-.45)/.1)));
+      ctx.globalAlpha=lp;ctx.fillStyle='#00B894';ctx.font='12px PingFang SC';ctx.textAlign='center';
+      ctx.fillText('② 定位最近聚类 (nprobe=2)',cx,70);ctx.globalAlpha=1;
+    }
+  }
+  
+  // Search within clusters & Top-K
+  if(p>.65){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-.65)/.2)));
+    ctx.globalAlpha=sp;ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('③ 聚类内精确搜索',cx,225);
+    
+    // Top-K results
+    if(p>.8){
+      const tp=easeInOut(Math.max(0,Math.min(1,(p-.8)/.2)));
+      ctx.fillStyle='#00B894';ctx.fillText('④ 返回 Top-K',cx,248);
+      for(let i=0;i<5;i++){
+        const rp=easeInOut(Math.max(0,Math.min(1,(p-.82-i*.03)/.1)));
+        drawBox(cx-130+i*55,260,50,22,`#${i+1}`,'#00B894',rp);
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Metrics
+function renderStep4(p){
+  const cx=W/2;
+  const metrics=[
+    {name:'Recall@K',color:'#EF4444',desc:'找到了吗？',example:'Top10中找到=✓'},
+    {name:'NDCG@K',color:'#F59E0B',desc:'排得好吗？',example:'越靠前分越高'},
+    {name:'MRR',color:'#0984E3',desc:'第几个找到？',example:'1/首个正确位置'}
+  ];
+  const colW=W/3;
+  
+  for(let i=0;i<3;i++){
+    const d=i*.15,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.25)));
+    const mx=colW/2+i*colW;
+    
+    ctx.globalAlpha=ap;ctx.fillStyle=metrics[i].color;ctx.font='bold 16px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(metrics[i].name,mx,25);
+    ctx.font='12px PingFang SC';ctx.fillStyle=metrics[i].color+'BB';ctx.fillText(metrics[i].desc,mx,45);
+    ctx.globalAlpha=1;
+    
+    // Visual example
+    const ey=65,eh=20;
+    if(i===0){// Recall: hits in topK
+      const items=[0,0,1,0,1,0,0,1,0,0];
+      items.forEach((hit,j)=>{
+        const jp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-j*.02)/.1)));
+        ctx.globalAlpha=jp;
+        ctx.fillStyle=hit?'#10B981':'rgba(255,255,255,.1)';
+        drawRR(mx-50+j*11,ey,10,eh,2);ctx.fill();
+        if(hit){ctx.fillStyle='#fff';ctx.font='8px Courier New';ctx.textAlign='center';ctx.fillText('✓',mx-45+j*11,ey+eh/2+3)}
+        ctx.globalAlpha=1;
+      });
+      if(p>d+.3){const rp=easeInOut(Math.max(0,Math.min(1,(p-d-.3)/.15)));ctx.globalAlpha=rp;ctx.fillStyle='#EF4444';ctx.font='12px Courier New';ctx.textAlign='center';ctx.fillText('3/10 = 0.30',mx,ey+eh+15);ctx.globalAlpha=1}
+    }else if(i===1){// NDCG: bar chart with log decay
+      for(let j=0;j<8;j++){
+        const jp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-j*.02)/.1)));
+        const h2=eh*1/(Math.log2(j+2));
+        ctx.globalAlpha=jp;ctx.fillStyle=j<3?'#F59E0B':'rgba(255,255,255,.1)';
+        drawRR(mx-40+j*11,ey+eh-h2,10,h2,2);ctx.fill();
+        ctx.globalAlpha=1;
+      }
+      if(p>d+.3){const rp=easeInOut(Math.max(0,Math.min(1,(p-d-.3)/.15)));ctx.globalAlpha=rp;ctx.fillStyle='#F59E0B';ctx.font='10px PingFang SC';ctx.textAlign='center';ctx.fillText('1/log₂(rank+1)',mx,ey+eh+15);ctx.globalAlpha=1}
+    }else{// MRR: find first
+      const items=[0,0,1,0,0];
+      items.forEach((hit,j)=>{
+        const jp=easeInOut(Math.max(0,Math.min(1,(p-d-.1-j*.04)/.1)));
+        ctx.globalAlpha=jp;
+        ctx.fillStyle=hit?'#10B981':'rgba(255,255,255,.1)';
+        ctx.strokeStyle=hit?'#10B981':'rgba(255,255,255,.2)';
+        drawRR(mx-40+j*18,ey,16,eh,3);ctx.fill();ctx.stroke();
+        if(hit){ctx.fillStyle='#fff';ctx.font='10px Courier New';ctx.textAlign='center';ctx.fillText('✓',mx-32+j*18,ey+eh/2+3)}
+        ctx.globalAlpha=1;
+      });
+      if(p>d+.3){const rp=easeInOut(Math.max(0,Math.min(1,(p-d-.3)/.15)));ctx.globalAlpha=rp;ctx.fillStyle='#0984E3';ctx.font='12px Courier New';ctx.textAlign='center';ctx.fillText('1/3 = 0.33',mx,ey+eh+15);ctx.globalAlpha=1}
+    }
+  }
+}
+
+// Step 5: Full pipeline
+function renderStep5(p){
+  const cx=W/2;
+  // Offline
+  const offX=cx-10;
+  const op=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=op;ctx.fillStyle='#6C5CE7';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillText('【离线阶段】',offX-100,15);ctx.globalAlpha=1;
+  
+  const offStages=[
+    {l:'候选数据',x:40,y:30,c:'#94A3B8'},{l:'Encoder编码',x:140,y:30,c:'#6C5CE7'},
+    {l:'Embedding库',x:250,y:30,c:'#0984E3'},{l:'FAISS建索引',x:360,y:30,c:'#00B894'}
+  ];
+  offStages.forEach((s,i)=>{
+    const d=.05+i*.08,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.15)));
+    drawBox(s.x,s.y,90,24,s.l,s.c,ap);
+    if(i>0)drawArrow(offStages[i-1].x+90,s.y+12,s.x,s.y+12,s.c,ap*.4);
+  });
+  
+  // Divider
+  if(p>.4){
+    const dp=easeInOut(Math.max(0,Math.min(1,(p-.4)/.1)));
+    ctx.globalAlpha=dp*.3;ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.moveTo(20,75);ctx.lineTo(W-20,75);ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;
+  }
+  
+  // Online
+  if(p>.45){
+    const onp=easeInOut(Math.max(0,Math.min(1,(p-.45)/.1)));
+    ctx.globalAlpha=onp;ctx.fillStyle='#00B894';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillText('【在线阶段】',100,95);ctx.globalAlpha=1;
+    
+    const onStages=[
+      {l:'用户查询',x:40,y:110,c:'#94A3B8'},{l:'Encoder编码',x:140,y:110,c:'#6C5CE7'},
+      {l:'FAISS检索',x:250,y:110,c:'#00B894'},{l:'Top-K候选',x:350,y:110,c:'#0984E3'},
+      {l:'Reranker重排',x:250,y:155,c:'#F59E0B'},{l:'最终结果',x:360,y:155,c:'#EF4444'}
+    ];
+    onStages.forEach((s,i)=>{
+      const d=.5+i*.08,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.15)));
+      drawBox(s.x,s.y,90,24,s.l,s.c,ap);
+    });
+    // Arrows
+    const onArrows=[[0,1],[1,2],[2,3],[3,4],[4,5]];
+    onArrows.forEach(([a,b])=>{
+      const sa=onStages[a],sb=onStages[b];
+      const d=.55+b*.08,ap=easeInOut(Math.max(0,Math.min(1,(p-d)/.1)));
+      if(sa.y===sb.y)drawArrow(sa.x+90,sa.y+12,sb.x,sb.y+12,sb.c,ap*.4);
+      else drawArrow(sa.x+45,sa.y+24,sb.x+45,sb.y,sb.c,ap*.4);
+    });
+    
+    // Connect offline index to online search
+    if(p>.6){
+      const cp=easeInOut(Math.max(0,Math.min(1,(p-.6)/.1)));
+      ctx.globalAlpha=cp*.3;ctx.strokeStyle='#00B894';ctx.setLineDash([3,3]);ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(offStages[3].x+45,offStages[3].y+24);ctx.lineTo(onStages[2].x+45,onStages[2].y);ctx.stroke();
+      ctx.setLineDash([]);ctx.globalAlpha=1;
+    }
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const s=performance.now(),d=2500;function t(n){animProgress=Math.min(1,(n-s)/d);render();if(animProgress<1)animId=requestAnimationFrame(t)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(t)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(idx=>()=>{currentStep=idx;updateUI();startAnim()})(i);d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

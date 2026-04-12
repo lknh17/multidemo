@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p07 模型量化 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p07</span>
+  <h1>模型量化</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/7</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: '为什么需要量化？',
+    desc: '大模型的权重通常以 FP16（16-bit 浮点数）存储。一个 7B 参数模型需要 <strong>14 GB</strong> 显存。<br><br>量化将权重从 16-bit 压缩到 <strong>4-bit</strong>，大小降为 ~3.5 GB，使消费级显卡（如 4090）也能运行大模型。<br><br>动画展示：FP16 → INT4 的压缩过程，16 个 bit 被压缩为 4 个 bit。',
+    formula: 'FP16: 7B × 2 bytes = 14 GB\nINT4: 7B × 0.5 bytes = 3.5 GB\n压缩比 ≈ 4x' },
+  { title: '对称量化 vs 非对称量化',
+    desc: '量化的核心操作：将浮点数映射到有限的整数集合。<br><br><strong>对称量化</strong>：以 0 为中心，范围 [-max, max] 映射到 [-7, 7]（4-bit signed）。简单但可能浪费范围。<br><br><strong>非对称量化</strong>：范围 [min, max] 映射到 [0, 15]，引入零点偏移，更灵活但计算略复杂。<br><br>动画对比两种方式的映射效果。',
+    formula: '对称: x_q = round(x / scale)\n  scale = max(|x|) / 7\n\n非对称: x_q = round((x - zero) / scale)\n  scale = (max - min) / 15' },
+  { title: '分组量化 (Group Quantization)',
+    desc: '如果所有权重共享一个 scale，离群值（outlier）会拉大范围，降低精度。<br><br><strong>分组量化</strong>将权重分为若干组（如每 128 个一组），每组独立计算 scale。<br><br>group_size=128 时，每个权重只需额外 <strong>0.125 bit</strong> 存储 scale（16 bit / 128），总计 4.125 bit/param。<br><br>动画展示：全局 vs 分组量化的精度差异。',
+    formula: '全局量化: 1 个 scale，所有权重共享\n  → 受 outlier 影响大\n\n分组量化 (g=128): 每组独立 scale\n  → 额外开销: 16/128 = 0.125 bit/param\n  → 总计: 4 + 0.125 = 4.125 bit/param' },
+  { title: 'GPTQ — Hessian 引导的最优量化',
+    desc: 'GPTQ 利用 <strong>Hessian 矩阵</strong>（输入的二阶统计量）逐列量化权重。<br><br>核心思想：量化一列权重后，用 Hessian 信息<strong>补偿</strong>后续列，最小化输出误差。<br><br>动画展示：逐列量化 + 误差补偿的过程。重要列（Hessian 大）先处理，误差传播到不重要的列。',
+    formula: '目标: min ||WX - ŴX||²\n\n逐列量化:\n  ŵ_i = quantize(w_i)\n  δ_i = w_i - ŵ_i\n  w_{j>i} -= δ_i × H_ij⁻¹ / H_ii⁻¹' },
+  { title: 'AWQ — 激活值感知保护',
+    desc: 'AWQ 发现 <strong>1% 的显著权重</strong>决定了模型质量。这些权重对应于<strong>激活值大</strong>的通道。<br><br>AWQ 不跳过这些权重，而是<strong>缩放</strong>后再量化，让显著权重在 INT4 范围内获得更多表示。<br><br>动画展示：缩放保护前后的量化误差对比。',
+    formula: 'saliency_j = E[||X_{:,j}||]\n\n缩放因子: s_j ∝ ||X_{:,j}||^α\n\n量化: Ŵ_j = quantize(W_j × s_j) / s_j\n\n效果: 显著通道的误差减小 ~4x' },
+  { title: 'NF4 — 正态分布最优量化点',
+    desc: 'bitsandbytes 的 <strong>NF4</strong> 基于观察：神经网络权重近似<strong>正态分布</strong>。<br><br>NF4 的 16 个量化点按正态分布的<strong>分位数</strong>排列：在权重密集的区域（接近 0）有更多量化点。<br><br>对比 FP4 的均匀间隔量化，NF4 在<strong>信息论意义上最优</strong>。<br><br>动画展示：NF4 vs FP4 的量化点分布。',
+    formula: 'NF4 量化点:\n  q_i = Φ⁻¹((i + 0.5) / 16)\n  Φ⁻¹ = 标准正态分布的分位数函数\n\n特点: 中心密集，两端稀疏\n → 匹配权重分布 → 误差更小' },
+  { title: '四种方法对比总览',
+    desc: '动画展示四种量化方法的<strong>关键指标雷达图</strong>：<br><br>• <strong>GPTQ</strong>: Hessian 最优，GPU 推理快，需要校准<br>• <strong>AWQ</strong>: 激活感知，质量最佳，速度最快<br>• <strong>GGUF</strong>: 混合精度，跨平台，支持 CPU<br>• <strong>bitsandbytes</strong>: 零校准，与 QLoRA 配合，推理略慢<br><br>选择取决于你的部署场景：GPU 服务 → AWQ/GPTQ，桌面/移动 → GGUF，训练 → BnB。',
+    formula: '         质量  速度  易用  生态  灵活\nGPTQ:    ★★★★ ★★★★★ ★★★  ★★★★ ★★★★\nAWQ:     ★★★★★ ★★★★★ ★★★★ ★★★  ★★★\nGGUF:    ★★★★ ★★★★ ★★★★★ ★★★★★ ★★★★★\nBnB:     ★★★  ★★★  ★★★★★ ★★★★ ★★★' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function hsl(h,s,l){ return `hsl(${h},${s}%,${l}%)`; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: Why quantization - FP16 vs INT4
+function renderStep0(p) {
+  const cx=W/2, cy=H/2;
+  ctx.textAlign='center';
+  // FP16 bits
+  const bw=28, bh=28, gap=3;
+  const bits16=16, bits4=4;
+  const sx16=cx-bits16*(bw+gap)/2;
+  const sy16=cy-80;
+  
+  ctx.font='bold 14px PingFang SC';
+  const lp=easeInOut(Math.min(1,p/.15));
+  ctx.fillStyle=`rgba(108,92,231,${lp})`; ctx.fillText('FP16 — 每个参数 16 bits',cx,sy16-15);
+  
+  for(let i=0;i<bits16;i++){
+    const delay=i*.03;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const x=sx16+i*(bw+gap);
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='rgba(108,92,231,.3)'; ctx.strokeStyle='rgba(108,92,231,.7)';
+    drawRoundRect(x,sy16,bw,bh,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#6C5CE7'; ctx.font='bold 11px Courier New';
+    ctx.fillText(i<1?'S':i<6?'E':'M',x+bw/2,sy16+bh/2+4);
+    ctx.globalAlpha=1;
+  }
+  
+  // Arrow
+  if(p>.4){
+    const arp=easeInOut((p-.4)/.15);
+    ctx.strokeStyle=`rgba(249,158,11,${arp})`; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(cx,sy16+bh+15); ctx.lineTo(cx,sy16+bh+50); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx-8,sy16+bh+42); ctx.lineTo(cx,sy16+bh+52); ctx.lineTo(cx+8,sy16+bh+42); ctx.stroke();
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle=`rgba(249,158,11,${arp})`;
+    ctx.fillText('量化压缩 4x',cx+60,sy16+bh+38);
+  }
+  
+  // INT4 bits
+  const sy4=sy16+bh+60;
+  if(p>.5){
+    const lp2=easeInOut((p-.5)/.15);
+    ctx.fillStyle=`rgba(0,184,148,${lp2})`; ctx.font='bold 14px PingFang SC';
+    ctx.fillText('INT4 — 每个参数 4 bits',cx,sy4-15);
+    
+    const sx4=cx-bits4*(bw+gap)/2;
+    for(let i=0;i<bits4;i++){
+      const delay=.55+i*.05;
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+      const x=sx4+i*(bw+gap);
+      ctx.globalAlpha=ap;
+      ctx.fillStyle='rgba(0,184,148,.3)'; ctx.strokeStyle='rgba(0,184,148,.7)';
+      drawRoundRect(x,sy4,bw,bh,4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#00B894'; ctx.font='bold 11px Courier New';
+      ctx.fillText(['S','V','V','V'][i],x+bw/2,sy4+bh/2+4);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Model size comparison bars
+  if(p>.7){
+    const bp=easeInOut((p-.7)/.3);
+    const by=sy4+bh+40;
+    const maxBarW=W*.6;
+    
+    ctx.font='13px PingFang SC'; ctx.textAlign='left';
+    // FP16 bar
+    ctx.globalAlpha=bp;
+    ctx.fillStyle='rgba(108,92,231,.3)';
+    drawRoundRect(cx-maxBarW/2,by,maxBarW*bp,24,6); ctx.fill();
+    ctx.fillStyle='#6C5CE7'; ctx.fillText('FP16: 14 GB',cx-maxBarW/2+8,by+16);
+    
+    // INT4 bar
+    ctx.fillStyle='rgba(0,184,148,.3)';
+    drawRoundRect(cx-maxBarW/2,by+34,maxBarW*.25*bp,24,6); ctx.fill();
+    ctx.fillStyle='#00B894'; ctx.fillText('INT4: 3.5 GB',cx-maxBarW/2+8,by+50);
+    
+    ctx.textAlign='right'; ctx.fillStyle=`rgba(249,158,11,${bp})`; ctx.font='bold 14px PingFang SC';
+    ctx.fillText('节省 75% 显存！',cx+maxBarW/2,by+50);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Symmetric vs Asymmetric
+function renderStep1(p) {
+  const cx=W/2, topY=30;
+  // Number line
+  const lineW=W*.7, lineY=topY+60;
+  const lx=cx-lineW/2;
+  
+  // Symmetric
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  const sp=easeInOut(Math.min(1,p/.25));
+  ctx.fillStyle=`rgba(108,92,231,${sp})`; ctx.fillText('对称量化 (Symmetric)',cx,topY+10);
+  
+  // Axis
+  ctx.globalAlpha=sp;
+  ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(lx,lineY); ctx.lineTo(lx+lineW,lineY); ctx.stroke();
+  
+  // FP16 range markers
+  const markers=['-max','','','','0','','','','max'];
+  for(let i=0;i<markers.length;i++){
+    const x=lx+i*lineW/8;
+    ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(x,lineY-5); ctx.lineTo(x,lineY+5); ctx.stroke();
+    if(markers[i]){ctx.fillStyle='#94A3B8'; ctx.font='11px Courier New'; ctx.fillText(markers[i],x,lineY+20);}
+  }
+  ctx.globalAlpha=1;
+  
+  // Symmetric quantization points
+  if(p>.2){
+    const qp=easeInOut((p-.2)/.25);
+    const symPoints=[-7,-5,-3,-1,0,1,3,5,7];
+    for(let i=0;i<symPoints.length;i++){
+      const delay=.2+i*.03;
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+      const x=lx+((symPoints[i]+7)/14)*lineW;
+      ctx.globalAlpha=ap;
+      ctx.fillStyle='#6C5CE7';
+      ctx.beginPath(); ctx.arc(x,lineY,5,0,Math.PI*2); ctx.fill();
+      ctx.font='10px Courier New'; ctx.fillText(symPoints[i].toString(),x,lineY-12);
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Asymmetric
+  const lineY2=lineY+100;
+  if(p>.45){
+    const ap2=easeInOut((p-.45)/.2);
+    ctx.fillStyle=`rgba(0,184,148,${ap2})`; ctx.font='bold 14px PingFang SC';
+    ctx.fillText('非对称量化 (Asymmetric)',cx,lineY+55);
+    
+    ctx.globalAlpha=ap2;
+    ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(lx,lineY2); ctx.lineTo(lx+lineW,lineY2); ctx.stroke();
+    
+    const markers2=['min','','','','','','','','max'];
+    for(let i=0;i<markers2.length;i++){
+      const x=lx+i*lineW/8;
+      ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(x,lineY2-5); ctx.lineTo(x,lineY2+5); ctx.stroke();
+      if(markers2[i]){ctx.fillStyle='#94A3B8'; ctx.font='11px Courier New'; ctx.fillText(markers2[i],x,lineY2+20);}
+    }
+    ctx.globalAlpha=1;
+  }
+  
+  // Asymmetric quantization points + zero point
+  if(p>.6){
+    for(let i=0;i<16;i++){
+      const delay=.6+i*.02;
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+      const x=lx+(i/15)*lineW;
+      ctx.globalAlpha=ap;
+      ctx.fillStyle=i===5?'#F59E0B':'#00B894';
+      ctx.beginPath(); ctx.arc(x,lineY2,i===5?7:4,0,Math.PI*2); ctx.fill();
+      if(i===5){ctx.font='10px PingFang SC'; ctx.fillText('zero',x,lineY2-14);}
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Comparison note
+  if(p>.85){
+    const np=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=np; ctx.font='13px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+    ctx.fillText('非对称量化：范围利用率更高 → 精度更好（但多一个 zero point 参数）',cx,lineY2+50);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Group Quantization
+function renderStep2(p) {
+  const cx=W/2, topY=20;
+  const cellW=14, cellH=14, gap=2;
+  const cols=32, rows=8;
+  const gridW=cols*(cellW+gap), gridH=rows*(cellH+gap);
+  const gx=cx-gridW/2, gy=topY+40;
+  
+  // Title
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.fillStyle=`rgba(108,92,231,${tp})`; ctx.fillText('权重矩阵 — 全局量化 vs 分组量化',cx,topY+10);
+  
+  // Simulated weights with outliers
+  const rng=()=>Math.sin(Date.now()/10000)*0.5;
+  const weights=[];
+  for(let r=0;r<rows;r++){
+    weights[r]=[];
+    for(let c=0;c<cols;c++){
+      let v=(Math.sin(r*3+c*0.7)*0.3+Math.cos(r*0.5+c*2)*0.2);
+      if(r===2&&c===5) v=0.95; // outlier
+      if(r===5&&c===28) v=-0.9; // outlier
+      weights[r][c]=v;
+    }
+  }
+  
+  // Draw weight matrix
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const delay=(r*cols+c)*0.002;
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-.05-delay)/.2)));
+      const v=weights[r][c];
+      const x=gx+c*(cellW+gap), y=gy+r*(cellH+gap);
+      ctx.globalAlpha=ap;
+      const h=v>0?lerp(200,0,Math.abs(v)):lerp(200,260,Math.abs(v));
+      ctx.fillStyle=hsl(h,70,lerp(20,55,Math.abs(v)));
+      ctx.fillRect(x,y,cellW,cellH);
+      // Highlight outliers
+      if(Math.abs(v)>0.8){
+        ctx.strokeStyle='#EF4444'; ctx.lineWidth=2;
+        ctx.strokeRect(x-1,y-1,cellW+2,cellH+2);
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+  
+  // Global scale line
+  if(p>.35&&p<.65){
+    const gsp=easeInOut((p-.35)/.15);
+    ctx.globalAlpha=gsp;
+    ctx.strokeStyle='#EF4444'; ctx.lineWidth=2; ctx.setLineDash([4,4]);
+    ctx.strokeRect(gx-4,gy-4,gridW+8,gridH+8);
+    ctx.setLineDash([]);
+    ctx.font='12px PingFang SC'; ctx.fillStyle='#EF4444';
+    ctx.fillText('全局 1 个 scale → 受 outlier 影响',cx,gy+gridH+20);
+    ctx.globalAlpha=1;
+  }
+  
+  // Group quantization
+  if(p>.55){
+    const grpP=easeInOut((p-.55)/.2);
+    const groupSize=8; // visual group size
+    const colors=['#6C5CE7','#0984E3','#00B894','#F59E0B'];
+    
+    for(let g=0;g<cols/groupSize;g++){
+      const delay=.55+g*.05;
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+      ctx.globalAlpha=ap*.4;
+      ctx.fillStyle=colors[g%colors.length];
+      const gxx=gx+g*groupSize*(cellW+gap);
+      ctx.fillRect(gxx-2,gy-2,groupSize*(cellW+gap)+2,gridH+4);
+      ctx.globalAlpha=ap;
+      ctx.font='10px PingFang SC'; ctx.textAlign='center';
+      ctx.fillText(`s${g}`,gxx+groupSize*(cellW+gap)/2,gy+gridH+16);
+      ctx.globalAlpha=1;
+    }
+    
+    ctx.fillStyle=`rgba(0,184,148,${grpP})`; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('分组量化：每组独立 scale → outlier 只影响所在组',cx,gy+gridH+35);
+  }
+  
+  // Accuracy comparison
+  if(p>.8){
+    const cp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=cp;
+    const by=gy+gridH+55;
+    ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    
+    // Global bar
+    ctx.fillStyle='rgba(239,68,68,.3)'; drawRoundRect(cx-150,by,200,22,6); ctx.fill();
+    ctx.fillStyle='#EF4444'; ctx.textAlign='left'; ctx.fillText('全局: PPL=16.2',cx-145,by+16);
+    
+    // Group bar
+    ctx.fillStyle='rgba(0,184,148,.3)'; drawRoundRect(cx-150,by+30,140,22,6); ctx.fill();
+    ctx.fillStyle='#00B894'; ctx.fillText('分组: PPL=14.8',cx-145,by+46);
+    
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: GPTQ
+function renderStep3(p) {
+  const cx=W/2, topY=20;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  
+  // Weight matrix columns
+  const cols=8, colW=40, colH=150, gap=8;
+  const totalW=cols*(colW+gap);
+  const sx=cx-totalW/2, sy=topY+30;
+  
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.fillStyle=`rgba(108,92,231,${tp})`; ctx.fillText('GPTQ 逐列量化 + 误差补偿',cx,topY+10);
+  
+  // Draw columns
+  for(let i=0;i<cols;i++){
+    const x=sx+i*(colW+gap);
+    const quantDelay=.15+i*.1;
+    const isQuantized=p>quantDelay;
+    const qp=easeInOut(Math.max(0,Math.min(1,(p-quantDelay)/.08)));
+    
+    // Column background
+    ctx.globalAlpha=.8;
+    if(isQuantized){
+      ctx.fillStyle=`rgba(0,184,148,${.15+qp*.2})`;
+      ctx.strokeStyle=`rgba(0,184,148,${.4+qp*.4})`;
+    } else {
+      ctx.fillStyle='rgba(108,92,231,.15)';
+      ctx.strokeStyle='rgba(108,92,231,.4)';
+    }
+    drawRoundRect(x,sy,colW,colH,6); ctx.fill(); ctx.stroke();
+    
+    // Column label
+    ctx.fillStyle=isQuantized?'#00B894':'#6C5CE7';
+    ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText(`w${i}`,x+colW/2,sy-5);
+    
+    // Quantized indicator
+    if(isQuantized&&qp>.5){
+      ctx.fillStyle='#00B894'; ctx.font='bold 10px PingFang SC';
+      ctx.fillText('Q',x+colW/2,sy+colH/2+4);
+    }
+    ctx.globalAlpha=1;
+    
+    // Error compensation arrows
+    if(isQuantized&&i<cols-1){
+      const arrP=easeInOut(Math.max(0,Math.min(1,(p-quantDelay-.05)/.05)));
+      if(arrP>0){
+        ctx.globalAlpha=arrP*.6;
+        ctx.strokeStyle='#F59E0B'; ctx.lineWidth=1.5;
+        for(let j=i+1;j<Math.min(i+3,cols);j++){
+          const nx=sx+j*(colW+gap)+colW/2;
+          ctx.beginPath();
+          ctx.moveTo(x+colW,sy+colH/2);
+          ctx.quadraticCurveTo((x+colW+nx)/2,sy+colH/2-20*(j-i),nx,sy+colH/2);
+          ctx.stroke();
+          // arrowhead
+          ctx.beginPath(); ctx.moveTo(nx-5,sy+colH/2-4); ctx.lineTo(nx,sy+colH/2); ctx.lineTo(nx-5,sy+colH/2+4); ctx.stroke();
+        }
+        ctx.globalAlpha=1;
+      }
+    }
+  }
+  
+  // Hessian matrix
+  if(p>.4){
+    const hp=easeInOut((p-.4)/.2);
+    const hx=cx-60, hy=sy+colH+25;
+    ctx.globalAlpha=hp;
+    ctx.fillStyle='rgba(249,158,11,.15)'; ctx.strokeStyle='rgba(249,158,11,.5)';
+    drawRoundRect(hx,hy,120,40,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#F59E0B'; ctx.font='bold 12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('H = X·X^T',hx+60,hy+16);
+    ctx.fillStyle='rgba(249,158,11,.7)'; ctx.font='11px PingFang SC';
+    ctx.fillText('(Hessian 指导补偿)',hx+60,hy+32);
+    ctx.globalAlpha=1;
+  }
+  
+  // Result
+  if(p>.85){
+    const rp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=rp; ctx.font='13px PingFang SC'; ctx.fillStyle='#00B894'; ctx.textAlign='center';
+    ctx.fillText('误差补偿使量化后输出误差最小化 → PPL 接近 FP16',cx,sy+colH+80);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: AWQ
+function renderStep4(p) {
+  const cx=W/2, topY=15;
+  ctx.textAlign='center';
+  
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.fillStyle=`rgba(0,184,148,${tp})`; ctx.font='bold 14px PingFang SC';
+  ctx.fillText('AWQ — 激活值感知的权重保护',cx,topY+10);
+  
+  // Channel bars (activation magnitude)
+  const nCh=12, barMaxH=120, barW=30, barGap=10;
+  const totalW=nCh*(barW+barGap);
+  const bx=cx-totalW/2, by=topY+160;
+  
+  // Activation magnitudes (1 channel is salient)
+  const activations=[0.2,0.15,0.3,0.18,0.9,0.12,0.25,0.1,0.22,0.85,0.16,0.2];
+  
+  for(let i=0;i<nCh;i++){
+    const delay=.1+i*.04;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const x=bx+i*(barW+barGap);
+    const h=activations[i]*barMaxH*ap;
+    const isSalient=activations[i]>0.7;
+    
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=isSalient?'rgba(239,68,68,.4)':'rgba(108,92,231,.25)';
+    ctx.strokeStyle=isSalient?'#EF4444':'rgba(108,92,231,.5)';
+    drawRoundRect(x,by-h,barW,h,4); ctx.fill(); ctx.stroke();
+    
+    // Label
+    ctx.fillStyle=isSalient?'#EF4444':'#94A3B8';
+    ctx.font='10px Courier New';
+    ctx.fillText(`ch${i}`,x+barW/2,by+14);
+    
+    if(isSalient&&ap>.8){
+      ctx.fillStyle='#EF4444'; ctx.font='bold 11px PingFang SC';
+      ctx.fillText('显著!',x+barW/2,by-h-10);
+    }
+    ctx.globalAlpha=1;
+  }
+  
+  // Activation label
+  if(p>.2){
+    ctx.globalAlpha=easeInOut((p-.2)/.15);
+    ctx.fillStyle='#94A3B8'; ctx.font='12px PingFang SC';
+    ctx.fillText('↑ 各通道激活值大小',cx,topY+30);
+    ctx.globalAlpha=1;
+  }
+  
+  // Scaling protection
+  if(p>.55){
+    const sp=easeInOut((p-.55)/.2);
+    ctx.globalAlpha=sp;
+    
+    const sy2=by+30;
+    ctx.fillStyle='#F59E0B'; ctx.font='bold 13px PingFang SC';
+    ctx.fillText('缩放保护：对显著通道的权重乘以 s_j → 量化后误差更小',cx,sy2+10);
+    
+    // Before/After comparison
+    const compY=sy2+30;
+    ctx.fillStyle='rgba(239,68,68,.2)'; drawRoundRect(cx-200,compY,180,50,8); ctx.fill();
+    ctx.strokeStyle='rgba(239,68,68,.5)'; ctx.stroke();
+    ctx.fillStyle='#EF4444'; ctx.font='12px PingFang SC';
+    ctx.fillText('无保护: 误差大',cx-110,compY+20);
+    ctx.fillText('▓▓▓▓▓▓▓▓',cx-110,compY+38);
+    
+    ctx.fillStyle='rgba(0,184,148,.2)'; drawRoundRect(cx+20,compY,180,50,8); ctx.fill();
+    ctx.strokeStyle='rgba(0,184,148,.5)'; ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='12px PingFang SC';
+    ctx.fillText('AWQ 保护: 误差小',cx+110,compY+20);
+    ctx.fillText('▓▓',cx+110,compY+38);
+    
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: NF4 vs FP4
+function renderStep5(p) {
+  const cx=W/2, topY=15;
+  ctx.textAlign='center';
+  
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.fillStyle=`rgba(249,158,11,${tp})`; ctx.font='bold 14px PingFang SC';
+  ctx.fillText('NF4 — 正态分布最优量化',cx,topY+10);
+  
+  // Normal distribution curve
+  const curveW=W*.7, curveH=120;
+  const curveX=cx-curveW/2, curveY=topY+50;
+  
+  if(p>.1){
+    const cp=easeInOut((p-.1)/.25);
+    ctx.globalAlpha=cp;
+    // Draw normal distribution
+    ctx.strokeStyle='rgba(148,163,184,.6)'; ctx.lineWidth=2;
+    ctx.beginPath();
+    for(let px=0;px<=curveW;px++){
+      const x=((px/curveW)-0.5)*6; // -3 to 3
+      const y=Math.exp(-x*x/2)/Math.sqrt(2*Math.PI);
+      const py=curveY+curveH-y*curveH*2.5;
+      px===0?ctx.moveTo(curveX+px,py):ctx.lineTo(curveX+px,py);
+    }
+    ctx.stroke();
+    
+    ctx.fillStyle='#94A3B8'; ctx.font='11px PingFang SC';
+    ctx.fillText('权重分布 ≈ 正态分布 N(0, σ²)',cx,curveY+curveH+15);
+    ctx.globalAlpha=1;
+  }
+  
+  // FP4 uniform points
+  if(p>.35){
+    const fp=easeInOut((p-.35)/.2);
+    ctx.globalAlpha=fp;
+    ctx.fillStyle='#EF4444'; ctx.font='11px PingFang SC';
+    ctx.fillText('FP4 量化点（均匀间隔）',cx-curveW/4,curveY-8);
+    
+    for(let i=0;i<16;i++){
+      const x=curveX+(i/15)*curveW;
+      ctx.fillStyle='rgba(239,68,68,.8)';
+      ctx.beginPath(); ctx.arc(x,curveY+curveH+30,3,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+  
+  // NF4 quantile points
+  if(p>.55){
+    const np=easeInOut((p-.55)/.25);
+    ctx.globalAlpha=np;
+    ctx.fillStyle='#00B894'; ctx.font='11px PingFang SC';
+    ctx.fillText('NF4 量化点（按正态分位数）',cx+curveW/4,curveY-8);
+    
+    // Approximate NF4 quantile positions (normalized to [0,1])
+    const nf4Pos=[0.02,0.09,0.16,0.23,0.31,0.38,0.44,0.49,0.51,0.56,0.62,0.69,0.77,0.84,0.91,0.98];
+    for(let i=0;i<16;i++){
+      const x=curveX+nf4Pos[i]*curveW;
+      ctx.fillStyle='rgba(0,184,148,.9)';
+      ctx.beginPath(); ctx.arc(x,curveY+curveH+50,4,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+  
+  // Annotation
+  if(p>.8){
+    const ap=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=ap;
+    ctx.font='13px PingFang SC';
+    
+    ctx.fillStyle='#EF4444';
+    ctx.fillText('FP4: 两端稀疏区域浪费量化点',cx,curveY+curveH+75);
+    ctx.fillStyle='#00B894';
+    ctx.fillText('NF4: 中心密集 → 匹配权重分布 → 量化误差更小',cx,curveY+curveH+95);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 6: Comparison radar
+function renderStep6(p) {
+  const cx=W/2, cy=H/2-10;
+  ctx.textAlign='center';
+  
+  const tp=easeInOut(Math.min(1,p/.15));
+  ctx.fillStyle=`rgba(108,92,231,${tp})`; ctx.font='bold 14px PingFang SC';
+  ctx.fillText('四种量化方法对比',cx,20);
+  
+  // Radar chart
+  const R=Math.min(W,H)*.28;
+  const dims=['质量','速度','易用性','生态','灵活性'];
+  const nDims=dims.length;
+  
+  // Draw radar grid
+  if(p>.1){
+    const gp=easeInOut((p-.1)/.2);
+    ctx.globalAlpha=gp*.3;
+    for(let level=1;level<=5;level++){
+      ctx.strokeStyle='rgba(255,255,255,.15)'; ctx.lineWidth=1;
+      ctx.beginPath();
+      for(let d=0;d<=nDims;d++){
+        const angle=-Math.PI/2+d*2*Math.PI/nDims;
+        const r=R*level/5;
+        const x=cx+r*Math.cos(angle), y=cy+r*Math.sin(angle);
+        d===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+    // Axes
+    for(let d=0;d<nDims;d++){
+      const angle=-Math.PI/2+d*2*Math.PI/nDims;
+      ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+R*Math.cos(angle),cy+R*Math.sin(angle)); ctx.stroke();
+      // Labels
+      ctx.globalAlpha=gp;
+      ctx.fillStyle='#E2E8F0'; ctx.font='12px PingFang SC';
+      const lx=cx+(R+18)*Math.cos(angle), ly=cy+(R+18)*Math.sin(angle);
+      ctx.fillText(dims[d],lx,ly+4);
+    }
+    ctx.globalAlpha=1;
+  }
+  
+  // Method data [quality, speed, ease, ecosystem, flexibility] out of 5
+  const methods=[
+    {name:'GPTQ',   vals:[4,5,3,4,4], color:'#6C5CE7', delay:.25},
+    {name:'AWQ',    vals:[5,5,4,3,3], color:'#0984E3', delay:.4},
+    {name:'GGUF',   vals:[4,4,5,5,5], color:'#00B894', delay:.55},
+    {name:'BnB',    vals:[3,3,5,4,3], color:'#F59E0B', delay:.7},
+  ];
+  
+  for(const m of methods){
+    const mp=easeInOut(Math.max(0,Math.min(1,(p-m.delay)/.2)));
+    if(mp<=0) continue;
+    
+    ctx.globalAlpha=mp*.2;
+    ctx.fillStyle=m.color;
+    ctx.beginPath();
+    for(let d=0;d<=nDims;d++){
+      const di=d%nDims;
+      const angle=-Math.PI/2+di*2*Math.PI/nDims;
+      const r=R*m.vals[di]/5*mp;
+      const x=cx+r*Math.cos(angle), y=cy+r*Math.sin(angle);
+      d===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    ctx.fill();
+    
+    ctx.globalAlpha=mp*.8;
+    ctx.strokeStyle=m.color; ctx.lineWidth=2;
+    ctx.beginPath();
+    for(let d=0;d<=nDims;d++){
+      const di=d%nDims;
+      const angle=-Math.PI/2+di*2*Math.PI/nDims;
+      const r=R*m.vals[di]/5*mp;
+      const x=cx+r*Math.cos(angle), y=cy+r*Math.sin(angle);
+      d===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    
+    // Dots
+    for(let d=0;d<nDims;d++){
+      const angle=-Math.PI/2+d*2*Math.PI/nDims;
+      const r=R*m.vals[d]/5*mp;
+      const x=cx+r*Math.cos(angle), y=cy+r*Math.sin(angle);
+      ctx.fillStyle=m.color;
+      ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+  
+  // Legend
+  if(p>.6){
+    const lp=easeInOut((p-.6)/.2);
+    ctx.globalAlpha=lp;
+    const ly=cy+R+40;
+    for(let i=0;i<methods.length;i++){
+      const m=methods[i];
+      const lx=cx-150+i*80;
+      ctx.fillStyle=m.color;
+      ctx.beginPath(); ctx.arc(lx,ly,5,0,Math.PI*2); ctx.fill();
+      ctx.font='12px PingFang SC'; ctx.fillText(m.name,lx+12,ly+4);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5,renderStep6];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2500;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

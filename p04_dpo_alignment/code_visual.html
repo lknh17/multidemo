@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p04 DPO 偏好对齐 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(108,92,231,.25);border-left:3px solid var(--primary);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(9,132,227,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(9,132,227,.5);background:rgba(9,132,227,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(9,132,227,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(9,132,227,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p04</span>
+  <h1>DPO 偏好对齐</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'偏好数据格式化 (dataset.py)',
+   desc:'DPOTrainer 要求 chosen/rejected 是完整的对话文本（含 prompt），使用 chat template 格式化。不同模型模板不同，tokenizer.apply_chat_template() 自动处理。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">format_as_chat</span>(prompt, response, tokenizer):',hl:false},
+     {text:'    <span class="cm"># 构造 chat 格式消息</span>',hl:false},
+     {text:'    messages = [',hl:true},
+     {text:'        {<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: prompt},',hl:true},
+     {text:'        {<span class="str">"role"</span>: <span class="str">"assistant"</span>, <span class="str">"content"</span>: response},',hl:true},
+     {text:'    ]',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 自动应用模型的 chat template</span>',hl:false},
+     {text:'    formatted = tokenizer.apply_chat_template(',hl:true},
+     {text:'        messages, tokenize=<span class="kw">False</span>,',hl:true},
+     {text:'        add_generation_prompt=<span class="kw">False</span>',hl:false},
+     {text:'    )',hl:false},
+     {text:'    <span class="kw">return</span> formatted',hl:false},
+   ],
+   highlightLines:[2,3,4,8,9]},
+  {title:'DPO 训练核心 (train.py)',
+   desc:'使用 trl 库的 DPOTrainer。关键参数：beta 控制 KL 约束强度，loss_type 选择 sigmoid/hinge/ipo。ref_model 可由 DPOTrainer 自动创建。',
+   code:[
+     {text:'<span class="kw">from</span> trl <span class="kw">import</span> DPOConfig, DPOTrainer',hl:true},
+     {text:'',hl:false},
+     {text:'training_args = DPOConfig(',hl:false},
+     {text:'    beta=<span class="num">0.1</span>,  <span class="cm"># KL 惩罚系数</span>',hl:true},
+     {text:'    loss_type=<span class="str">"sigmoid"</span>,  <span class="cm"># BT 模型</span>',hl:true},
+     {text:'    max_length=<span class="num">1024</span>,',hl:false},
+     {text:'    max_prompt_length=<span class="num">512</span>,',hl:false},
+     {text:'    learning_rate=<span class="num">5e-7</span>,  <span class="cm"># DPO 用极小 lr</span>',hl:true},
+     {text:'    gradient_checkpointing=<span class="kw">True</span>,',hl:false},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'trainer = DPOTrainer(',hl:true},
+     {text:'    model=model,  <span class="cm"># policy π_θ</span>',hl:true},
+     {text:'    ref_model=ref_model,  <span class="cm"># 参考 π_ref</span>',hl:true},
+     {text:'    args=training_args,',hl:false},
+     {text:'    train_dataset=train_dataset,',hl:false},
+     {text:'    processing_class=tokenizer,',hl:false},
+     {text:'    peft_config=peft_config,  <span class="cm"># LoRA</span>',hl:true},
+     {text:')',hl:false},
+   ],
+   highlightLines:[0,3,4,7,11,12,13,17]},
+  {title:'SimPO/ORPO/KTO 算法切换',
+   desc:'四种算法共用一套代码框架。SimPO 设 ref_model=None 即可；ORPO 用 ORPOTrainer；KTO 用 KTOTrainer + 不同数据格式。',
+   code:[
+     {text:'<span class="cm"># SimPO: 不需要参考模型</span>',hl:false},
+     {text:'<span class="kw">if</span> algorithm == <span class="str">"simpo"</span>:',hl:true},
+     {text:'    dpo_kwargs[<span class="str">"ref_model"</span>] = <span class="kw">None</span>',hl:true},
+     {text:'    dpo_kwargs[<span class="str">"simpo_gamma"</span>] = <span class="num">0.5</span>  <span class="cm"># margin</span>',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># ORPO: 用 ORPOTrainer</span>',hl:false},
+     {text:'<span class="kw">elif</span> algorithm == <span class="str">"orpo"</span>:',hl:true},
+     {text:'    <span class="kw">from</span> trl <span class="kw">import</span> ORPOTrainer',hl:true},
+     {text:'    <span class="cm"># ORPO 不需要 ref model</span>',hl:false},
+     {text:'    <span class="cm"># Loss = NLL + α · log σ(log OR)</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># KTO: 用 KTOTrainer + 单条数据</span>',hl:false},
+     {text:'<span class="kw">elif</span> algorithm == <span class="str">"kto"</span>:',hl:true},
+     {text:'    <span class="kw">from</span> trl <span class="kw">import</span> KTOTrainer',hl:true},
+     {text:'    <span class="cm"># 数据格式: {prompt, completion, label}</span>',hl:false},
+     {text:'    <span class="cm"># label=True (好), label=False (坏)</span>',hl:false},
+   ],
+   highlightLines:[1,2,3,6,7,12,13]},
+  {title:'Reject Sampling 构造偏好数据',
+   desc:'对同一 prompt 用高 temperature 生成多个回复，评分后取最好/最差构造偏好对。temperature 需要足够高以产生多样性。',
+   code:[
+     {text:'<span class="cm"># 对每个 prompt 生成多个回复</span>',hl:false},
+     {text:'<span class="kw">for</span> prompt <span class="kw">in</span> prompts:',hl:false},
+     {text:'    responses = []',hl:false},
+     {text:'    <span class="kw">for</span> _ <span class="kw">in</span> range(num_responses):',hl:false},
+     {text:'        out = model.generate(',hl:true},
+     {text:'            temperature=<span class="num">0.8</span>,  <span class="cm"># 高T→多样性</span>',hl:true},
+     {text:'            top_p=<span class="num">0.95</span>,',hl:false},
+     {text:'            do_sample=<span class="kw">True</span>,',hl:true},
+     {text:'        )',hl:false},
+     {text:'        responses.append(decode(out))',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 评分（规则/reward model）</span>',hl:false},
+     {text:'    scores = score_responses(responses, prompt)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 取最好和最差构造偏好对</span>',hl:false},
+     {text:'    chosen = responses[argmax(scores)]',hl:true},
+     {text:'    rejected = responses[argmin(scores)]',hl:true},
+   ],
+   highlightLines:[4,5,7,12,15,16]},
+  {title:'LoRA 加载与推理 (inference.py)',
+   desc:'推理时检测是否是 LoRA adapter，是则先加载基座模型再加载 adapter，最后 merge_and_unload 合并权重以加速推理。',
+   code:[
+     {text:'<span class="cm"># 检测是否是 LoRA adapter</span>',hl:false},
+     {text:'adapter_config = os.path.join(path, <span class="str">"adapter_config.json"</span>)',hl:false},
+     {text:'is_lora = os.path.exists(adapter_config)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="kw">if</span> is_lora:',hl:false},
+     {text:'    <span class="cm"># 1. 加载基座模型</span>',hl:false},
+     {text:'    model = AutoModelForCausalLM.from_pretrained(base)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 2. 加载 LoRA adapter</span>',hl:false},
+     {text:'    model = PeftModel.from_pretrained(model, path)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 3. 合并权重（推理加速）</span>',hl:false},
+     {text:'    model = model.merge_and_unload()',hl:true},
+     {text:'    <span class="cm"># 合并后 = 全参模型，无 adapter 开销</span>',hl:false},
+   ],
+   highlightLines:[2,6,9,12]},
+];
+
+function resize(){const r=window.devicePixelRatio||1;const rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0);}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+// Step 0: Data formatting flow
+function renderStep0(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  // Raw data
+  const rp=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=rp;
+  ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='#6C5CE7';
+  drawRoundRect(cx-120,topY,240,50,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='11px Courier New';
+  ctx.fillText('{"prompt": "什么是DPO?",',cx,topY+18);
+  ctx.fillText(' "chosen": "DPO是...",',cx,topY+33);
+  ctx.fillText(' "rejected": "我不知道"}',cx,topY+48);
+  ctx.globalAlpha=1;
+  // Arrow
+  if(p>.2){
+    const ap=easeInOut((p-.2)/.15);
+    ctx.strokeStyle=`rgba(249,158,11,${ap})`;ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(cx,topY+52);ctx.lineTo(cx,topY+75);ctx.stroke();
+    ctx.fillStyle=`rgba(249,158,11,${ap})`;ctx.font='10px PingFang SC';
+    ctx.fillText('apply_chat_template()',cx+70,topY+65);
+  }
+  // Formatted
+  if(p>.35){
+    const fp=easeInOut((p-.35)/.25);
+    ctx.globalAlpha=fp;
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';
+    drawRoundRect(cx-140,topY+80,280,70,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='10px Courier New';ctx.textAlign='left';
+    ctx.fillText('<|im_start|>user',cx-130,topY+97);
+    ctx.fillText('什么是DPO?<|im_end|>',cx-130,topY+112);
+    ctx.fillText('<|im_start|>assistant',cx-130,topY+127);
+    ctx.fillText('DPO是...<|im_end|>',cx-130,topY+142);
+    ctx.textAlign='center';
+    ctx.globalAlpha=1;
+  }
+  // DPOTrainer requirement
+  if(p>.65){
+    const dp=easeInOut((p-.65)/.2);
+    ctx.globalAlpha=dp;ctx.fillStyle='#F59E0B';ctx.font='bold 11px PingFang SC';
+    ctx.fillText('DPOTrainer 要求: chosen/rejected 必须是完整对话格式',cx,topY+175);
+    ctx.fillText('（包含 prompt + response，经 chat template 格式化）',cx,topY+193);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: DPO training flow
+function renderStep1(p){
+  const cx=W/2,topY=10;
+  const stages=[
+    {label:'Policy π_θ',color:'#6C5CE7',y:topY},
+    {label:'Ref π_ref',color:'#0984E3',y:topY},
+    {label:'Chosen logprobs',color:'#10B981',y:topY+60},
+    {label:'Rejected logprobs',color:'#EF4444',y:topY+60},
+    {label:'β × (Δchosen - Δrejected)',color:'#F59E0B',y:topY+130},
+    {label:'-log σ(·) = DPO Loss',color:'#00B894',y:topY+190},
+    {label:'Backward + LoRA Update',color:'#6C5CE7',y:topY+250},
+  ];
+  // Policy & Ref side by side
+  const p1=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=p1;
+  ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='#6C5CE7';
+  drawRoundRect(cx-140,topY,120,35,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('Policy π_θ',cx-80,topY+22);
+  ctx.fillStyle='rgba(9,132,227,.15)';ctx.strokeStyle='#0984E3';
+  drawRoundRect(cx+20,topY,120,35,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.fillText('Reference π_ref',cx+80,topY+22);
+  ctx.globalAlpha=1;
+  // Chosen & Rejected
+  const p2=easeInOut(Math.max(0,(p-.15)/.2));
+  ctx.globalAlpha=p2;
+  ctx.fillStyle='rgba(16,185,129,.15)';ctx.strokeStyle='#10B981';
+  drawRoundRect(20,topY+55,W/2-30,30,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#10B981';ctx.font='11px Courier New';
+  ctx.fillText('log π(y_w) - log π_ref(y_w)',W/4,topY+74);
+  ctx.fillStyle='rgba(239,68,68,.15)';ctx.strokeStyle='#EF4444';
+  drawRoundRect(W/2+10,topY+55,W/2-30,30,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#EF4444';
+  ctx.fillText('log π(y_l) - log π_ref(y_l)',3*W/4,topY+74);
+  ctx.globalAlpha=1;
+  // Difference
+  const p3=easeInOut(Math.max(0,(p-.4)/.2));
+  if(p3>0){
+    ctx.globalAlpha=p3;
+    ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';
+    drawRoundRect(cx-110,topY+110,220,30,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='11px Courier New';
+    ctx.fillText('β × (Δchosen - Δrejected)',cx,topY+129);
+    ctx.globalAlpha=1;
+  }
+  // Sigmoid
+  const p4=easeInOut(Math.max(0,(p-.6)/.2));
+  if(p4>0){
+    ctx.globalAlpha=p4;
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';
+    drawRoundRect(cx-80,topY+165,160,30,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 12px PingFang SC';
+    ctx.fillText('-log σ(·) = Loss',cx,topY+184);
+    ctx.globalAlpha=1;
+  }
+  // Backward
+  const p5=easeInOut(Math.max(0,(p-.8)/.2));
+  if(p5>0){
+    ctx.globalAlpha=p5;
+    ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='#6C5CE7';
+    drawRoundRect(cx-90,topY+220,180,30,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='12px PingFang SC';
+    ctx.fillText('Backward → LoRA Update',cx,topY+240);
+    ctx.globalAlpha=1;
+  }
+  // Arrows
+  if(p>.15){ctx.strokeStyle='rgba(255,255,255,.1)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx,topY+37);ctx.lineTo(cx,topY+53);ctx.stroke();}
+  if(p>.4){ctx.beginPath();ctx.moveTo(cx,topY+87);ctx.lineTo(cx,topY+108);ctx.stroke();}
+  if(p>.6){ctx.beginPath();ctx.moveTo(cx,topY+142);ctx.lineTo(cx,topY+163);ctx.stroke();}
+  if(p>.8){ctx.beginPath();ctx.moveTo(cx,topY+197);ctx.lineTo(cx,topY+218);ctx.stroke();}
+}
+
+// Step 2: Algorithm switching
+function renderStep2(p){
+  const cx=W/2,topY=15;
+  ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  const algos=[
+    {name:'DPO',desc:'标准偏好优化',ref:'需要 π_ref',color:'#6C5CE7',trainer:'DPOTrainer'},
+    {name:'SimPO',desc:'无需参考模型',ref:'ref_model=None',color:'#00B894',trainer:'DPOTrainer'},
+    {name:'ORPO',desc:'统一 NLL+偏好',ref:'无需 π_ref',color:'#F59E0B',trainer:'ORPOTrainer'},
+    {name:'KTO',desc:'单条标签数据',ref:'需要 π_ref',color:'#0984E3',trainer:'KTOTrainer'},
+  ];
+  for(let i=0;i<algos.length;i++){
+    const delay=i*.18;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const a=algos[i];
+    const y=topY+i*70;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=a.color+'1A';ctx.strokeStyle=a.color;
+    drawRoundRect(20,y,W-40,55,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=a.color;ctx.font='bold 14px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(a.name,35,y+20);
+    ctx.fillStyle='#94A3B8';ctx.font='11px PingFang SC';
+    ctx.fillText(a.desc,100,y+20);
+    ctx.fillStyle=a.color+'88';ctx.font='11px Courier New';
+    ctx.fillText(a.trainer,35,y+40);
+    ctx.fillStyle='#94A3B8';ctx.font='10px PingFang SC';
+    ctx.fillText(a.ref,200,y+40);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Reject sampling flow
+function renderStep3(p){
+  const cx=W/2,topY=10;
+  ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  // Prompt
+  const pp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=pp;
+  ctx.fillStyle='rgba(108,92,231,.2)';ctx.strokeStyle='#6C5CE7';
+  drawRoundRect(cx-80,topY,160,28,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='12px PingFang SC';
+  ctx.fillText('Prompt: "什么是DPO?"',cx,topY+18);
+  ctx.globalAlpha=1;
+  // Generate 4 responses
+  const responses=['回复A: DPO是直接偏好优化...','回复B: 我不太清楚...','回复C: DPO全称Direct...','回复D: DPO是一种对齐算法...'];
+  const scores=[0.85,0.20,0.72,0.91];
+  const colors=['#10B981','#EF4444','#F59E0B','#00B894'];
+  for(let i=0;i<4;i++){
+    const delay=.15+i*.1;
+    const rp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const y=topY+40+i*32;
+    ctx.globalAlpha=rp;
+    ctx.fillStyle=colors[i]+'15';ctx.strokeStyle=colors[i]+'66';
+    drawRoundRect(20,y,W-40,26,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle=colors[i];ctx.font='10px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(responses[i],30,y+17);
+    // Score
+    if(p>.5){
+      const sp=easeInOut((p-.5)/.2);
+      ctx.fillStyle=`rgba(249,158,11,${sp})`;ctx.textAlign='right';ctx.font='bold 11px Courier New';
+      ctx.fillText(`score=${scores[i].toFixed(2)}`,W-30,y+17);
+    }
+    ctx.globalAlpha=1;
+  }
+  ctx.textAlign='center';
+  // Result
+  if(p>.7){
+    const fp=easeInOut((p-.7)/.3);
+    const by=topY+175;
+    ctx.globalAlpha=fp;
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';
+    drawRoundRect(20,by,W/2-30,25,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='11px PingFang SC';
+    ctx.fillText('✅ Chosen: 回复D (0.91)',W/4,by+17);
+    ctx.fillStyle='rgba(239,68,68,.15)';ctx.strokeStyle='#EF4444';
+    drawRoundRect(W/2+10,by,W/2-30,25,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#EF4444';
+    ctx.fillText('❌ Rejected: 回复B (0.20)',3*W/4,by+17);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: LoRA merge flow
+function renderStep4(p){
+  const cx=W/2,topY=15;
+  ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  const stages=[
+    {label:'检测 adapter_config.json',color:'#F59E0B',t:0},
+    {label:'加载基座模型 (Qwen2.5-0.5B)',color:'#6C5CE7',t:.2},
+    {label:'加载 LoRA Adapter',color:'#0984E3',t:.4},
+    {label:'merge_and_unload()',color:'#00B894',t:.6},
+    {label:'合并后全参模型 → 推理',color:'#10B981',t:.8},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-stages[i].t)/.18)));
+    const y=topY+i*55;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=stages[i].color+'1A';ctx.strokeStyle=stages[i].color;
+    drawRoundRect(cx-120,y,240,38,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=stages[i].color;ctx.font='12px PingFang SC';
+    ctx.fillText(stages[i].label,cx,y+24);
+    if(i>0 && ap>.5){
+      ctx.strokeStyle=stages[i].color+'44';ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(cx,topY+(i-1)*55+38);ctx.lineTo(cx,y);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+  // merge explanation
+  if(p>.85){
+    const mp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=mp;ctx.fillStyle='#94A3B8';ctx.font='11px PingFang SC';
+    ctx.fillText('merge 后无 adapter 开销，推理速度 = 全参模型',cx,topY+290);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function updateCodePanel(){
+  const panel=document.getElementById('codePanel');
+  const s=steps[currentStep];
+  panel.innerHTML=s.code.map((line,i)=>{
+    const cls=s.highlightLines.includes(i)?'code-line highlight':'code-line';
+    return `<div class="${cls}">${line.text||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress);}
+
+function startAnim(){
+  animProgress=0;const start=performance.now(),duration=2200;
+  function tick(now){animProgress=Math.min(1,(now-start)/duration);render();if(animProgress<1)animId=requestAnimationFrame(tick);}
+  if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick);
+}
+
+function updateUI(){
+  const s=steps[currentStep];
+  document.getElementById('infoTitle').textContent=s.title;
+  document.getElementById('infoDesc').innerHTML=s.desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCodePanel();
+  const dotsEl=document.getElementById('dots');dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){const d=document.createElement('span');if(i===currentStep)d.className='active';d.onclick=()=>{currentStep=i;updateUI();startAnim();};dotsEl.appendChild(d);}
+}
+
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim();}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim();}}
+function replay(){startAnim();}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep();});
+
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

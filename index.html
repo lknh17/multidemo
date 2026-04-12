@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多模态大模型学习工程 — 导览首页</title>
+    <style>
+        /* ===== Reset & Base ===== */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a1f35;
+            --bg-card-hover: #222845;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #2a3050;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-emerald: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --accent-cyan: #06b6d4;
+            --accent-orange: #f97316;
+            --accent-pink: #ec4899;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+            --radius: 12px;
+            --radius-sm: 8px;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        
+        /* ===== Header / Hero ===== */
+        .hero {
+            text-align: center;
+            padding: 60px 24px 40px;
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+            border-bottom: 1px solid var(--border);
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 50%, rgba(59,130,246,0.08) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 50%, rgba(139,92,246,0.08) 0%, transparent 50%);
+            animation: heroGlow 8s ease-in-out infinite alternate;
+        }
+        @keyframes heroGlow {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(-2%, 2%); }
+        }
+        .hero > * { position: relative; z-index: 1; }
+        .hero h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #60a5fa, #a78bfa, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 12px;
+        }
+        .hero .subtitle {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            max-width: 720px;
+            margin: 0 auto 20px;
+        }
+        .hero .stats {
+            display: flex;
+            justify-content: center;
+            gap: 32px;
+            flex-wrap: wrap;
+        }
+        .hero .stat {
+            text-align: center;
+        }
+        .hero .stat-num {
+            font-size: 2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .hero .stat-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+        
+        /* ===== Navigation Tabs ===== */
+        .nav-bar {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(10, 14, 26, 0.92);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+        }
+        .nav-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            gap: 4px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            padding: 8px 0;
+            flex-wrap: wrap;
+        }
+        .nav-inner::-webkit-scrollbar { display: none; }
+        .nav-row-break {
+            flex-basis: 100%;
+            height: 0;
+        }
+        .nav-tab {
+            flex-shrink: 0;
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+            white-space: nowrap;
+        }
+        .nav-tab:hover {
+            color: var(--text-primary);
+            background: var(--bg-card);
+        }
+        .nav-tab.active {
+            color: #fff;
+            border-color: var(--accent-blue);
+            background: rgba(59, 130, 246, 0.15);
+        }
+        
+        /* ===== Main Content ===== */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 32px 24px 80px;
+        }
+        
+        /* ===== Section ===== */
+        .section {
+            margin-bottom: 48px;
+        }
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .section-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.3rem;
+            flex-shrink: 0;
+        }
+        .section-title {
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+        .section-desc {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
+        
+        /* ===== Version Cards Grid ===== */
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 16px;
+        }
+        
+        .version-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            transition: all 0.25s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .version-card:hover {
+            background: var(--bg-card-hover);
+            border-color: rgba(59, 130, 246, 0.3);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow);
+        }
+        .version-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+        }
+        
+        .card-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .card-version {
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 6px;
+            flex-shrink: 0;
+            letter-spacing: 0.5px;
+        }
+        .card-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            line-height: 1.4;
+        }
+        .card-desc {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+        .card-difficulty {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+        }
+        
+        .card-links {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .card-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 0.82rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            border: 1px solid;
+        }
+        .card-link.theory {
+            color: #818cf8;
+            border-color: rgba(129, 140, 248, 0.25);
+            background: rgba(129, 140, 248, 0.08);
+        }
+        .card-link.theory:hover {
+            background: rgba(129, 140, 248, 0.2);
+            border-color: rgba(129, 140, 248, 0.5);
+        }
+        .card-link.code {
+            color: #34d399;
+            border-color: rgba(52, 211, 153, 0.25);
+            background: rgba(52, 211, 153, 0.08);
+        }
+        .card-link.code:hover {
+            background: rgba(52, 211, 153, 0.2);
+            border-color: rgba(52, 211, 153, 0.5);
+        }
+        .card-link.readme {
+            color: var(--text-muted);
+            border-color: rgba(100, 116, 139, 0.25);
+            background: rgba(100, 116, 139, 0.08);
+        }
+        .card-link.readme:hover {
+            color: var(--text-secondary);
+            background: rgba(100, 116, 139, 0.15);
+        }
+        .card-link.tutorial {
+            color: #fbbf24;
+            border-color: rgba(251, 191, 36, 0.3);
+            background: rgba(251, 191, 36, 0.1);
+        }
+        .card-link.tutorial:hover {
+            background: rgba(251, 191, 36, 0.2);
+            border-color: rgba(251, 191, 36, 0.5);
+        }
+        
+        /* ===== Section accent colors ===== */
+        .section[data-stage="1"] .section-icon { background: linear-gradient(135deg, #3b82f6, #60a5fa); }
+        .section[data-stage="1"] .version-card::before { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+        .section[data-stage="1"] .card-version { background: rgba(59,130,246,0.15); color: #60a5fa; }
+        
+        .section[data-stage="2"] .section-icon { background: linear-gradient(135deg, #8b5cf6, #a78bfa); }
+        .section[data-stage="2"] .version-card::before { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
+        .section[data-stage="2"] .card-version { background: rgba(139,92,246,0.15); color: #a78bfa; }
+        
+        .section[data-stage="3"] .section-icon { background: linear-gradient(135deg, #10b981, #34d399); }
+        .section[data-stage="3"] .version-card::before { background: linear-gradient(90deg, #10b981, #34d399); }
+        .section[data-stage="3"] .card-version { background: rgba(16,185,129,0.15); color: #34d399; }
+        
+        .section[data-stage="4"] .section-icon { background: linear-gradient(135deg, #f59e0b, #fbbf24); }
+        .section[data-stage="4"] .version-card::before { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+        .section[data-stage="4"] .card-version { background: rgba(245,158,11,0.15); color: #fbbf24; }
+        
+        .section[data-stage="5"] .section-icon { background: linear-gradient(135deg, #ec4899, #f472b6); }
+        .section[data-stage="5"] .version-card::before { background: linear-gradient(90deg, #ec4899, #f472b6); }
+        .section[data-stage="5"] .card-version { background: rgba(236,72,153,0.15); color: #f472b6; }
+        
+        .section[data-stage="6"] .section-icon { background: linear-gradient(135deg, #06b6d4, #22d3ee); }
+        .section[data-stage="6"] .version-card::before { background: linear-gradient(90deg, #06b6d4, #22d3ee); }
+        .section[data-stage="6"] .card-version { background: rgba(6,182,212,0.15); color: #22d3ee; }
+        
+        .section[data-stage="7"] .section-icon { background: linear-gradient(135deg, #f97316, #fb923c); }
+        .section[data-stage="7"] .version-card::before { background: linear-gradient(90deg, #f97316, #fb923c); }
+        .section[data-stage="7"] .card-version { background: rgba(249,115,22,0.15); color: #fb923c; }
+        
+        .section[data-stage="8"] .section-icon { background: linear-gradient(135deg, #f43f5e, #ff5722, #ffc107); }
+        .section[data-stage="8"] .version-card::before { background: linear-gradient(90deg, #f43f5e, #ff5722, #ffc107); }
+        .section[data-stage="8"] .card-version { background: linear-gradient(135deg, rgba(244,63,94,0.15), rgba(255,193,7,0.15)); color: #ffc107; }
+        
+        .section[data-stage="9"] .section-icon { background: linear-gradient(135deg, #f97316, #fb923c); }
+        .section[data-stage="9"] .version-card::before { background: linear-gradient(90deg, #f97316, #fb923c); }
+        .section[data-stage="9"] .card-version { background: rgba(249,115,22,0.15); color: #fb923c; }
+        
+        .section[data-stage="10"] .section-icon { background: linear-gradient(135deg, #ef4444, #f97316); }
+        .section[data-stage="10"] .version-card::before { background: linear-gradient(90deg, #ef4444, #f97316); }
+        .section[data-stage="10"] .card-version { background: rgba(239,68,68,0.15); color: #f87171; }
+        
+        .section[data-stage="11"] .section-icon { background: linear-gradient(135deg, #10b981, #06b6d4); }
+        .section[data-stage="11"] .version-card::before { background: linear-gradient(90deg, #10b981, #06b6d4); }
+        .section[data-stage="11"] .card-version { background: rgba(16,185,129,0.15); color: #34d399; }
+        
+        /* ===== Search ===== */
+        .search-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 10px 18px;
+            margin-bottom: 28px;
+            transition: border-color 0.2s;
+        }
+        .search-bar:focus-within {
+            border-color: var(--accent-blue);
+        }
+        .search-bar svg { flex-shrink: 0; color: var(--text-muted); }
+        .search-bar input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            font-size: 0.95rem;
+            color: var(--text-primary);
+        }
+        .search-bar input::placeholder { color: var(--text-muted); }
+        .search-count {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+        
+        /* ===== Progress bar ===== */
+        .progress-wrap {
+            margin: 20px 0 0;
+            max-width: 400px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .progress-bar-bg {
+            height: 6px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6, #ec4899);
+            border-radius: 3px;
+            width: 100%;
+            transition: width 0.5s;
+        }
+        .progress-text {
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+        
+        /* ===== Footer ===== */
+        .footer {
+            text-align: center;
+            padding: 32px 24px;
+            border-top: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+        
+        /* ===== Responsive ===== */
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 1.8rem; }
+            .hero .stats { gap: 20px; }
+            .cards-grid { grid-template-columns: 1fr; }
+            .section-desc { display: none; }
+        }
+        
+        /* ===== No results ===== */
+        .no-results {
+            text-align: center;
+            padding: 60px 24px;
+            color: var(--text-muted);
+            display: none;
+        }
+        .no-results.visible { display: block; }
+        .no-results svg { margin-bottom: 12px; }
+    </style>
+</head>
+<body>
+
+<!-- ===== Hero ===== -->
+<section class="hero">
+    <h1>🚀 多模态大模型学习工程</h1>
+    <p class="subtitle">从 Transformer 基础到端到端广告 Pipeline — 25 个原理教学 + 10 个实践操练版本，70 个交互式可视化动画</p>
+    <div class="stats">
+        <div class="stat">
+            <div class="stat-num">35</div>
+            <div class="stat-label">学习版本</div>
+        </div>
+        <div class="stat">
+            <div class="stat-num">70</div>
+            <div class="stat-label">可视化动画</div>
+        </div>
+        <div class="stat">
+            <div class="stat-num">400+</div>
+            <div class="stat-label">源代码文件</div>
+        </div>
+        <div class="stat">
+            <div class="stat-num">11</div>
+            <div class="stat-label">学习阶段</div>
+        </div>
+    </div>
+    <div class="progress-wrap">
+        <div class="progress-bar-bg"><div class="progress-bar-fill"></div></div>
+        <div class="progress-text">25 / 25 版本已完成 ✅</div>
+    </div>
+    <div style="margin-top:20px">
+        <a href="./docs.html" style="display:inline-flex;align-items:center;gap:8px;padding:12px 28px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;text-decoration:none;font-weight:700;font-size:1rem;transition:transform .2s,box-shadow .2s;box-shadow:0 4px 20px rgba(59,130,246,.3)" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 28px rgba(59,130,246,.45)'" onmouseout="this.style.transform='';this.style.boxShadow='0 4px 20px rgba(59,130,246,.3)'">📚 完整文档站</a>
+    </div>
+</section>
+
+<!-- ===== Sticky Nav ===== -->
+<nav class="nav-bar">
+    <div class="nav-inner">
+        <div class="nav-tab active" data-target="all">全部</div>
+        <div class="nav-tab" data-target="stage-1">🧱 基础层</div>
+        <div class="nav-tab" data-target="stage-2">🔗 融合层</div>
+        <div class="nav-tab" data-target="stage-3">🏋️ 训练层</div>
+        <div class="nav-tab" data-target="stage-4">⚡ 进阶融合</div>
+        <div class="nav-tab" data-target="stage-5">🧠 高阶技术</div>
+        <div class="nav-tab" data-target="stage-6">🌐 多模态扩展</div>
+        <div class="nav-tab" data-target="stage-7">🏭 工程化</div>
+        <div class="nav-tab" data-target="stage-8">🎯 终章</div>
+        <div class="nav-row-break"></div>
+        <div class="nav-tab" data-target="stage-9" style="color:#f97316;border-color:rgba(249,115,22,.4)">🔥 实践：基础</div>
+        <div class="nav-tab" data-target="stage-10" style="color:#ef4444;border-color:rgba(239,68,68,.4)">🔥 实践：训练</div>
+        <div class="nav-tab" data-target="stage-11" style="color:#10b981;border-color:rgba(16,185,129,.4)">🔥 实践：部署</div>
+    </div>
+</nav>
+
+<!-- ===== Main ===== -->
+<main class="container">
+    <!-- Search -->
+    <div class="search-bar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="searchInput" type="text" placeholder="搜索版本、关键词（如 Transformer、ViT、RLHF、对比学习...）">
+        <span class="search-count" id="searchCount">35 个版本</span>
+    </div>
+    
+    <div class="no-results" id="noResults">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <p>没有找到匹配的版本</p>
+    </div>
+
+    <!-- ===== Stage 1: 基础层 ===== -->
+    <div class="section" data-stage="1" id="stage-1">
+        <div class="section-header">
+            <div class="section-icon">🧱</div>
+            <div class="section-title">第一阶段：基础层</div>
+            <div class="section-desc">v01 — v03 · 掌握核心基础组件</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v01 -->
+            <div class="version-card" data-keywords="transformer 自注意力 位置编码 ffn 多头注意力 encoder decoder 基础">
+                <div class="card-header">
+                    <span class="card-version">V01</span>
+                    <span class="card-title">Transformer 基础</span>
+                </div>
+                <div class="card-desc">自注意力、多头注意力、正弦位置编码、FFN、残差连接，从零实现 Mini Transformer Encoder-Decoder</div>
+                <div class="card-difficulty">难度：⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v01_transformer_basics/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v01_transformer_basics/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v02 -->
+            <div class="version-card" data-keywords="vit 视觉编码器 vision transformer 图像分类 patch embedding 视觉">
+                <div class="card-header">
+                    <span class="card-version">V02</span>
+                    <span class="card-title">视觉编码器 ViT</span>
+                </div>
+                <div class="card-desc">图像 Patch 化、Patch Embedding、ViT 架构实现、CLS Token 图像分类训练</div>
+                <div class="card-difficulty">难度：⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v02_vision_encoder/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v02_vision_encoder/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v03 -->
+            <div class="version-card" data-keywords="llm 文本编码器 语言模型 自回归 bpe tokenizer kv cache gpt 文本">
+                <div class="card-header">
+                    <span class="card-version">V03</span>
+                    <span class="card-title">文本编码器 & LLM</span>
+                </div>
+                <div class="card-desc">自回归语言模型、BPE Tokenizer、因果掩码、KV Cache 加速推理、文本生成</div>
+                <div class="card-difficulty">难度：⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v03_text_encoder_llm/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v03_text_encoder_llm/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 2: 融合层 ===== -->
+    <div class="section" data-stage="2" id="stage-2">
+        <div class="section-header">
+            <div class="section-icon">🔗</div>
+            <div class="section-title">第二阶段：融合层</div>
+            <div class="section-desc">v04 — v05 · 多模态对齐与融合</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v04 -->
+            <div class="version-card" data-keywords="clip 多模态融合 对比学习 cross attention 图文检索 双塔">
+                <div class="card-header">
+                    <span class="card-version">V04</span>
+                    <span class="card-title">多模态融合 CLIP</span>
+                </div>
+                <div class="card-desc">CLIP 双塔对比学习、Cross-Attention 融合、图文检索、对称 InfoNCE Loss</div>
+                <div class="card-difficulty">难度：⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v04_multimodal_fusion/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v04_multimodal_fusion/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v05 -->
+            <div class="version-card" data-keywords="qwen qwen-vl 架构 视觉重采样器 qwen2 多模态输入 大模型">
+                <div class="card-header">
+                    <span class="card-version">V05</span>
+                    <span class="card-title">Qwen-VL 架构解析</span>
+                </div>
+                <div class="card-desc">Qwen-VL 视觉重采样器、多模态输入处理、Position Embedding、架构深度解析</div>
+                <div class="card-difficulty">难度：⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v05_qwen_vl_architecture/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v05_qwen_vl_architecture/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 3: 训练层 ===== -->
+    <div class="section" data-stage="3" id="stage-3">
+        <div class="section-header">
+            <div class="section-icon">🏋️</div>
+            <div class="section-title">第三阶段：训练层</div>
+            <div class="section-desc">v06 — v08 · 预训练与微调策略</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v06 -->
+            <div class="version-card" data-keywords="预训练 pretrain itc itm mlm 课程学习 多模态预训练">
+                <div class="card-header">
+                    <span class="card-version">V06</span>
+                    <span class="card-title">多模态预训练</span>
+                </div>
+                <div class="card-desc">ITC/ITM/MLM 预训练目标、课程学习策略、多阶段训练流程</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v06_pretraining/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v06_pretraining/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v07 -->
+            <div class="version-card" data-keywords="sft 微调 lora qlora 指令微调 peft adapter 广告">
+                <div class="card-header">
+                    <span class="card-version">V07</span>
+                    <span class="card-title">SFT 监督微调</span>
+                </div>
+                <div class="card-desc">LoRA/QLoRA 参数高效微调、广告场景指令微调、PEFT 架构</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v07_sft_finetuning/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v07_sft_finetuning/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v08 -->
+            <div class="version-card" data-keywords="对比学习 contrastive learning infonce hard negative mining 广告相关性">
+                <div class="card-header">
+                    <span class="card-version">V08</span>
+                    <span class="card-title">对比学习 Loss</span>
+                </div>
+                <div class="card-desc">InfoNCE Loss、Hard Negative Mining、温度参数调节、广告相关性建模</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v08_contrastive_learning/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v08_contrastive_learning/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 4: 进阶融合层 ===== -->
+    <div class="section" data-stage="4" id="stage-4">
+        <div class="section-header">
+            <div class="section-icon">⚡</div>
+            <div class="section-title">第四阶段：进阶融合层</div>
+            <div class="section-desc">v09 — v12 · 深层交互与工程优化</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v09 -->
+            <div class="version-card" data-keywords="deepstack 深层融合 特征堆叠 跨模态交互 多层融合">
+                <div class="card-header">
+                    <span class="card-version">V09</span>
+                    <span class="card-title">DeepStack 深层融合</span>
+                </div>
+                <div class="card-desc">多层特征堆叠、跨模态深层交互、自适应门控融合、层间信息传递</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v09_deepstack_fusion/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v09_deepstack_fusion/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v10 -->
+            <div class="version-card" data-keywords="概念重构 concept reconstruction 商业 loss 联合训练 语义">
+                <div class="card-header">
+                    <span class="card-version">V10</span>
+                    <span class="card-title">商业概念重构 Loss</span>
+                </div>
+                <div class="card-desc">商业概念建模、概念重构目标函数、语义解耦、联合训练策略</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v10_concept_reconstruction/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v10_concept_reconstruction/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v11 -->
+            <div class="version-card" data-keywords="embedding 多模态embedding faiss 检索 向量 embedding生成 向量检索">
+                <div class="card-header">
+                    <span class="card-version">V11</span>
+                    <span class="card-title">多模态 Embedding</span>
+                </div>
+                <div class="card-desc">Embedding 生成与提取、FAISS 向量检索、Recall@K / NDCG 评估指标</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v11_multimodal_embedding/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v11_multimodal_embedding/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v12 -->
+            <div class="version-card" data-keywords="分布式 distributed deepspeed fsdp 量化 部署 优化 并行">
+                <div class="card-header">
+                    <span class="card-version">V12</span>
+                    <span class="card-title">分布式训练 & 优化</span>
+                </div>
+                <div class="card-desc">DeepSpeed ZeRO、FSDP 分片、INT8/INT4 量化推理、部署优化策略</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v12_distributed_optimization/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v12_distributed_optimization/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 5: 高阶技术层 ===== -->
+    <div class="section" data-stage="5" id="stage-5">
+        <div class="section-header">
+            <div class="section-icon">🧠</div>
+            <div class="section-title">第五阶段：高阶技术层</div>
+            <div class="section-desc">v13 — v14 · 前沿注意力与对齐技术</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v13 -->
+            <div class="version-card" data-keywords="flash attention 稀疏注意力 线性注意力 mqa gqa 高级注意力 sliding window">
+                <div class="card-header">
+                    <span class="card-version">V13</span>
+                    <span class="card-title">高级注意力机制</span>
+                </div>
+                <div class="card-desc">Flash Attention、MQA/GQA、稀疏注意力、线性注意力、Sliding Window、RoPE</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v13_advanced_attention/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v13_advanced_attention/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v14 -->
+            <div class="version-card" data-keywords="rlhf dpo ppo reinforce 对齐 偏好优化 奖励模型 人类反馈">
+                <div class="card-header">
+                    <span class="card-version">V14</span>
+                    <span class="card-title">RLHF & DPO 对齐</span>
+                </div>
+                <div class="card-desc">奖励模型、PPO/REINFORCE 策略优化、DPO 直接偏好优化、KL 散度约束</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v14_rlhf_dpo/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v14_rlhf_dpo/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 6: 多模态扩展层 ===== -->
+    <div class="section" data-stage="6" id="stage-6">
+        <div class="section-header">
+            <div class="section-icon">🌐</div>
+            <div class="section-title">第六阶段：多模态扩展层</div>
+            <div class="section-desc">v15 — v20 · 视频/文档/音频/商品/标签/知识图谱</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v15 -->
+            <div class="version-card" data-keywords="视频 video dense caption 时序建模 视频理解 密集描述 temporal">
+                <div class="card-header">
+                    <span class="card-version">V15</span>
+                    <span class="card-title">视频密集描述</span>
+                </div>
+                <div class="card-desc">时序建模、3D Patch Embedding、Dense Caption 生成、视频-文本对齐</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v15_video_dense_caption/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v15_video_dense_caption/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v16 -->
+            <div class="version-card" data-keywords="ocr 文档理解 document 版面分析 结构化信息 文字识别 layout">
+                <div class="card-header">
+                    <span class="card-version">V16</span>
+                    <span class="card-title">OCR 文档理解</span>
+                </div>
+                <div class="card-desc">文档版面分析、OCR 编码、空间位置感知、结构化信息提取、文档问答</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v16_ocr_document/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v16_ocr_document/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v17 -->
+            <div class="version-card" data-keywords="音频 audio clap 频谱 mel spectrogram 全模态 音频文本对齐">
+                <div class="card-header">
+                    <span class="card-version">V17</span>
+                    <span class="card-title">音频全模态</span>
+                </div>
+                <div class="card-desc">Mel 频谱编码、CLAP 音频-文本对齐、音频-视觉-文本全模态融合</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v17_audio_multimodal/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v17_audio_multimodal/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v18 -->
+            <div class="version-card" data-keywords="商品 product 细粒度 fine-grained 属性提取 商品检索 电商">
+                <div class="card-header">
+                    <span class="card-version">V18</span>
+                    <span class="card-title">商品细粒度理解</span>
+                </div>
+                <div class="card-desc">细粒度视觉识别、商品属性提取、Part-based Attention、商品检索排序</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v18_product_finegrained/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v18_product_finegrained/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v19 -->
+            <div class="version-card" data-keywords="标签 label hierarchy 层级分类 标签传播 双曲空间 taxonomy 分类体系">
+                <div class="card-header">
+                    <span class="card-version">V19</span>
+                    <span class="card-title">标签层级体系</span>
+                </div>
+                <div class="card-desc">层级分类、Hierarchical Softmax、标签传播 GNN、Poincaré 双曲空间嵌入</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v19_label_hierarchy/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v19_label_hierarchy/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v20 -->
+            <div class="version-card" data-keywords="知识图谱 knowledge graph transe transr 实体链接 知识增强 kg gnn">
+                <div class="card-header">
+                    <span class="card-version">V20</span>
+                    <span class="card-title">知识图谱嵌入</span>
+                </div>
+                <div class="card-desc">TransE/TransR 知识图谱嵌入、实体链接、KG 增强视觉模型、知识蒸馏</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v20_knowledge_embedding/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v20_knowledge_embedding/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 7: 工程化层 ===== -->
+    <div class="section" data-stage="7" id="stage-7">
+        <div class="section-header">
+            <div class="section-icon">🏭</div>
+            <div class="section-title">第七阶段：工程化层</div>
+            <div class="section-desc">v21 — v24 · 从模型到生产的全流程</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v21 -->
+            <div class="version-card" data-keywords="数据工程 data engineering 去重 minhash simhash cutmix mixup 数据增强 课程学习">
+                <div class="card-header">
+                    <span class="card-version">V21</span>
+                    <span class="card-title">数据工程</span>
+                </div>
+                <div class="card-desc">MinHash/SimHash 去重、CutMix/MixUp 数据增强、课程学习策略、数据质量评估</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v21_data_engineering/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v21_data_engineering/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v22 -->
+            <div class="version-card" data-keywords="评估 ab test 实验 ndcg mrr recall 统计显著性 多臂老虎机 bandit 指标">
+                <div class="card-header">
+                    <span class="card-version">V22</span>
+                    <span class="card-title">评估与 A/B 实验</span>
+                </div>
+                <div class="card-desc">Recall@K / NDCG / MRR 离线指标、A/B 实验统计显著性、Thompson Sampling 多臂老虎机</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v22_evaluation_abtest/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v22_evaluation_abtest/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v23 -->
+            <div class="version-card" data-keywords="serving 在线服务 onnx tensorrt batching 缓存 负载均衡 推理优化 延迟">
+                <div class="card-header">
+                    <span class="card-version">V23</span>
+                    <span class="card-title">在线 Serving 系统</span>
+                </div>
+                <div class="card-desc">动态 Batching、ONNX/TensorRT 导出、LRU 缓存、负载均衡、延迟优化</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v23_serving_system/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v23_serving_system/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+            <!-- v24 -->
+            <div class="version-card" data-keywords="内容安全 content safety nsfw 对抗攻击 水印 adversarial fgsm pgd 合规">
+                <div class="card-header">
+                    <span class="card-version">V24</span>
+                    <span class="card-title">内容安全</span>
+                </div>
+                <div class="card-desc">NSFW/暴力/垃圾安全分类、FGSM/PGD 对抗攻击防御、水印检测、模型校准</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v24_content_safety/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v24_content_safety/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 8: 终章 ===== -->
+    <div class="section" data-stage="8" id="stage-8">
+        <div class="section-header">
+            <div class="section-icon">🎯</div>
+            <div class="section-title">终章：端到端实践</div>
+            <div class="section-desc">v25 · 综合 Capstone 项目</div>
+        </div>
+        <div class="cards-grid">
+            <!-- v25 -->
+            <div class="version-card" data-keywords="端到端 e2e pipeline 广告 ad ctr deepfm 多目标排序 检索 重排 全链路 capstone 终章">
+                <div class="card-header">
+                    <span class="card-version">V25 ★</span>
+                    <span class="card-title">端到端广告多模态 Pipeline</span>
+                </div>
+                <div class="card-desc">编码→检索→重排→过滤→投放全链路、DeepFM CTR 预估、多目标 Pareto 排序、在线学习。综合 v01-v24 所有知识的 Capstone 实践。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links">
+                    <a class="card-link theory" href="./v25_e2e_ad_pipeline/theory_visual.html">🔬 原理动画</a>
+                    <a class="card-link code" href="./v25_e2e_ad_pipeline/code_visual.html">💻 代码动画</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 9: 实践基础 ===== -->
+    <div class="section" data-stage="9" id="stage-9">
+        <div class="section-header">
+            <div class="section-icon" style="background:linear-gradient(135deg,#f97316,#fb923c)">🔥</div>
+            <div class="section-title">实践操练：环境与数据基础</div>
+            <div class="section-desc">p01 — p02 · 手把手部署环境、继续预训练</div>
+        </div>
+        <div class="cards-grid">
+            <div class="version-card" data-keywords="环境 gpu 显存 vram deepspeed zero 精度 bf16 fp16 benchmark 部署 setup 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(249,115,22,.15);color:#fb923c">P01 🔥</span><span class="card-title">环境搭建与显存估算</span></div>
+                <div class="card-desc">云服务器部署、GPU 显存四大构成详解、fp32/bf16/int8/int4 精度对比、DeepSpeed ZeRO 0-3 选型、GPU Benchmark。</div>
+                <div class="card-difficulty">难度：⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p01_env_setup/tutorial.html">📖 教程</a><a class="card-link theory" href="./p01_env_setup/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p01_env_setup/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p01_env_setup/code_explained">📝 代码解读</a></div>
+            </div>
+            <div class="version-card" data-keywords="预训练 pretrain continual packing padding deepspeed 学习率 cosine gradient checkpointing lora 灾难性遗忘 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(249,115,22,.15);color:#fb923c">P02 🔥</span><span class="card-title">继续预训练</span></div>
+                <div class="card-desc">Wikipedia 中文语料、Packing vs Padding、ZeRO-2/3 实测对比、学习率策略消融、LoRA 预训练、灾难性遗忘检测。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p02_continual_pretrain/tutorial.html">📖 教程</a><a class="card-link theory" href="./p02_continual_pretrain/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p02_continual_pretrain/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p02_continual_pretrain/code_explained">📝 代码解读</a></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 10: 实践训练 ===== -->
+    <div class="section" data-stage="10" id="stage-10">
+        <div class="section-header">
+            <div class="section-icon" style="background:linear-gradient(135deg,#ef4444,#f97316)">🔥</div>
+            <div class="section-title">实践操练：SFT / DPO / RL / MLLM</div>
+            <div class="section-desc">p03 — p06 · 指令微调、偏好对齐、强化学习、多模态</div>
+        </div>
+        <div class="cards-grid">
+            <div class="version-card" data-keywords="sft 微调 lora qlora dora 全参 消融 chatml label masking 过拟合 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(239,68,68,.15);color:#f87171">P03 🔥</span><span class="card-title">SFT 指令微调</span></div>
+                <div class="card-desc">全参/LoRA/QLoRA/DoRA 四种方法对比、rank 消融 8→128、ChatML 格式与 Label Masking、过拟合诊断、LoRA 合并。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p03_sft_finetuning/tutorial.html">📖 教程</a><a class="card-link theory" href="./p03_sft_finetuning/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p03_sft_finetuning/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p03_sft_finetuning/code_explained">📝 代码解读</a></div>
+            </div>
+            <div class="version-card" data-keywords="dpo simpo orpo kto 偏好对齐 preference alignment beta rlhf 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(239,68,68,.15);color:#f87171">P04 🔥</span><span class="card-title">DPO 偏好对齐</span></div>
+                <div class="card-desc">DPO/SimPO/ORPO/KTO 四种算法实践、beta 消融、偏好数据构造、DPO 完整推导、对齐效果对比。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p04_dpo_alignment/tutorial.html">📖 教程</a><a class="card-link theory" href="./p04_dpo_alignment/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p04_dpo_alignment/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p04_dpo_alignment/code_explained">📝 代码解读</a></div>
+            </div>
+            <div class="version-card" data-keywords="rl grpo ppo 强化学习 reward 奖励 gsm8k 数学 推理 trl openrlhf 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(239,68,68,.15);color:#f87171">P05 🔥</span><span class="card-title">RL 强化学习 GRPO</span></div>
+                <div class="card-desc">GRPO 算法详解与实践、三种奖励函数设计、trl vs OpenRLHF 对比、GSM8K 数学推理、Reward Hacking 检测。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p05_rl_grpo/tutorial.html">📖 教程</a><a class="card-link theory" href="./p05_rl_grpo/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p05_rl_grpo/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p05_rl_grpo/code_explained">📝 代码解读</a></div>
+            </div>
+            <div class="version-card" data-keywords="mllm 多模态 vision qwen-vl llava 图文 vqa ocr 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(239,68,68,.15);color:#f87171">P06 🔥</span><span class="card-title">MLLM 多模态微调</span></div>
+                <div class="card-desc">Qwen2.5-VL-2B 架构、多模态数据处理 Pipeline、冻结/部分解冻策略对比、图片描述/VQA/OCR。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p06_mllm_vision/tutorial.html">📖 教程</a><a class="card-link theory" href="./p06_mllm_vision/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p06_mllm_vision/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p06_mllm_vision/code_explained">📝 代码解读</a></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Stage 11: 实践部署 ===== -->
+    <div class="section" data-stage="11" id="stage-11">
+        <div class="section-header">
+            <div class="section-icon" style="background:linear-gradient(135deg,#10b981,#06b6d4)">🔥</div>
+            <div class="section-title">实践操练：量化 / 部署 / 评测 / 总结</div>
+            <div class="section-desc">p07 — p10 · 模型量化、推理部署、全面评测、最佳实践</div>
+        </div>
+        <div class="cards-grid">
+            <div class="version-card" data-keywords="量化 quantization gptq awq gguf bitsandbytes int4 int8 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(16,185,129,.15);color:#34d399">P07 🔥</span><span class="card-title">模型量化</span></div>
+                <div class="card-desc">GPTQ/AWQ/GGUF/bitsandbytes 四种量化方法对比、2-8bit tradeoff、量化前后 Benchmark。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p07_quantization/tutorial.html">📖 教程</a><a class="card-link theory" href="./p07_quantization/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p07_quantization/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p07_quantization/code_explained">📝 代码解读</a></div>
+            </div>
+            <div class="version-card" data-keywords="部署 serving vllm sglang ollama api kv cache paged attention 推理 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(16,185,129,.15);color:#34d399">P08 🔥</span><span class="card-title">推理部署</span></div>
+                <div class="card-desc">vLLM/SGLang/Ollama 三框架对比、KV Cache 与 PagedAttention、并发压测、性能调优。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p08_serving_deploy/tutorial.html">📖 教程</a><a class="card-link theory" href="./p08_serving_deploy/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p08_serving_deploy/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p08_serving_deploy/code_explained">📝 代码解读</a></div>
+            </div>
+            <div class="version-card" data-keywords="评测 evaluation benchmark mmlu ceval gsm8k humaneval 雷达图 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(16,185,129,.15);color:#34d399">P09 🔥</span><span class="card-title">评测体系</span></div>
+                <div class="card-desc">MMLU/C-Eval/GSM8K/HumanEval 多维度评测、各阶段能力雷达图、自定义评测任务设计。</div>
+                <div class="card-difficulty">难度：⭐⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p09_evaluation/tutorial.html">📖 教程</a><a class="card-link theory" href="./p09_evaluation/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p09_evaluation/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p09_evaluation/code_explained">📝 代码解读</a></div>
+            </div>
+            <div class="version-card" data-keywords="最佳实践 总结 踩坑 troubleshooting pipeline 选型 多卡 实践">
+                <div class="card-header"><span class="card-version" style="background:rgba(16,185,129,.15);color:#34d399">P10 🔥★</span><span class="card-title">全流程总结与最佳实践</span></div>
+                <div class="card-desc">20+ 踩坑清单、最佳参数汇总、方案选型决策树、一键全流程 Pipeline、多卡扩展路线图。</div>
+                <div class="card-difficulty">难度：⭐⭐</div>
+                <div class="card-links"><a class="card-link tutorial" href="./p10_best_practices/tutorial.html">📖 教程</a><a class="card-link theory" href="./p10_best_practices/theory_visual.html">🔬 原理动画</a><a class="card-link code" href="./p10_best_practices/code_visual.html">💻 代码动画</a><a class="card-link readme" href="./docs.html#p10_best_practices/code_explained">📝 代码解读</a></div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<!-- ===== Footer ===== -->
+<footer class="footer">
+    <p>多模态大模型从 0 到 1 学习工程 · 35 个版本 · 70 个交互式可视化</p>
+    <p style="margin-top: 4px;">包含 25 个原理教学版本 + 10 个实践操练版本（p01-p10 🔥）</p>
+</footer>
+
+<script>
+// ===== Tab Navigation =====
+const tabs = document.querySelectorAll('.nav-tab');
+const sections = document.querySelectorAll('.section');
+
+tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+        const target = tab.dataset.target;
+        
+        // Update active tab
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        
+        // Show/hide sections
+        if (target === 'all') {
+            sections.forEach(s => s.style.display = '');
+        } else {
+            const stageNum = target.split('-')[1];
+            sections.forEach(s => {
+                s.style.display = s.dataset.stage === stageNum ? '' : 'none';
+            });
+        }
+        
+        // Scroll to top of content
+        document.querySelector('.container').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+});
+
+// ===== Search =====
+const searchInput = document.getElementById('searchInput');
+const searchCount = document.getElementById('searchCount');
+const noResults = document.getElementById('noResults');
+const allCards = document.querySelectorAll('.version-card');
+
+searchInput.addEventListener('input', () => {
+    const query = searchInput.value.toLowerCase().trim();
+    let visibleCount = 0;
+    
+    // Reset tab to "all"
+    tabs.forEach(t => t.classList.remove('active'));
+    tabs[0].classList.add('active');
+    sections.forEach(s => s.style.display = '');
+    
+    allCards.forEach(card => {
+        if (!query) {
+            card.style.display = '';
+            visibleCount++;
+            return;
+        }
+        
+        const keywords = (card.dataset.keywords || '').toLowerCase();
+        const title = card.querySelector('.card-title').textContent.toLowerCase();
+        const desc = card.querySelector('.card-desc').textContent.toLowerCase();
+        const version = card.querySelector('.card-version').textContent.toLowerCase();
+        const searchText = `${keywords} ${title} ${desc} ${version}`;
+        
+        if (searchText.includes(query)) {
+            card.style.display = '';
+            visibleCount++;
+        } else {
+            card.style.display = 'none';
+        }
+    });
+    
+    // Hide empty sections
+    sections.forEach(section => {
+        const visibleCards = section.querySelectorAll('.version-card:not([style*="display: none"])');
+        section.style.display = visibleCards.length === 0 && query ? 'none' : '';
+    });
+    
+    // Update count & no results
+    searchCount.textContent = query ? `${visibleCount} 个匹配` : '35 个版本';
+    noResults.classList.toggle('visible', visibleCount === 0 && query);
+});
+
+// ===== Smooth scroll on page load if hash =====
+if (window.location.hash) {
+    const target = document.querySelector(window.location.hash);
+    if (target) {
+        setTimeout(() => target.scrollIntoView({ behavior: 'smooth' }), 300);
+    }
+}
+</script>
+</body>
+</html>

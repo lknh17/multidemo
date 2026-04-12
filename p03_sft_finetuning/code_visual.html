@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p03 SFT 指令微调 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;--orange:#F97316;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(249,115,22,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--orange),var(--danger));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(249,115,22,.2);border-left:3px solid var(--orange);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(249,115,22,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(249,115,22,.5);background:rgba(249,115,22,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(249,115,22,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(249,115,22,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p03</span>
+  <h1>SFT 指令微调</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'build_chatml_prompt() — ChatML 模板构建',
+   desc:'将 Alpaca 格式的 instruction/input/output 转换为 Qwen2.5 的 ChatML 对话格式，用特殊标记标识角色边界。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">build_chatml_prompt</span>(instruction, input_text, output_text):',hl:false},
+     {text:'    system = <span class="str">"You are a helpful assistant."</span>',hl:false},
+     {text:'    user_msg = instruction',hl:false},
+     {text:'    <span class="kw">if</span> input_text:',hl:false},
+     {text:'        user_msg = f<span class="str">"{instruction}\\n\\n{input_text}"</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    text = (',hl:false},
+     {text:'        f<span class="str">"&lt;|im_start|&gt;system\\n{system}&lt;|im_end|&gt;\\n"</span>',hl:true},
+     {text:'        f<span class="str">"&lt;|im_start|&gt;user\\n{user_msg}&lt;|im_end|&gt;\\n"</span>',hl:true},
+     {text:'        f<span class="str">"&lt;|im_start|&gt;assistant\\n{output}&lt;|im_end|&gt;\\n"</span>',hl:true},
+     {text:'    )',hl:false},
+     {text:'    <span class="kw">return</span> text',hl:false},
+   ]},
+  {title:'tokenize_with_label_mask() — Label Masking 核心',
+   desc:'编码文本后，搜索 assistant 回复的 token 范围，仅对 assistant 部分保留真实 label，其余设为 -100 不计算 loss。',
+   code:[
+     {text:'<span class="cm"># 默认全部 mask (-100 = 不计算 loss)</span>',hl:false},
+     {text:'labels = torch.full_like(input_ids, <span class="num">-100</span>)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 编码 assistant 前缀的 token 序列</span>',hl:false},
+     {text:'prefix_ids = tokenizer.encode(<span class="str">"&lt;|im_start|&gt;assistant\\n"</span>)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 在 input_ids 中搜索 assistant 回复位置</span>',hl:false},
+     {text:'<span class="kw">for</span> j <span class="kw">in</span> range(len(input_ids)):',hl:false},
+     {text:'    <span class="kw">if</span> input_ids[j:j+len(prefix_ids)] == prefix_ids:',hl:true},
+     {text:'        start = j + len(prefix_ids)  <span class="cm"># 跳过前缀</span>',hl:true},
+     {text:'        <span class="cm"># 找到 &lt;|im_end|&gt; 结束位置</span>',hl:false},
+     {text:'        labels[start:end] = input_ids[start:end]',hl:true},
+   ]},
+  {title:'load_model_for_sft() — PEFT 模型加载',
+   desc:'根据 method 参数选择加载方式：LoRA 用 get_peft_model 添加 adapter，QLoRA 先 4-bit 量化再加 LoRA，DoRA 启用权重分解。',
+   code:[
+     {text:'<span class="kw">from</span> peft <span class="kw">import</span> LoraConfig, get_peft_model',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="kw">if</span> method == <span class="str">"qlora"</span>:',hl:false},
+     {text:'    <span class="cm"># 4-bit 量化加载</span>',hl:false},
+     {text:'    config = BitsAndBytesConfig(load_in_4bit=<span class="num">True</span>)',hl:true},
+     {text:'    model = prepare_model_for_kbit_training(model)',hl:true},
+     {text:'',hl:false},
+     {text:'peft_config = LoraConfig(',hl:false},
+     {text:'    r=<span class="num">16</span>, lora_alpha=<span class="num">32</span>,',hl:true},
+     {text:'    target_modules=[<span class="str">"q_proj"</span>, <span class="str">"k_proj"</span>, ...],',hl:true},
+     {text:'    use_dora=<span class="num">True</span> <span class="kw">if</span> method==<span class="str">"dora"</span> <span class="kw">else</span> <span class="num">False</span>,',hl:true},
+     {text:')',hl:false},
+     {text:'model = get_peft_model(model, peft_config)',hl:true},
+   ]},
+  {title:'merge_and_unload() — LoRA 权重合并',
+   desc:'将 LoRA 低秩矩阵 B×A 乘以 scaling factor α/r，加到基座权重上，然后移除 LoRA 层。合并后模型结构与原始完全相同。',
+   code:[
+     {text:'<span class="cm"># 1. 加载基座模型 (CPU 上避免 OOM)</span>',hl:false},
+     {text:'model = AutoModelForCausalLM.from_pretrained(',hl:false},
+     {text:'    base_name, device_map=<span class="str">"cpu"</span>)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 2. 加载 LoRA adapter</span>',hl:false},
+     {text:'model = PeftModel.from_pretrained(model, adapter_path)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 3. 合并: W_new = W + (α/r) × B × A</span>',hl:false},
+     {text:'model = model.merge_and_unload()',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 4. 保存为 safetensors</span>',hl:false},
+     {text:'model.save_pretrained(output, safe_serialization=<span class="num">True</span>)',hl:true},
+   ]},
+  {title:'compute_distinct_n() — 多样性指标',
+   desc:'计算 Distinct-N 指标检测过拟合。值越高表示生成文本越多样，过拟合的模型倾向于产生重复内容。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">compute_distinct_n</span>(texts, n=<span class="num">2</span>):',hl:false},
+     {text:'    all_ngrams = []',hl:false},
+     {text:'    <span class="kw">for</span> text <span class="kw">in</span> texts:',hl:false},
+     {text:'        tokens = list(text)  <span class="cm"># 字级别 n-gram</span>',hl:true},
+     {text:'        <span class="kw">for</span> i <span class="kw">in</span> range(len(tokens) - n + <span class="num">1</span>):',hl:false},
+     {text:'            all_ngrams.append(tuple(tokens[i:i+n]))',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 不同 n-gram 数 / 总 n-gram 数</span>',hl:false},
+     {text:'    <span class="kw">return</span> len(set(all_ngrams)) / len(all_ngrams)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># Distinct-2 > 0.7 为好, < 0.5 可能过拟合</span>',hl:false},
+   ]},
+];
+
+function resize(){
+  const r=window.devicePixelRatio||1;
+  const rect=canvas.parentElement.getBoundingClientRect();
+  canvas.width=rect.width*r; canvas.height=rect.height*r;
+  W=rect.width; H=rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize',resize);
+
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+function renderCanvas(){
+  ctx.clearRect(0,0,W,H);
+  const p=Math.min(animProgress,1);
+  const cx=W/2,cy=H/2-50;
+
+  if(currentStep===0){
+    // ChatML building flow
+    const blocks=[
+      {text:'instruction\n+ input',x:cx-120,y:30,c:'#0984E3',w:100,h:50},
+      {text:'build_chatml\n_prompt()',x:cx-120,y:110,c:'#F97316',w:100,h:50},
+      {text:'<|im_start|>system\\n...',x:cx+40,y:30,c:'#64748B',w:160,h:35},
+      {text:'<|im_start|>user\\n...',x:cx+40,y:80,c:'#0984E3',w:160,h:35},
+      {text:'<|im_start|>assistant\\n...',x:cx+40,y:130,c:'#10B981',w:160,h:35},
+    ];
+    blocks.forEach((b,i)=>{
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-i*.12)/.3)));
+      ctx.globalAlpha=ap;
+      ctx.fillStyle=b.c+'33'; ctx.strokeStyle=b.c+'88'; ctx.lineWidth=1.5;
+      drawRoundRect(b.x,b.y,b.w,b.h,6); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=b.c; ctx.font='11px PingFang SC'; ctx.textAlign='center';
+      b.text.split('\n').forEach((l,li)=>ctx.fillText(l,b.x+b.w/2,b.y+15+li*14));
+      ctx.globalAlpha=1;
+    });
+    if(p>.3){
+      ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx-70,80); ctx.lineTo(cx-70,110); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx-20,135); ctx.lineTo(cx+40,80); ctx.stroke();
+    }
+  } else if(currentStep===1){
+    // Label masking visualization
+    const tokenW=35,tokenH=25,gap=3,cols=12;
+    const labels=['sys','You','are','help','<e>','<s>','user','请','解释','ML','<e>','<s>','asst','机器','学习','是','AI','<e>','PAD','PAD'];
+    const roles= ['s','s','s','s','x','x','u','u','u','u','x','x','x','a','a','a','a','x','p','p'];
+    const colors={s:'#64748B',u:'#0984E3',a:'#10B981',x:'#475569',p:'#1E293B'};
+
+    labels.forEach((t,i)=>{
+      const delay=i*.03;
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+      const col=i%cols, row=Math.floor(i/cols);
+      const x=15+col*(tokenW+gap), y=20+row*(tokenH+gap+20);
+      const c=colors[roles[i]];
+
+      ctx.globalAlpha=ap;
+      ctx.fillStyle=c+'44'; ctx.strokeStyle=c+'88'; ctx.lineWidth=1;
+      drawRoundRect(x,y,tokenW,tokenH,3); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=c; ctx.font='9px Courier New'; ctx.textAlign='center';
+      ctx.fillText(t,x+tokenW/2,y+tokenH/2+3);
+
+      // Label bar below
+      if(roles[i]==='a'){
+        ctx.fillStyle='rgba(16,185,129,.5)';
+        drawRoundRect(x,y+tokenH+2,tokenW,6,2); ctx.fill();
+      } else {
+        ctx.fillStyle='rgba(239,68,68,.25)';
+        drawRoundRect(x,y+tokenH+2,tokenW,6,2); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    });
+  } else if(currentStep===2){
+    // PEFT model loading flow
+    const boxes=[
+      {text:'加载基座模型\nbf16 / 4-bit',x:cx,y:20,c:'#6C5CE7'},
+      {text:'QLoRA?\nprepare_kbit',x:cx-100,y:100,c:'#F59E0B'},
+      {text:'创建 LoraConfig\nr/alpha/modules',x:cx+100,y:100,c:'#0984E3'},
+      {text:'get_peft_model()\n添加 adapter',x:cx,y:180,c:'#10B981'},
+    ];
+    boxes.forEach((b,i)=>{
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-i*.2)/.3)));
+      ctx.globalAlpha=ap;
+      ctx.fillStyle=b.c+'33'; ctx.strokeStyle=b.c+'88'; ctx.lineWidth=2;
+      drawRoundRect(b.x-70,b.y,140,55,10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=b.c; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+      b.text.split('\n').forEach((l,li)=>ctx.fillText(l,b.x,b.y+20+li*16));
+      ctx.globalAlpha=1;
+    });
+    if(p>.4){
+      ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,75); ctx.lineTo(cx-100,100); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx,75); ctx.lineTo(cx+100,100); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx-100,155); ctx.lineTo(cx,180); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx+100,155); ctx.lineTo(cx,180); ctx.stroke();
+    }
+  } else if(currentStep===3){
+    // Merge flow
+    const boxes=[
+      {text:'W_base\n(基座权重)',x:cx-120,y:30,c:'#6C5CE7'},
+      {text:'B × A\n(LoRA 增量)',x:cx+120,y:30,c:'#EF4444'},
+      {text:'α/r · BA',x:cx+120,y:120,c:'#F97316'},
+      {text:'W_new = W + ΔW\n(合并结果)',x:cx,y:200,c:'#10B981'},
+    ];
+    boxes.forEach((b,i)=>{
+      const ap=easeInOut(Math.max(0,Math.min(1,(p-i*.2)/.3)));
+      ctx.globalAlpha=ap;
+      ctx.fillStyle=b.c+'33'; ctx.strokeStyle=b.c+'88'; ctx.lineWidth=2;
+      drawRoundRect(b.x-75,b.y,150,55,10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=b.c; ctx.font='13px PingFang SC'; ctx.textAlign='center';
+      b.text.split('\n').forEach((l,li)=>ctx.fillText(l,b.x,b.y+22+li*16));
+      ctx.globalAlpha=1;
+    });
+    if(p>.6){
+      const mp=easeInOut((p-.6)/.3);
+      ctx.globalAlpha=mp;
+      ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(cx-120,85); ctx.lineTo(cx-40,200); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx+120,85); ctx.lineTo(cx+120,120); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx+120,175); ctx.lineTo(cx+40,200); ctx.stroke();
+      ctx.font='bold 20px PingFang SC'; ctx.fillStyle='var(--warn)';
+      ctx.fillText('+',cx,160);
+      ctx.globalAlpha=1;
+    }
+  } else if(currentStep===4){
+    // Distinct-N visualization
+    const texts=['机器学习是AI','机器学习是AI','深度学习很强','机器学习是AI'];
+    const good=['机器学习原理','深度网络结构','自然语言处理','计算机视觉应用'];
+
+    const p1=easeInOut(Math.min(1,p/.4));
+    ctx.globalAlpha=p1;
+    ctx.font='bold 13px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.8)'; ctx.textAlign='left';
+    ctx.fillText('过拟合模型 (Distinct-2 = 0.3):',20,25);
+    texts.forEach((t,i)=>{
+      ctx.fillStyle='rgba(239,68,68,.15)'; ctx.strokeStyle='rgba(239,68,68,.3)'; ctx.lineWidth=1;
+      drawRoundRect(20,35+i*25,W/2-40,20,4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='rgba(239,68,68,.7)'; ctx.font='11px PingFang SC';
+      ctx.fillText(t,28,50+i*25);
+    });
+
+    const p2=easeInOut(Math.max(0,(p-.3)/.4));
+    ctx.globalAlpha=p2;
+    ctx.font='bold 13px PingFang SC'; ctx.fillStyle='rgba(16,185,129,.8)';
+    ctx.fillText('正常模型 (Distinct-2 = 0.8):',W/2+10,25);
+    good.forEach((t,i)=>{
+      ctx.fillStyle='rgba(16,185,129,.15)'; ctx.strokeStyle='rgba(16,185,129,.3)'; ctx.lineWidth=1;
+      drawRoundRect(W/2+10,35+i*25,W/2-30,20,4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='rgba(16,185,129,.7)'; ctx.font='11px PingFang SC';
+      ctx.fillText(t,W/2+18,50+i*25);
+    });
+    ctx.globalAlpha=1;
+  }
+}
+
+function updateCode(){
+  const panel=document.getElementById('codePanel');
+  panel.innerHTML='';
+  if(!steps[currentStep].code) return;
+  steps[currentStep].code.forEach(line=>{
+    const div=document.createElement('div');
+    div.className='code-line'+(line.hl?' highlight':'');
+    div.innerHTML=line.text||'&nbsp;';
+    panel.appendChild(div);
+  });
+}
+
+function render(){ renderCanvas(); }
+
+function animate(){
+  animProgress+=.015;
+  if(animProgress>1.5) animProgress=1.5;
+  render();
+  animId=requestAnimationFrame(animate);
+}
+
+function goToStep(i){
+  currentStep=Math.max(0,Math.min(i,steps.length-1));
+  animProgress=0;
+  document.getElementById('infoTitle').textContent=steps[currentStep].title;
+  document.getElementById('infoDesc').innerHTML=steps[currentStep].desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCode();
+  const dots=document.getElementById('dots');
+  dots.innerHTML='';
+  for(let j=0;j<steps.length;j++){
+    const s=document.createElement('span');
+    if(j===currentStep) s.className='active';
+    s.onclick=()=>goToStep(j);
+    dots.appendChild(s);
+  }
+}
+
+function nextStep(){goToStep(currentStep+1);}
+function prevStep(){goToStep(currentStep-1);}
+function replay(){animProgress=0;}
+
+resize();
+goToStep(0);
+animate();
+</script>
+</body>
+</html>

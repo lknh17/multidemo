@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v02 Vision Encoder - ViT 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v02</span>
+  <h1>Vision Encoder (ViT)</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/6</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: '为什么用 Patch？',
+    desc: '如果将每个<strong>像素</strong>当作一个 token，一张 224×224 的图像就有 50,176 个 token。自注意力的复杂度是 <strong>O(n²)</strong>，这意味着需要计算约 <strong>25 亿次</strong>注意力分数——完全不可行。<br><br>解决方案：将图像切成 <strong>P×P 的 Patch</strong>，每个 patch 作为一个 token。例如 patch_size=16 时，224×224 → 196 个 token，复杂度降低 <strong>65,000 倍</strong>！<br><br>动画展示：像素级 vs Patch 级的 token 数量对比。',
+    formula: '像素级: n = H×W = 50,176  →  n² ≈ 2.5×10⁹\nPatch级: n = (H/P)×(W/P) = 196  →  n² ≈ 38,416' },
+  { title: '图像 Patch 切分',
+    desc: '将 32×32 的图像按 4×4 的 patch 大小进行<strong>不重叠切分</strong>：<br><br>• 水平方向: 32 / 4 = <strong>8 个 patch</strong><br>• 垂直方向: 32 / 4 = <strong>8 个 patch</strong><br>• 总计: 8 × 8 = <strong>64 个 patch</strong><br><br>每个 patch 包含 4×4×3 = <strong>48 个像素值</strong>（RGB 3 通道）。<br><br>动画展示：32×32 图像被切分为 8×8 网格，共 64 个 patch。',
+    formula: 'num_patches = (H/P) × (W/P) = (32/4)² = 64\npatch_dim = P × P × C = 4 × 4 × 3 = 48' },
+  { title: 'Patch Embedding',
+    desc: '每个 patch 的 48 维像素值需要映射到 Transformer 能处理的 <strong>d_model</strong> 维空间。<br><br>过程：<strong>展平</strong>（4×4×3 → 48 维向量）→ <strong>线性投影</strong>（48 → d_model）。<br><br>实现上用 <strong>Conv2d(3, d_model, kernel=4, stride=4)</strong> 等价实现，因为 kernel=stride=patch_size 的卷积恰好等于"切分 + 线性投影"。<br><br>这样每个 patch 就变成了 Transformer 的一个 <strong>token</strong>。',
+    formula: 'Conv2d(3, d_model, kernel=P, stride=P)\n等价于: Flatten(patch) → Linear(P²×C, d_model)\n[B,3,32,32] → [B,d_model,8,8] → [B,64,d_model]' },
+  { title: '[CLS] Token + 位置编码',
+    desc: '在 64 个 patch token 的<strong>最前面</strong>拼接一个可学习的 <strong>[CLS] token</strong>，序列变为 65 个 token。<br><br>[CLS] 的作用：经过所有 Transformer 层后，它的输出<strong>聚合了全图信息</strong>，可直接用于分类。<br><br>然后叠加<strong>可学习的位置编码</strong> pos_embed，让模型知道每个 patch 的空间位置。ViT 使用可学习编码（非正弦），因为在图像任务上两者差异不大。<br><br>最终输入: [B, 65, d_model]。',
+    formula: 'cls_token: nn.Parameter([1, 1, d_model])\npos_embed: nn.Parameter([1, 65, d_model])\nx = cat([CLS, patches]) + pos_embed\n→ [B, 65, d_model]' },
+  { title: 'ViT 完整前向传播',
+    desc: 'ViT 的完整数据流及各层 shape 变化：<br><br>① <strong>输入图像</strong>: [B, 3, 32, 32]<br>② <strong>Patch Embed</strong>: → [B, 64, d_model]<br>③ <strong>Cat [CLS]</strong>: → [B, 65, d_model]<br>④ <strong>+ Pos Embed</strong>: → [B, 65, d_model]<br>⑤ <strong>N × Transformer Encoder</strong>: → [B, 65, d_model]<br>⑥ <strong>取 [CLS] + LayerNorm</strong>: → [B, d_model]<br>⑦ <strong>分类头 Linear</strong>: → [B, num_classes]<br><br>动画展示各层 shape 变化的完整数据流。',
+    formula: '[B,3,32,32] → PatchEmbed → [B,64,D]\n→ +CLS → [B,65,D] → +Pos → Encoder\n→ [B,65,D] → CLS[:,0] → Norm → [B,D]\n→ Linear → [B, num_classes]' },
+  { title: 'ViT vs CNN 对比',
+    desc: 'ViT 和 CNN 的核心差异在于<strong>感受野</strong>：<br><br><strong>CNN</strong>：每层只看局部（3×3 或 5×5），需要<strong>堆叠很多层</strong>才能获得全局视野。信息传递是逐层扩散的。<br><br><strong>ViT</strong>：第一层就能看到<strong>所有 patch</strong>（全局注意力），任意两个 patch 之间有直接连接。<br><br>代价：ViT 需要<strong>更多数据</strong>来训练（缺少 CNN 的归纳偏置），但在大规模数据上性能更强。<br><br>动画展示：CNN 的局部感受野 vs ViT 的全局注意力。',
+    formula: 'CNN: 感受野 = (kernel-1) × layers + 1\n  3×3 conv × 6 层 → 13×13 感受野\n\nViT: 感受野 = 全图（第一层就是全局）' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function hsl(h,s,l){ return `hsl(${h},${s}%,${l}%)`; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: Why Patches? O(n²) explosion
+function renderStep0(p) {
+  const cx=W/2, cy=H/2;
+  // Pixel level - left side
+  const lp=easeInOut(Math.min(1,p/.4));
+  ctx.globalAlpha=lp;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='#EF4444';
+  ctx.fillText('像素级 Token',cx/2,35);
+  // Draw a small grid representing pixels
+  const gridSize=12, cellSize=Math.min(16, (W/2-80)/gridSize);
+  const gx=cx/2-gridSize*cellSize/2, gy=50;
+  for(let i=0;i<gridSize;i++) for(let j=0;j<gridSize;j++){
+    const delay=(i+j)*.01;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    ctx.fillStyle=`rgba(239,68,68,${ap*0.4})`;
+    ctx.strokeStyle=`rgba(239,68,68,${ap*0.6})`;
+    ctx.fillRect(gx+j*cellSize,gy+i*cellSize,cellSize-1,cellSize-1);
+    ctx.strokeRect(gx+j*cellSize,gy+i*cellSize,cellSize-1,cellSize-1);
+  }
+  ctx.fillStyle=`rgba(239,68,68,${lp})`;
+  ctx.font='13px PingFang SC';
+  ctx.fillText(`${gridSize}×${gridSize} = ${gridSize*gridSize} tokens`,cx/2,gy+gridSize*cellSize+20);
+  ctx.fillText(`O(n²) = ${(gridSize*gridSize)*(gridSize*gridSize)} 次计算`,cx/2,gy+gridSize*cellSize+42);
+  ctx.globalAlpha=1;
+
+  // Patch level - right side
+  const rp=easeInOut(Math.max(0,Math.min(1,(p-.4)/.4)));
+  ctx.globalAlpha=rp;
+  ctx.font='bold 16px PingFang SC';
+  ctx.fillStyle='#00B894';
+  ctx.fillText('Patch 级 Token',cx+cx/2,35);
+  const patchGrid=3, patchCell=Math.min(55,(W/2-80)/patchGrid);
+  const px2=cx+cx/2-patchGrid*patchCell/2, py2=50;
+  for(let i=0;i<patchGrid;i++) for(let j=0;j<patchGrid;j++){
+    const delay=(i+j)*.08;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-.4-delay)/.3)));
+    ctx.fillStyle=`rgba(0,184,148,${ap*0.3})`;
+    ctx.strokeStyle=`rgba(0,184,148,${ap*0.8})`;
+    ctx.lineWidth=2;
+    drawRoundRect(px2+j*patchCell,py2+i*patchCell,patchCell-4,patchCell-4,6);
+    ctx.fill(); ctx.stroke();
+  }
+  ctx.fillStyle=`rgba(0,184,148,${rp})`;
+  ctx.font='13px PingFang SC';
+  ctx.fillText(`${patchGrid}×${patchGrid} = ${patchGrid*patchGrid} tokens`,cx+cx/2,py2+patchGrid*patchCell+20);
+  ctx.fillText(`O(n²) = ${(patchGrid*patchGrid)*(patchGrid*patchGrid)} 次计算`,cx+cx/2,py2+patchGrid*patchCell+42);
+  ctx.globalAlpha=1;
+
+  // Arrow and reduction label
+  if(p>.7){
+    const ap=easeInOut((p-.7)/.3);
+    ctx.strokeStyle=`rgba(249,158,11,${ap})`; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(cx-30,cy); ctx.lineTo(cx+30,cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+25,cy-6); ctx.lineTo(cx+32,cy); ctx.lineTo(cx+25,cy+6); ctx.stroke();
+    ctx.fillStyle=`rgba(249,158,11,${ap})`; ctx.font='bold 18px PingFang SC';
+    ctx.fillText('降低 65,000×',cx,cy-15);
+    ctx.font='13px PingFang SC';
+    ctx.fillText('patch_size=16 时',cx,cy+25);
+  }
+}
+
+// Step 1: Patch splitting animation
+function renderStep1(p) {
+  const cx=W/2, topY=30;
+  const gridN=8, imgSize=Math.min(W*0.7, H-100);
+  const cellSize=imgSize/gridN;
+  const sx=cx-imgSize/2, sy=topY+20;
+
+  // Draw image outline
+  const ip=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ip;
+  ctx.strokeStyle='rgba(108,92,231,.6)'; ctx.lineWidth=2;
+  ctx.strokeRect(sx,sy,imgSize,imgSize);
+  ctx.fillStyle='rgba(108,92,231,.05)';
+  ctx.fillRect(sx,sy,imgSize,imgSize);
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(108,92,231,.8)';
+  ctx.fillText('32×32 图像',cx,sy-5);
+  ctx.globalAlpha=1;
+
+  // Animate grid lines
+  const colors=['#EF4444','#F59E0B','#10B981','#0984E3','#6C5CE7','#E879F9','#94A3B8','#00B894'];
+  for(let i=0;i<gridN;i++) for(let j=0;j<gridN;j++){
+    const delay=.2+(i*gridN+j)*.008;
+    const cp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const x=sx+j*cellSize, y=sy+i*cellSize;
+    const colorIdx=(i+j)%colors.length;
+    ctx.fillStyle=colors[colorIdx]+'33';
+    ctx.globalAlpha=cp;
+    ctx.fillRect(x+1,y+1,cellSize-2,cellSize-2);
+    ctx.strokeStyle=colors[colorIdx]+'88';
+    ctx.lineWidth=1;
+    ctx.strokeRect(x+1,y+1,cellSize-2,cellSize-2);
+    ctx.globalAlpha=1;
+  }
+
+  // Patch number labels
+  if(p>.6){
+    const lp=easeInOut((p-.6)/.2);
+    ctx.globalAlpha=lp;
+    ctx.font='bold 10px Courier New'; ctx.textAlign='center';
+    for(let i=0;i<gridN;i++) for(let j=0;j<gridN;j++){
+      const x=sx+j*cellSize+cellSize/2, y=sy+i*cellSize+cellSize/2+3;
+      ctx.fillStyle='rgba(255,255,255,.7)';
+      ctx.fillText(''+(i*gridN+j),x,y);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // Summary
+  if(p>.85){
+    const sp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=sp;
+    ctx.font='14px PingFang SC'; ctx.fillStyle='#00B894'; ctx.textAlign='center';
+    ctx.fillText('8×8 = 64 个 patch，每个 patch 大小 4×4×3',cx,sy+imgSize+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Patch Embedding (Flatten + Linear projection)
+function renderStep2(p) {
+  const cx=W/2, topY=25;
+  const bw=160, bh=40;
+  const drawBox=(x,y,label,sublabel,color,alpha)=>{
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=color+'22'; ctx.strokeStyle=color;
+    drawRoundRect(x-bw/2,y,bw,bh,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=color; ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(label,x,y+18);
+    if(sublabel){ctx.font='11px Courier New'; ctx.fillStyle=color+'BB'; ctx.fillText(sublabel,x,y+34);}
+    ctx.globalAlpha=1;
+  };
+  const drawArrow=(x1,y1,x2,y2,color,alpha)=>{
+    ctx.globalAlpha=alpha; ctx.strokeStyle=color; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    const a=Math.atan2(y2-y1,x2-x1);
+    ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a-.3),y2-8*Math.sin(a-.3));
+    ctx.moveTo(x2,y2); ctx.lineTo(x2-8*Math.cos(a+.3),y2-8*Math.sin(a+.3)); ctx.stroke();
+    ctx.globalAlpha=1;
+  };
+
+  // Draw a small patch
+  const p1=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=p1;
+  const patchSz=60, px=cx-bw-40, py=topY;
+  ctx.fillStyle='rgba(108,92,231,.15)'; ctx.strokeStyle='rgba(108,92,231,.6)';
+  drawRoundRect(px,py,patchSz,patchSz,8); ctx.fill(); ctx.stroke();
+  // Draw 4x4 grid inside
+  const cs=patchSz/4;
+  for(let i=0;i<4;i++) for(let j=0;j<4;j++){
+    ctx.fillStyle=hsl(200+i*20+j*10,60,30+(i+j)*5);
+    ctx.fillRect(px+j*cs+1,py+i*cs+1,cs-2,cs-2);
+  }
+  ctx.fillStyle='#6C5CE7'; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+  ctx.fillText('一个 Patch',px+patchSz/2,py+patchSz+16);
+  ctx.fillStyle='#94A3B8'; ctx.font='11px Courier New';
+  ctx.fillText('[4,4,3]',px+patchSz/2,py+patchSz+32);
+  ctx.globalAlpha=1;
+
+  // Arrow: flatten
+  const p2=easeInOut(Math.max(0,Math.min(1,(p-.2)/.2)));
+  drawArrow(px+patchSz+10,py+patchSz/2,cx-bw/2-10,topY+40,'#F59E0B',p2);
+  ctx.globalAlpha=p2; ctx.font='12px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+  ctx.fillText('展平 Flatten',cx-40,topY+25);
+  ctx.globalAlpha=1;
+
+  // Flattened vector
+  const p3=easeInOut(Math.max(0,Math.min(1,(p-.3)/.2)));
+  ctx.globalAlpha=p3;
+  const vecW=180, vecH=22, vecX=cx-vecW/2, vecY=topY+50;
+  ctx.strokeStyle='#F59E0B'; ctx.lineWidth=1;
+  for(let i=0;i<12;i++){
+    const w=vecW/12;
+    ctx.fillStyle=hsl(200+i*15,60,30+i*3);
+    ctx.fillRect(vecX+i*w,vecY,w-1,vecH);
+  }
+  ctx.fillStyle='#F59E0B'; ctx.font='11px Courier New'; ctx.textAlign='center';
+  ctx.fillText('[48]  (4×4×3)',cx,vecY+vecH+14);
+  ctx.globalAlpha=1;
+
+  // Arrow: Linear projection
+  const p4=easeInOut(Math.max(0,Math.min(1,(p-.5)/.2)));
+  drawArrow(cx,vecY+vecH+25,cx,vecY+vecH+55,'#00B894',p4);
+  ctx.globalAlpha=p4; ctx.font='12px PingFang SC'; ctx.fillStyle='#00B894';
+  ctx.fillText('线性投影 W',cx+60,vecY+vecH+42);
+  ctx.globalAlpha=1;
+
+  // d_model vector
+  const p5=easeInOut(Math.max(0,Math.min(1,(p-.65)/.2)));
+  ctx.globalAlpha=p5;
+  const dmW=280, dmH=22, dmX=cx-dmW/2, dmY=vecY+vecH+60;
+  for(let i=0;i<20;i++){
+    const w=dmW/20;
+    ctx.fillStyle=hsl(140+i*6,60,30+i*2);
+    ctx.fillRect(dmX+i*w,dmY,w-1,dmH);
+  }
+  ctx.fillStyle='#00B894'; ctx.font='11px Courier New'; ctx.textAlign='center';
+  ctx.fillText('[d_model=128]  — 一个 Token',cx,dmY+dmH+16);
+  ctx.globalAlpha=1;
+
+  // Conv2d equivalence note
+  if(p>.85){
+    const np=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=np; ctx.font='13px PingFang SC'; ctx.fillStyle='#F59E0B';
+    ctx.fillText('实际用 Conv2d(kernel=stride=4) 等价实现，更高效',cx,dmY+dmH+45);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: [CLS] Token + Positional Encoding
+function renderStep3(p) {
+  const cx=W/2, topY=30;
+  const tokenW=32, tokenH=80, gap=4;
+  const nPatches=8; // Show 8 tokens for readability
+  const totalW=(nPatches+1)*(tokenW+gap);
+  const sx=cx-totalW/2;
+
+  // Draw patch tokens
+  const p1=easeInOut(Math.min(1,p/.25));
+  ctx.globalAlpha=p1;
+  ctx.font='bold 14px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(108,92,231,.8)';
+  ctx.fillText('Patch Tokens',cx+20,topY);
+  for(let i=0;i<nPatches;i++){
+    const x=sx+(i+1)*(tokenW+gap), y=topY+15;
+    ctx.fillStyle='rgba(108,92,231,.2)'; ctx.strokeStyle='rgba(108,92,231,.5)';
+    drawRoundRect(x,y,tokenW,tokenH,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#94A3B8'; ctx.font='10px Courier New';
+    ctx.fillText('P'+i,x+tokenW/2,y+tokenH/2+3);
+  }
+  ctx.globalAlpha=1;
+
+  // Animate [CLS] token appearing
+  const p2=easeInOut(Math.max(0,Math.min(1,(p-.25)/.2)));
+  const clsX=sx, clsY=topY+15;
+  ctx.globalAlpha=p2;
+  ctx.fillStyle='rgba(0,184,148,.3)'; ctx.strokeStyle='#00B894'; ctx.lineWidth=2;
+  drawRoundRect(clsX,clsY,tokenW,tokenH,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#00B894'; ctx.font='bold 10px Courier New';
+  ctx.fillText('CLS',clsX+tokenW/2,clsY+tokenH/2+3);
+  ctx.globalAlpha=1;
+
+  // Arrow: cat
+  if(p>.3){
+    const ap=easeInOut((p-.3)/.15);
+    ctx.globalAlpha=ap; ctx.font='13px PingFang SC'; ctx.fillStyle='#00B894';
+    ctx.fillText('← 拼接到最前面',clsX+tokenW+50,clsY-5);
+    ctx.globalAlpha=1;
+  }
+
+  // Position encoding overlay
+  const posY=topY+tokenH+55;
+  if(p>.45){
+    const pp=easeInOut((p-.45)/.25);
+    ctx.globalAlpha=pp;
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+    ctx.fillText('+ 可学习位置编码 pos_embed',cx,posY-5);
+    for(let i=0;i<nPatches+1;i++){
+      const x=sx+i*(tokenW+gap), y=posY+10;
+      // Position encoding bars
+      ctx.fillStyle='rgba(249,158,11,.2)'; ctx.strokeStyle='rgba(249,158,11,.5)';
+      drawRoundRect(x,y,tokenW,tokenH,6); ctx.fill(); ctx.stroke();
+      // Show position wave pattern
+      ctx.strokeStyle='#F59E0B'; ctx.lineWidth=1.5;
+      ctx.beginPath();
+      for(let px2=0;px2<tokenW;px2++){
+        const val=Math.sin(i*0.8+px2*0.3)*0.4;
+        const py2=y+tokenH/2-val*(tokenH/2-5);
+        px2===0?ctx.moveTo(x+px2,py2):ctx.lineTo(x+px2,py2);
+      }
+      ctx.stroke();
+      ctx.fillStyle='#94A3B8'; ctx.font='9px Courier New';
+      ctx.fillText('pos'+i,x+tokenW/2,y+tokenH+12);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // Result: combined
+  const resY=posY+tokenH+40;
+  if(p>.75){
+    const rp=easeInOut((p-.75)/.25);
+    ctx.globalAlpha=rp;
+    ctx.font='bold 13px PingFang SC'; ctx.fillStyle='#E2E8F0'; ctx.textAlign='center';
+    ctx.fillText('最终输入: [B, 65, d_model] — 送入 Transformer Encoder',cx,resY);
+    // Plus sign between sections
+    ctx.font='bold 24px PingFang SC'; ctx.fillStyle='#F59E0B';
+    ctx.fillText('+',sx-15,posY+tokenH/2+10);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: ViT Full Architecture Forward Pass
+function renderStep4(p) {
+  const cx=W/2, topY=15;
+  const bw=200, bh=32, gap=8;
+  const drawModule=(x,y,label,shape,color,alpha)=>{
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=color+'1A'; ctx.strokeStyle=color+'99'; ctx.lineWidth=1.5;
+    drawRoundRect(x-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=color; ctx.font='12px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(label,x,y+14);
+    if(shape){ctx.font='10px Courier New'; ctx.fillStyle=color+'BB'; ctx.fillText(shape,x,y+27);}
+    ctx.globalAlpha=1;
+  };
+
+  const stages=[
+    {label:'输入图像',shape:'[B, 3, 32, 32]',color:'#94A3B8',t:0},
+    {label:'Patch Embedding',shape:'→ [B, 64, d_model]',color:'#6C5CE7',t:.1},
+    {label:'Cat [CLS] Token',shape:'→ [B, 65, d_model]',color:'#00B894',t:.2},
+    {label:'+ Position Embedding',shape:'→ [B, 65, d_model]',color:'#F59E0B',t:.3},
+    {label:'Dropout',shape:'[B, 65, d_model]',color:'#64748B',t:.38},
+    {label:'N × Transformer Encoder',shape:'→ [B, 65, d_model]',color:'#0984E3',t:.45},
+    {label:'取 [CLS] 输出 ([:,0])',shape:'→ [B, d_model]',color:'#00B894',t:.58},
+    {label:'LayerNorm',shape:'→ [B, d_model]',color:'#F59E0B',t:.68},
+    {label:'Linear 分类头',shape:'→ [B, num_classes]',color:'#EF4444',t:.78},
+  ];
+
+  let y=topY;
+  for(let i=0;i<stages.length;i++){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-stages[i].t)/.12)));
+    drawModule(cx,y,stages[i].label,stages[i].shape,stages[i].color,sp);
+    if(i<stages.length-1 && sp>.5){
+      ctx.strokeStyle=stages[i].color+'55'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(cx,y+bh); ctx.lineTo(cx,y+bh+gap); ctx.stroke();
+      // arrow
+      ctx.beginPath(); ctx.moveTo(cx-4,y+bh+gap-4); ctx.lineTo(cx,y+bh+gap); ctx.lineTo(cx+4,y+bh+gap-4); ctx.stroke();
+    }
+    y+=bh+gap;
+  }
+
+  // Highlight data flow pulse
+  if(p>.9){
+    const pp=((p-.9)/.1)*stages.length;
+    const idx=Math.floor(pp)%stages.length;
+    const sy=topY+idx*(bh+gap);
+    ctx.globalAlpha=.3;
+    ctx.fillStyle='rgba(255,255,255,.1)';
+    drawRoundRect(cx-bw/2-5,sy-3,bw+10,bh+6,10); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: ViT vs CNN comparison
+function renderStep5(p) {
+  const cx=W/2, topY=30;
+  // CNN side - left
+  const lx=cx/2, ly=topY+30;
+  const p1=easeInOut(Math.min(1,p/.4));
+  ctx.globalAlpha=p1;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='#EF4444'; ctx.fillText('CNN — 局部视野',lx,topY);
+
+  // Draw grid with local receptive field
+  const gridS=6, cellS=Math.min(35,(cx-60)/gridS);
+  const gx=lx-gridS*cellS/2, gy=ly;
+  for(let i=0;i<gridS;i++) for(let j=0;j<gridS;j++){
+    ctx.fillStyle='rgba(100,116,139,.15)';
+    ctx.strokeStyle='rgba(100,116,139,.3)';
+    ctx.fillRect(gx+j*cellS,gy+i*cellS,cellS-2,cellS-2);
+    ctx.strokeRect(gx+j*cellS,gy+i*cellS,cellS-2,cellS-2);
+  }
+
+  // Highlight 3×3 kernel
+  if(p>.2){
+    const kp=easeInOut((p-.2)/.2);
+    const ki=2, kj=2;
+    ctx.globalAlpha=kp;
+    ctx.strokeStyle='#EF4444'; ctx.lineWidth=3;
+    ctx.strokeRect(gx+kj*cellS-2,gy+ki*cellS-2,cellS*3+2,cellS*3+2);
+    ctx.fillStyle='rgba(239,68,68,.15)';
+    ctx.fillRect(gx+kj*cellS,gy+ki*cellS,cellS*3-2,cellS*3-2);
+    ctx.font='12px PingFang SC'; ctx.fillStyle='#EF4444';
+    ctx.fillText('3×3 卷积核',lx,gy+gridS*cellS+20);
+    ctx.fillText('只看局部',lx,gy+gridS*cellS+38);
+  }
+  ctx.globalAlpha=1;
+
+  // ViT side - right
+  const rx=cx+cx/2;
+  const p2=easeInOut(Math.max(0,Math.min(1,(p-.4)/.3)));
+  ctx.globalAlpha=p2;
+  ctx.font='bold 16px PingFang SC';
+  ctx.fillStyle='#00B894'; ctx.fillText('ViT — 全局视野',rx,topY);
+
+  const patchN=4, patchS=Math.min(50,(cx-60)/patchN);
+  const px2=rx-patchN*patchS/2, py2=ly;
+  for(let i=0;i<patchN;i++) for(let j=0;j<patchN;j++){
+    ctx.fillStyle='rgba(0,184,148,.12)'; ctx.strokeStyle='rgba(0,184,148,.4)';
+    drawRoundRect(px2+j*patchS,py2+i*patchS,patchS-3,patchS-3,4);
+    ctx.fill(); ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+
+  // Global attention connections
+  if(p>.6){
+    const cp=easeInOut((p-.6)/.3);
+    ctx.globalAlpha=cp*.5;
+    const centerI=1, centerJ=1;
+    const ccx=px2+centerJ*patchS+patchS/2, ccy=py2+centerI*patchS+patchS/2;
+    // Highlight center patch
+    ctx.fillStyle='rgba(0,184,148,.4)';
+    drawRoundRect(px2+centerJ*patchS,py2+centerI*patchS,patchS-3,patchS-3,4);
+    ctx.fill();
+    // Lines to all other patches
+    for(let i=0;i<patchN;i++) for(let j=0;j<patchN;j++){
+      if(i===centerI&&j===centerJ) continue;
+      const tx=px2+j*patchS+patchS/2, ty=py2+i*patchS+patchS/2;
+      ctx.strokeStyle='rgba(0,184,148,.4)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(ccx,ccy); ctx.lineTo(tx,ty); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    ctx.font='12px PingFang SC'; ctx.fillStyle='#00B894'; ctx.textAlign='center';
+    ctx.fillText('每个 patch 直接连接所有 patch',rx,py2+patchN*patchS+20);
+    ctx.fillText('第一层就是全局感受野',rx,py2+patchN*patchS+38);
+  }
+
+  // VS divider
+  if(p>.3){
+    const vp=easeInOut((p-.3)/.2);
+    ctx.globalAlpha=vp;
+    ctx.font='bold 24px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+    ctx.fillText('VS',cx,ly+gridS*cellS/2);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2500;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v13 高级注意力机制 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(108,92,231,.25);border-left:3px solid var(--primary);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(9,132,227,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(9,132,227,.5);background:rgba(9,132,227,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(9,132,227,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(9,132,227,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v13</span>
+  <h1>高级注意力机制</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'GroupedQueryAttention 投影与 KV 扩展',
+   desc:'GQA 核心：Q 投影 n_heads 个头，K/V 只投影 n_kv_heads 个头。通过 unsqueeze+expand+reshape 将 KV 广播到所有 Q head，不复制内存。',
+   code:[
+     {text:'<span class="cm"># Q 投影: 完整 n_heads</span>',hl:false},
+     {text:'Q = self.W_q(x).view(B, L, n_heads, d_k).transpose(1, 2)',hl:true},
+     {text:'<span class="cm"># Q: [B, n_heads=8, L, d_k=32]</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># K/V 投影: 只有 n_kv_heads</span>',hl:false},
+     {text:'K = self.W_k(x).view(B, L, n_kv_heads, d_k).transpose(1, 2)',hl:true},
+     {text:'V = self.W_v(x).view(B, L, n_kv_heads, d_k).transpose(1, 2)',hl:true},
+     {text:'<span class="cm"># K,V: [B, n_kv_heads=2, L, d_k=32]</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 关键：扩展 KV 以匹配 Q heads</span>',hl:false},
+     {text:'K = K.unsqueeze(2)  <span class="cm"># [B, 2, 1, L, dk]</span>',hl:true},
+     {text:'K = K.expand(-1, -1, n_groups, -1, -1)  <span class="cm"># [B, 2, 4, L, dk]</span>',hl:true},
+     {text:'K = K.reshape(B, n_heads, -1, d_k)  <span class="cm"># [B, 8, L, dk]</span>',hl:true},
+   ],
+   highlightLines:[1,5,6,10,11,12]},
+  {title:'SlidingWindowAttention 掩码构造',
+   desc:'滑动窗口核心：构造带状因果掩码。因果条件 j≤i 保证自回归，窗口条件 i-j<W 限制注意力范围。两者取交集即为最终掩码。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">create_sliding_window_mask</span>(seq_len, window_size, device):',hl:false},
+     {text:'    <span class="cm"># 因果掩码: 下三角</span>',hl:false},
+     {text:'    causal = torch.tril(torch.ones(L, L, dtype=torch.bool))',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 窗口掩码: 距离 < window_size</span>',hl:false},
+     {text:'    rows = torch.arange(L).unsqueeze(1)  <span class="cm"># [L, 1]</span>',hl:false},
+     {text:'    cols = torch.arange(L).unsqueeze(0)  <span class="cm"># [1, L]</span>',hl:false},
+     {text:'    window = (rows - cols) < window_size  <span class="cm"># [L, L]</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 组合: 因果 AND 窗口</span>',hl:false},
+     {text:'    mask = causal & window',hl:true},
+     {text:'    <span class="kw">return</span> mask.unsqueeze(0).unsqueeze(0)  <span class="cm"># [1,1,L,L]</span>',hl:false},
+   ],
+   highlightLines:[2,7,10]},
+  {title:'Flash Attention 模拟 — Tiling + Online Softmax',
+   desc:'将 Q/K/V 分块，逐块计算局部 scores → 用 Online Softmax 的 m_i/l_i/O_i 逐步更新全局统计量。correction = exp(m_old - m_new) 保证数值等价。',
+   code:[
+     {text:'<span class="kw">for</span> q_block_idx <span class="kw">in</span> range(n_blocks):',hl:false},
+     {text:'    Q_block = Q[:,:, q_start:q_end]',hl:true},
+     {text:'    m_i = torch.full(..., <span class="num">-inf</span>)  <span class="cm"># 当前最大值</span>',hl:false},
+     {text:'    l_i = torch.zeros(...)  <span class="cm"># 累积 exp sum</span>',hl:false},
+     {text:'    O_i = torch.zeros(...)  <span class="cm"># 累积加权 V</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="kw">for</span> k_block_idx <span class="kw">in</span> range(n_blocks):',hl:false},
+     {text:'        S = Q_block @ K_block.T / sqrt(d)  <span class="cm"># 局部 scores</span>',hl:true},
+     {text:'',hl:false},
+     {text:'        <span class="cm"># Online Softmax 更新</span>',hl:false},
+     {text:'        m_new = max(m_i, S.max(dim=-1))',hl:true},
+     {text:'        correction = exp(m_i - m_new)  <span class="cm"># 关键修正因子</span>',hl:true},
+     {text:'        l_i = l_i * correction + exp(S - m_new).sum(-1)',hl:true},
+     {text:'        O_i = O_i * correction + exp(S - m_new) @ V_block',hl:true},
+     {text:'        m_i = m_new',hl:false},
+     {text:'',hl:false},
+     {text:'    output[:,:, q_start:q_end] = O_i / l_i  <span class="cm"># 归一化</span>',hl:true},
+   ],
+   highlightLines:[1,7,10,11,12,13,16]},
+  {title:'NTK-aware RoPE 长上下文扩展',
+   desc:'NTK-aware RoPE 动态调整频率基数 θ。当推理长度超过训练长度时，计算缩放因子 α，对低频分量压缩更多，高频基本不变。',
+   code:[
+     {text:'<span class="kw">class</span> <span class="fn">NTKAwareRoPE</span>(RotaryPositionalEncoding):',hl:false},
+     {text:'    <span class="kw">def</span> <span class="fn">_build_cache</span>(self, max_len):',hl:false},
+     {text:'        <span class="kw">if</span> target_len > train_len:',hl:false},
+     {text:'            <span class="cm"># NTK 缩放因子</span>',hl:false},
+     {text:'            alpha = (target_len / train_len) ** (',hl:true},
+     {text:'                d_model / (d_model - 2))',hl:true},
+     {text:'',hl:false},
+     {text:'            <span class="cm"># 调整频率基数 θ → θ × α</span>',hl:false},
+     {text:'            freqs = 1.0 / (',hl:true},
+     {text:'                (theta * alpha) ** (dims / d_model)',hl:true},
+     {text:'            )',hl:false},
+     {text:'',hl:false},
+     {text:'        <span class="cm"># 构建 cos/sin 缓存</span>',hl:false},
+     {text:'        positions = torch.arange(max_len).float()',hl:false},
+     {text:'        angles = torch.outer(positions, freqs)',hl:true},
+     {text:'        cos_cache = torch.cos(angles)',hl:false},
+     {text:'        sin_cache = torch.sin(angles)',hl:false},
+   ],
+   highlightLines:[4,5,8,9,14]},
+  {title:'StreamingLLM 掩码构造',
+   desc:'保留前 sink_size 个 token（吸收多余注意力）+ 最近 window_size 个 token（保持上下文），实现固定 KV Cache 大小的无限长度推理。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">streaming_inference_mask</span>(seq_len, sink_size, window_size):',hl:false},
+     {text:'    mask = torch.zeros(seq_len, seq_len, dtype=torch.bool)',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="kw">for</span> i <span class="kw">in</span> range(seq_len):',hl:false},
+     {text:'        <span class="cm"># 始终保留前 sink_size 个 token</span>',hl:false},
+     {text:'        mask[i, :sink_size] = <span class="num">True</span>  <span class="cm"># Sink!</span>',hl:true},
+     {text:'',hl:false},
+     {text:'        <span class="cm"># 保留最近 window_size 个 token</span>',hl:false},
+     {text:'        start = max(sink_size, i - window_size + 1)',hl:true},
+     {text:'        mask[i, start:i + 1] = <span class="num">True</span>  <span class="cm"># Window</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="kw">return</span> mask.unsqueeze(0).unsqueeze(0)',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># KV Cache 大小恒定:</span>',hl:false},
+     {text:'<span class="cm"># total = (sink_size + window_size) × d_model</span>',hl:false},
+     {text:'<span class="cm"># 与序列长度无关 → 支持无限长度推理</span>',hl:false},
+   ],
+   highlightLines:[5,8,9]},
+  {title:'KV Cache 大小对比与推理加速',
+   desc:'比较 MHA/GQA/MQA 的 KV Cache 大小和推理吞吐。GQA(n_kv=2) 比 MHA 节省 75% Cache，吞吐提升显著。实际模型中 Qwen2-72B 使用 n_kv_heads=8。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">count_kv_cache_size</span>(model, seq_len, batch_size):',hl:false},
+     {text:'    <span class="cm"># 每层 KV Cache = 2 × B × n_kv_heads × L × d_k</span>',hl:false},
+     {text:'    kv_per_layer = <span class="num">2</span> * batch_size * n_kv_heads * seq_len * d_k',hl:true},
+     {text:'    total = kv_per_layer * n_layers',hl:true},
+     {text:'    <span class="kw">return</span> total * <span class="num">4</span>  <span class="cm"># float32 bytes</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 对比 (d=256, 4层, seq=1024):</span>',hl:false},
+     {text:'<span class="cm"># MHA (kv=8):  2×1×8×1024×32×4×4 = 8.0 MB</span>',hl:false},
+     {text:'<span class="cm"># GQA (kv=2):  2×1×2×1024×32×4×4 = 2.0 MB  (75%↓)</span>',hl:false},
+     {text:'<span class="cm"># MQA (kv=1):  2×1×1×1024×32×4×4 = 1.0 MB  (87.5%↓)</span>',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># benchmark_inference_speed 结果:</span>',hl:false},
+     {text:'<span class="cm"># MHA: ~1200 tok/s  GQA: ~1800 tok/s  MQA: ~2100 tok/s</span>',hl:false},
+   ],
+   highlightLines:[2,3]},
+];
+
+function resize(){const r=window.devicePixelRatio||1;const rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0);}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+function renderStep0(p){
+  const cx=W/2,topY=20;ctx.textAlign='center';
+  // Show tensor shape transformations for GQA
+  const stages=[
+    {label:'Q: [B, 8, L, 32]',sub:'n_heads=8 完整投影',color:'#6C5CE7',y:topY},
+    {label:'K: [B, 2, L, 32]',sub:'n_kv_heads=2 精简投影',color:'#00B894',y:topY+55},
+    {label:'K.unsqueeze(2): [B, 2, 1, L, 32]',sub:'插入 group 维',color:'#0984E3',y:topY+110},
+    {label:'K.expand: [B, 2, 4, L, 32]',sub:'广播 (零拷贝)',color:'#F59E0B',y:topY+165},
+    {label:'K.reshape: [B, 8, L, 32]',sub:'与 Q 对齐 → 正常 matmul',color:'#EF4444',y:topY+220},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.17;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'1A';ctx.strokeStyle=s.color;
+    drawRoundRect(cx-155,s.y,310,42,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 12px Courier New';ctx.fillText(s.label,cx,s.y+18);
+    ctx.fillStyle='rgba(255,255,255,.5)';ctx.font='11px PingFang SC';ctx.fillText(s.sub,cx,s.y+34);
+    if(i>0){ctx.strokeStyle=s.color+'66';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+42);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=20,sz=22,pad=2,n=8,w=3;ctx.textAlign='center';
+  // Causal mask
+  const p1=easeInOut(Math.min(1,p/.35));ctx.globalAlpha=p1;
+  const gx=cx-100,gy=topY+20;
+  ctx.fillStyle='#0984E3';ctx.font='bold 12px PingFang SC';ctx.fillText('因果掩码',gx+n*(sz+pad)/2,topY);
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){
+    const x=gx+j*(sz+pad),y=gy+i*(sz+pad);
+    ctx.fillStyle=j<=i?'rgba(9,132,227,.4)':'rgba(255,255,255,.03)';
+    drawRoundRect(x,y,sz,sz,2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  // Window mask
+  if(p>.35){
+    const p2=easeInOut((p-.35)/.35);ctx.globalAlpha=p2;
+    const gx2=cx+20,gy2=topY+20;
+    ctx.fillStyle='#F59E0B';ctx.font='bold 12px PingFang SC';ctx.fillText(`窗口 W=${w}`,gx2+n*(sz+pad)/2,topY);
+    for(let i=0;i<n;i++)for(let j=0;j<n;j++){
+      const x=gx2+j*(sz+pad),y=gy2+i*(sz+pad);
+      const attend=j<=i&&(i-j)<w;
+      ctx.fillStyle=attend?'rgba(249,158,11,.4)':'rgba(255,255,255,.03)';
+      drawRoundRect(x,y,sz,sz,2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+  // Result
+  if(p>.7){
+    const p3=easeInOut((p-.7)/.3);ctx.globalAlpha=p3;
+    ctx.fillStyle='#10B981';ctx.font='bold 12px PingFang SC';
+    ctx.fillText('= 因果 AND 窗口',cx,gy+n*(sz+pad)+20);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=15;ctx.textAlign='center';
+  ctx.fillStyle=`rgba(249,158,11,${easeInOut(Math.min(1,p/.2))})`;
+  ctx.font='bold 14px PingFang SC';ctx.fillText('Flash Attention Tiling 流程',cx,topY);
+  const items=[
+    {label:'Q_block ← Q[:,:,q_start:q_end]',color:'#6C5CE7'},
+    {label:'初始化 m_i=-∞, l_i=0, O_i=0',color:'#94A3B8'},
+    {label:'S = Q_block @ K_block.T / √d',color:'#F59E0B'},
+    {label:'m_new = max(m_i, max(S))',color:'#EF4444'},
+    {label:'correction = exp(m_i - m_new)',color:'#EF4444'},
+    {label:'l_i = l_i × corr + Σ exp(S-m_new)',color:'#10B981'},
+    {label:'O_i = O_i × corr + P @ V_block',color:'#10B981'},
+    {label:'output = O_i / l_i (归一化)',color:'#00B894'},
+  ];
+  let y=topY+25;
+  for(let i=0;i<items.length;i++){
+    const delay=.1+i*.1;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=items[i].color+'15';ctx.strokeStyle=items[i].color;
+    drawRoundRect(cx-140,y,280,28,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=items[i].color;ctx.font='11px Courier New';ctx.fillText(items[i].label,cx,y+18);
+    if(i>0){ctx.strokeStyle=items[i].color+'44';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx,y-3);ctx.lineTo(cx,y);ctx.stroke();}
+    ctx.globalAlpha=1;y+=35;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=20;ctx.textAlign='center';
+  const stages=[
+    {label:'train_len=512, target_len=2048',color:'#94A3B8',y:topY},
+    {label:'α = (2048/512)^(d/(d-2)) ≈ 4.06',color:'#F59E0B',y:topY+55},
+    {label:'θ_new = θ × α = 40600',color:'#EF4444',y:topY+110},
+    {label:'freqs = 1/(θ_new^(2i/d))',color:'#6C5CE7',y:topY+165},
+    {label:'低频压缩多 → 全局位置外推',color:'#10B981',y:topY+220},
+    {label:'高频几乎不变 → 局部位置精确',color:'#00B894',y:topY+275},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.15;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'1A';ctx.strokeStyle=s.color;
+    drawRoundRect(cx-145,s.y,290,40,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='12px Courier New';ctx.fillText(s.label,cx,s.y+25);
+    if(i>0){ctx.strokeStyle=s.color+'44';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+40);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=15;ctx.textAlign='center';
+  // StreamingLLM mask visualization
+  const p1=easeInOut(Math.min(1,p/.4));ctx.globalAlpha=p1;
+  ctx.fillStyle='#10B981';ctx.font='bold 14px PingFang SC';
+  ctx.fillText('StreamingLLM 掩码结构',cx,topY);
+  const n=10,sz=24,pad=2,sink=2,win=3;
+  const gx=cx-n*(sz+pad)/2,gy=topY+25;
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){
+    const x=gx+j*(sz+pad),y=gy+i*(sz+pad);
+    const isSink=j<sink&&j<=i;
+    const isWin=j<=i&&j>=sink&&(i-j)<win;
+    if(isSink){ctx.fillStyle='rgba(239,68,68,.4)';ctx.strokeStyle='rgba(239,68,68,.5)';}
+    else if(isWin){ctx.fillStyle='rgba(16,185,129,.3)';ctx.strokeStyle='rgba(16,185,129,.5)';}
+    else{ctx.fillStyle='rgba(255,255,255,.02)';ctx.strokeStyle='rgba(255,255,255,.05)';}
+    drawRoundRect(x,y,sz,sz,2);ctx.fill();ctx.stroke();
+  }
+  ctx.font='10px PingFang SC';
+  ctx.fillStyle='#EF4444';ctx.fillText('Sink',gx+sink*(sz+pad)/2,gy+n*(sz+pad)+14);
+  ctx.fillStyle='#10B981';ctx.fillText('Window',gx+(sink+win/2)*(sz+pad),gy+n*(sz+pad)+14);
+  ctx.globalAlpha=1;
+}
+
+function renderStep5(p){
+  const cx=W/2,topY=20;ctx.textAlign='center';
+  // KV Cache comparison bars
+  const p1=easeInOut(Math.min(1,p/.3));ctx.globalAlpha=p1;
+  ctx.fillStyle='#F59E0B';ctx.font='bold 14px PingFang SC';
+  ctx.fillText('KV Cache 大小对比',cx,topY);
+  const data=[
+    {label:'MHA (kv=8)',val:8,color:'#EF4444'},
+    {label:'GQA (kv=2)',val:2,color:'#F59E0B'},
+    {label:'MQA (kv=1)',val:1,color:'#10B981'},
+  ];
+  const barX=60,maxBarW=W-160,barH=30;
+  for(let i=0;i<data.length;i++){
+    const delay=.15+i*.2;const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const y=topY+30+i*50;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=data[i].color+'33';ctx.strokeStyle=data[i].color;
+    const w=data[i].val/8*maxBarW;
+    drawRoundRect(barX,y,w,barH,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=data[i].color;ctx.font='12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(data[i].label,barX+w+10,y+20);
+    ctx.textAlign='right';ctx.font='11px Courier New';
+    ctx.fillText(`${data[i].val}/8 = ${(data[i].val/8*100).toFixed(0)}%`,barX-5,y+20);
+    ctx.textAlign='center';ctx.globalAlpha=1;
+  }
+  if(p>.8){
+    const sp=easeInOut((p-.8)/.2);ctx.globalAlpha=sp;
+    ctx.fillStyle='#00B894';ctx.font='13px PingFang SC';
+    ctx.fillText('GQA 是质量与效率的最佳平衡点',cx,topY+200);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+
+function updateCodePanel(){
+  const panel=document.getElementById('codePanel');const s=steps[currentStep];
+  panel.innerHTML=s.code.map((line,i)=>{
+    const cls=s.highlightLines.includes(i)?'code-line highlight':'code-line';
+    return `<div class="${cls}">${line.text||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress);}
+
+function startAnim(){
+  animProgress=0;const start=performance.now(),duration=2200;
+  function tick(now){animProgress=Math.min(1,(now-start)/duration);render();if(animProgress<1)animId=requestAnimationFrame(tick);}
+  if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick);
+}
+
+function updateUI(){
+  const s=steps[currentStep];
+  document.getElementById('infoTitle').textContent=s.title;
+  document.getElementById('infoDesc').innerHTML=s.desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCodePanel();
+  const dotsEl=document.getElementById('dots');dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){const d=document.createElement('span');if(i===currentStep)d.className='active';d.onclick=()=>{currentStep=i;updateUI();startAnim();};dotsEl.appendChild(d);}
+}
+
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim();}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim();}}
+function replay(){startAnim();}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep();});
+
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

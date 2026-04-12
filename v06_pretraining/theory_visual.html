@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v06 多模态预训练 - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:15px;color:var(--warn);text-align:center;line-height:1.8}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v06</span><h1>多模态预训练</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'ITC: 图文对比学习',desc:'<strong>Image-Text Contrastive (ITC)</strong> 是预训练的核心任务之一。<br><br>将 N 个图文对编码为 embedding，构建 N×N 的<strong>相似度矩阵</strong>。对角线为正样本对（匹配的图文），非对角线为负样本对。<br><br>目标：让正样本对的相似度最大化，负样本对最小化。等价于一个 <strong>N 分类</strong>问题——对称版本同时优化 Image→Text 和 Text→Image 方向。<br><br>可学习温度系数 τ 控制分布的锐利程度。',formula:'L_ITC = (CE(sim·exp(τ), labels) + CE(sim^T·exp(τ), labels)) / 2\n\nsim[i,j] = normalize(img_i) · normalize(txt_j)^T'},
+{title:'ITM: 图文匹配',desc:'<strong>Image-Text Matching (ITM)</strong> 是一个<strong>二分类</strong>任务：判断图文是否匹配。<br><br>训练数据构造：<br>• <strong>50% 正样本</strong>：原始匹配的图文对，标签=1<br>• <strong>50% 负样本</strong>：随机打乱文本配对，标签=0<br><br>将图像 CLS token 和文本 pooled embedding 拼接后送入 ITM Head（MLP → 2分类）。<br><br>ITM 强制模型学习<strong>细粒度</strong>的图文对齐，弥补 ITC 只用全局特征的不足。',formula:'正样本: (img_i, txt_i) → label=1\n负样本: (img_i, txt_j) → label=0  (i≠j, 随机打乱)\n\nfused = concat(img_cls, txt_pool)\nL_ITM = CrossEntropy(itm_head(fused), labels)'},
+{title:'Captioning 自回归生成',desc:'<strong>Captioning</strong> 任务训练模型根据图像<strong>自回归生成</strong>描述文本。<br><br>给定图像和文本前缀，模型预测下一个 token。使用标准的<strong>因果语言模型损失</strong>（Causal LM Loss）。<br><br>这个任务让模型学会：<br>• 将视觉信息转换为语言描述<br>• 生成流畅、准确的文本<br>• 理解图文之间的<strong>细节对应关系</strong><br><br>三个任务互补：ITC 学全局对齐，ITM 学细粒度匹配，Cap 学生成能力。',formula:'L_Cap = -Σ_t log P(w_t | w_<t, image)\n\n= CrossEntropy(cap_head(text_hidden), next_tokens)'},
+{title:'多任务 Loss 加权组合',desc:'三个预训练任务的 Loss 通过<strong>加权求和</strong>组合：<br><br><strong>L = λ₁·L_ITC + λ₂·L_ITM + λ₃·L_Cap</strong><br><br>典型权重配比：<br>• λ₁ (ITC) = 1.0 — 全局对齐，最重要<br>• λ₂ (ITM) = 1.0 — 细粒度匹配<br>• λ₃ (Cap) = 2.0 — 生成任务较难，给更高权重<br><br>动画展示三个 Loss 的<strong>动态变化</strong>和加权组合过程。权重可根据任务需求调整。',formula:'L_total = λ₁ · L_ITC + λ₂ · L_ITM + λ₃ · L_Cap\n\n默认: λ₁=1.0, λ₂=1.0, λ₃=2.0'},
+{title:'阶段式训练策略',desc:'大规模预训练通常采用<strong>阶段式策略</strong>：<br><br><strong>Stage 1: 冻结视觉编码器</strong><br>• 只训练文本编码器和投影头<br>• 学习基础的跨模态对齐<br>• 使用较大 batch size + 较高学习率<br><br><strong>Stage 2: 解冻视觉编码器</strong><br>• 全模型端到端微调<br>• 使用较小学习率（避免灾难性遗忘）<br>• 让视觉特征适应下游任务<br><br>这种策略<strong>训练更稳定</strong>，收敛更快，效果更好。',formula:'Stage 1 (冻结 ViT):\n  lr=1e-4, batch=256, epochs=10\n  trainable: TextEnc + Proj heads\n\nStage 2 (全模型):\n  lr=1e-5, batch=128, epochs=5\n  trainable: ALL parameters'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1)}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function hsl(h,s,l){return`hsl(${h},${s}%,${l}%)`}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+// Step 0: ITC contrastive matrix
+function renderStep0(p){
+  const cx=W/2,N=6,sz=42,pad=4,sx=cx-N*(sz+pad)/2,sy=30;
+  ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  const lp=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=lp;
+  for(let i=0;i<N;i++){ctx.fillStyle='#0984E3';ctx.fillText('img'+i,sx+i*(sz+pad)+sz/2,sy-8);ctx.fillStyle='#00B894';ctx.fillText('txt'+i,sx-35,sy+i*(sz+pad)+sz/2+4)}
+  ctx.globalAlpha=1;
+  ctx.font='bold 11px Courier New';
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const delay=(i*N+j)*.01;const cp=easeInOut(Math.max(0,Math.min(1,(p-.2-delay)/.4)));
+    const isDiag=i===j;const v=isDiag?0.85:Math.random()*.15+.05;const av=v*cp;
+    const x=sx+j*(sz+pad),y=sy+i*(sz+pad);
+    const h=isDiag?140:220,s=80,l=lerp(12,isDiag?50:30,av);
+    ctx.fillStyle=hsl(h,s,l);drawRR(x,y,sz,sz,5);ctx.fill();
+    ctx.fillStyle=`rgba(255,255,255,${.2+av*.8})`;ctx.textAlign='center';
+    ctx.fillText(isDiag?'0.85':'0.'+Math.floor(Math.random()*15+5),x+sz/2,y+sz/2+4);
+  }
+  if(p>.7){const lp2=easeInOut((p-.7)/.3);ctx.globalAlpha=lp2;ctx.font='13px PingFang SC';ctx.fillStyle='#F59E0B';ctx.fillText('对角线 = 正样本对 (高相似度)',cx,sy+N*(sz+pad)+20);ctx.fillStyle='#94A3B8';ctx.fillText('非对角线 = 负样本对 (低相似度)',cx,sy+N*(sz+pad)+42);ctx.globalAlpha=1}
+}
+
+// Step 1: ITM
+function renderStep1(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  // Positive pairs
+  const pp=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=pp;ctx.fillStyle='#00B894';ctx.fillText('正样本 (50%)',cx-120,topY);
+  for(let i=0;i<3;i++){
+    const y=topY+15+i*50;
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';ctx.lineWidth=1;
+    drawRR(cx-200,y,70,35,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='11px PingFang SC';ctx.fillText('img'+i,cx-165,y+22);
+    drawRR(cx-110,y,70,35,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.fillText('txt'+i,cx-75,y+22);
+    ctx.fillStyle='#00B894';ctx.font='bold 12px sans-serif';ctx.fillText('✓',cx-35,y+22);
+  }
+  // Negative pairs
+  if(p>.3){
+    const np=easeInOut((p-.3)/.3);
+    ctx.globalAlpha=np;ctx.fillStyle='#EF4444';ctx.font='bold 14px PingFang SC';ctx.fillText('负样本 (50%)',cx+120,topY);
+    const shuffled=[2,0,1];
+    for(let i=0;i<3;i++){
+      const y=topY+15+i*50;
+      ctx.fillStyle='rgba(239,68,68,.15)';ctx.strokeStyle='#EF4444';ctx.lineWidth=1;
+      drawRR(cx+40,y,70,35,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#0984E3';ctx.font='11px PingFang SC';ctx.fillText('img'+i,cx+75,y+22);
+      drawRR(cx+130,y,70,35,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#EF4444';ctx.fillText('txt'+shuffled[i],cx+165,y+22);
+      ctx.fillStyle='#EF4444';ctx.font='bold 12px sans-serif';ctx.fillText('✗',cx+210,y+22);
+    }
+    ctx.globalAlpha=1;
+  }
+  // ITM Head
+  if(p>.65){
+    const hp=easeInOut((p-.65)/.35);
+    ctx.globalAlpha=hp;
+    const hy=topY+180;
+    ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=2;
+    drawRR(cx-100,hy,200,45,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='bold 13px PingFang SC';ctx.fillText('ITM Head → 二分类',cx,hy+18);
+    ctx.font='11px Courier New';ctx.fillStyle='#94A3B8';ctx.fillText('fused = concat(img_cls, txt_pool)',cx,hy+36);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Captioning
+function renderStep2(p){
+  const cx=W/2,topY=30;
+  // Image box
+  const ip=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ip;ctx.fillStyle='rgba(9,132,227,.15)';ctx.strokeStyle='#0984E3';ctx.lineWidth=2;
+  drawRR(30,topY,80,60,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.font='24px sans-serif';ctx.textAlign='center';ctx.fillText('🖼',70,topY+40);
+  ctx.globalAlpha=1;
+  // Tokens being generated
+  const tokens=['一','只','橘','猫','坐','在','桌','上'];
+  const tw=36,th=30,gap=5,startX=140,startY=topY+15;
+  for(let i=0;i<tokens.length;i++){
+    const delay=.2+i*.08;
+    const tp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.12)));
+    const x=startX+i*(tw+gap);
+    ctx.globalAlpha=tp;
+    ctx.fillStyle='rgba(0,184,148,.2)';ctx.strokeStyle='#00B894';ctx.lineWidth=1;
+    drawRR(x,startY,tw,th,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(tokens[i],x+tw/2,startY+th/2+5);
+    // Arrow
+    if(i>0&&tp>.5){
+      ctx.strokeStyle='rgba(249,158,11,.4)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(x-gap+2,startY+th/2);ctx.lineTo(x-2,startY+th/2);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+  // Autoregressive label
+  if(p>.6){
+    const ap=easeInOut((p-.6)/.2);
+    ctx.globalAlpha=ap;ctx.font='13px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('自回归生成: P(w_t | w_<t, image)',cx,startY+th+30);
+    // Loss arrows
+    ctx.fillStyle='#EF4444';ctx.font='11px Courier New';
+    ctx.fillText('每一步预测下一个 token → CrossEntropy Loss',cx,startY+th+52);
+    ctx.globalAlpha=1;
+  }
+  // Causal mask visualization
+  if(p>.75){
+    const mp=easeInOut((p-.75)/.25);
+    ctx.globalAlpha=mp;
+    const ms=20,mx=cx-4*ms,my=startY+th+75;
+    ctx.font='bold 12px PingFang SC';ctx.fillStyle='#6C5CE7';ctx.fillText('因果掩码 (Causal Mask)',cx,my-8);
+    for(let i=0;i<8;i++)for(let j=0;j<8;j++){
+      const x=mx+j*ms,y=my+i*ms;
+      ctx.fillStyle=j<=i?'rgba(0,184,148,.4)':'rgba(239,68,68,.15)';
+      ctx.fillRect(x+1,y+1,ms-2,ms-2);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Multi-task loss
+function renderStep3(p){
+  const cx=W/2,topY=20;
+  const losses=[
+    {name:'L_ITC',color:'#0984E3',weight:'λ₁=1.0',val:2.3},
+    {name:'L_ITM',color:'#6C5CE7',weight:'λ₂=1.0',val:0.8},
+    {name:'L_Cap',color:'#00B894',weight:'λ₃=2.0',val:3.1}
+  ];
+  const bw=100,bh=120,gap=40;
+  const sx=cx-(3*bw+2*gap)/2;
+  for(let i=0;i<3;i++){
+    const delay=i*.2;
+    const lp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const l=losses[i],x=sx+i*(bw+gap);
+    ctx.globalAlpha=lp;
+    // Bar
+    const barH=bh*(l.val/4);
+    ctx.fillStyle=l.color+'33';ctx.strokeStyle=l.color;ctx.lineWidth=2;
+    drawRR(x,topY+bh-barH+20,bw,barH,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=l.color;ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(l.name,x+bw/2,topY+bh+45);
+    ctx.font='12px Courier New';ctx.fillStyle='#F59E0B';
+    ctx.fillText(l.weight,x+bw/2,topY+bh+62);
+    ctx.fillStyle='#E2E8F0';ctx.font='bold 13px Courier New';
+    ctx.fillText(l.val.toFixed(1),x+bw/2,topY+bh-barH+15);
+    ctx.globalAlpha=1;
+  }
+  // Combination
+  if(p>.65){
+    const cp=easeInOut((p-.65)/.35);
+    ctx.globalAlpha=cp;
+    const cy=topY+bh+85;
+    // Arrows down
+    for(let i=0;i<3;i++){
+      const x=sx+i*(bw+gap)+bw/2;
+      ctx.strokeStyle=losses[i].color;ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(x,cy-15);ctx.lineTo(cx,cy+10);ctx.stroke();
+    }
+    // Total loss
+    ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(cx-120,cy+15,240,45,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+    const total=1.0*2.3+1.0*0.8+2.0*3.1;
+    ctx.fillText(`L_total = ${total.toFixed(1)}`,cx,cy+33);
+    ctx.font='11px Courier New';ctx.fillStyle='#94A3B8';
+    ctx.fillText('1.0×2.3 + 1.0×0.8 + 2.0×3.1',cx,cy+50);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Staged training
+function renderStep4(p){
+  const cx=W/2,topY=15;
+  // Stage 1
+  const s1p=easeInOut(Math.min(1,p/.4));
+  ctx.globalAlpha=s1p;
+  ctx.fillStyle='rgba(9,132,227,.1)';ctx.strokeStyle='#0984E3';ctx.lineWidth=2;
+  drawRR(20,topY,W/2-30,H-50,12);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.font='bold 15px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('Stage 1: 冻结视觉编码器',W/4+5,topY+25);
+  // Frozen ViT
+  const modules1=[
+    {label:'ViT (冻结)',color:'#64748B',frozen:true},
+    {label:'TextEncoder',color:'#00B894',frozen:false},
+    {label:'投影头',color:'#F59E0B',frozen:false}
+  ];
+  const mw=120,mh=35,my=topY+40;
+  for(let i=0;i<3;i++){
+    const m=modules1[i],y=my+i*50;
+    const mp=easeInOut(Math.max(0,Math.min(1,(p-.05-i*.08)/.15)));
+    ctx.globalAlpha=mp;
+    ctx.fillStyle=m.frozen?'rgba(100,116,139,.15)':m.color+'22';
+    ctx.strokeStyle=m.frozen?'#64748B':m.color;ctx.lineWidth=1.5;
+    drawRR(W/4-mw/2+5,y,mw,mh,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=m.frozen?'#64748B':m.color;ctx.font='12px PingFang SC';
+    ctx.fillText(m.label,W/4+5,y+mh/2+4);
+    if(m.frozen){ctx.fillStyle='rgba(9,132,227,.6)';ctx.font='16px sans-serif';ctx.fillText('🧊',W/4+mw/2+15,y+mh/2+5)}
+    ctx.globalAlpha=1;
+  }
+  // Stage 2
+  if(p>.45){
+    const s2p=easeInOut((p-.45)/.4);
+    ctx.globalAlpha=s2p;
+    ctx.fillStyle='rgba(0,184,148,.1)';ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    drawRR(W/2+10,topY,W/2-30,H-50,12);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 15px PingFang SC';
+    ctx.fillText('Stage 2: 全模型微调',3*W/4-5,topY+25);
+    const modules2=[
+      {label:'ViT (解冻)',color:'#0984E3'},
+      {label:'TextEncoder',color:'#00B894'},
+      {label:'投影头',color:'#F59E0B'}
+    ];
+    for(let i=0;i<3;i++){
+      const m=modules2[i],y=my+i*50;
+      const mp=easeInOut(Math.max(0,Math.min(1,(p-.5-i*.08)/.15)));
+      ctx.globalAlpha=mp;
+      ctx.fillStyle=m.color+'22';ctx.strokeStyle=m.color;ctx.lineWidth=1.5;
+      drawRR(3*W/4-mw/2-5,y,mw,mh,8);ctx.fill();ctx.stroke();
+      ctx.fillStyle=m.color;ctx.font='12px PingFang SC';
+      ctx.fillText(m.label,3*W/4-5,y+mh/2+4);
+      ctx.fillStyle='rgba(249,158,11,.6)';ctx.font='16px sans-serif';ctx.fillText('🔥',3*W/4+mw/2+5,y+mh/2+5);
+      ctx.globalAlpha=1;
+    }
+  }
+  // Arrow between stages
+  if(p>.85){
+    const ap=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=ap;ctx.strokeStyle='#F59E0B';ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(W/2-5,H/2-10);ctx.lineTo(W/2+15,H/2-10);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W/2+10,H/2-16);ctx.lineTo(W/2+17,H/2-10);ctx.lineTo(W/2+10,H/2-4);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const s=document.createElement('span');if(i===currentStep)s.className='active';s.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(s)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

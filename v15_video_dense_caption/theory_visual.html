@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V15 - 视频理解与 Dense Captioning 原理可视化</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a2e; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+canvas { display: block; }
+#controls { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 10; }
+#controls button { padding: 10px 24px; border: 1px solid #00d4ff; border-radius: 25px; background: rgba(0,212,255,0.1); color: #00d4ff; cursor: pointer; font-size: 14px; transition: all 0.3s; }
+#controls button:hover { background: rgba(0,212,255,0.3); }
+#controls button.active { background: #00d4ff; color: #0a0a2e; }
+#info { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); text-align: center; z-index: 10; }
+#title { font-size: 22px; color: #00d4ff; margin-bottom: 5px; }
+#step-info { font-size: 14px; color: #aaa; }
+</style>
+</head>
+<body>
+<div id="info">
+<div id="title">V15 - 视频理解与 Dense Captioning 原理</div>
+<div id="step-info">点击下方按钮切换动画</div>
+</div>
+<canvas id="canvas"></canvas>
+<div id="controls">
+<button onclick="setStep(0)" class="active">TimeSformer</button>
+<button onclick="setStep(1)">Dense Caption</button>
+<button onclick="setStep(2)">时序提议NMS</button>
+<button onclick="setStep(3)">Deformable Attn</button>
+<button onclick="setStep(4)">时序Grounding</button>
+<button onclick="setStep(5)">Token Merging</button>
+<button onclick="setStep(6)">时序金字塔</button>
+</div>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, step = 0, time = 0;
+const descriptions = [
+'TimeSformer 分离时空注意力：先时序(T帧)后空间(N patches)，O(NT²+TN²) vs O((NT)²)',
+'Dense Video Captioning：检测事件时间段 + 生成自然语言描述',
+'时序 NMS：Hard NMS 直接删除 vs Soft-NMS 高斯衰减置信度',
+'Deformable 时序注意力：每个 query 只看 K 个可学习采样点，O(TK) vs O(T²)',
+'时序 Grounding：给定文本查询，在视频中定位对应时间段',
+'Token Merging：合并相似 token 减少序列长度，保持信息',
+'时序特征金字塔：多尺度检测不同时长的事件'
+];
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+function setStep(s) {
+step = s; time = 0;
+document.querySelectorAll('#controls button').forEach((b,i) => b.classList.toggle('active', i===s));
+document.getElementById('step-info').textContent = descriptions[s];
+}
+
+function drawTimeSformer() {
+const cx = W/2, cy = H/2 - 30;
+const T = 4, N = 4, gap = 60, patchSize = 40;
+const phase = Math.sin(time * 0.03) * 0.5 + 0.5;
+// Draw frames
+ctx.font = '14px monospace';
+for (let t = 0; t < T; t++) {
+const fx = cx - (T-1)*gap/2 + t*gap;
+const fy = cy - 100;
+ctx.strokeStyle = '#00d4ff44';
+ctx.strokeRect(fx - patchSize, fy - patchSize, patchSize*2, patchSize*2);
+ctx.fillStyle = '#00d4ff';
+ctx.fillText(`帧${t}`, fx - 10, fy - patchSize - 8);
+for (let n = 0; n < N; n++) {
+const px = fx - patchSize + n * (patchSize*2/N) + patchSize/(N);
+const py = fy;
+ctx.fillStyle = `hsla(${t*60+n*30}, 70%, 60%, 0.8)`;
+ctx.fillRect(px - 8, py - 8, 16, 16);
+}
+}
+// Step 1: Temporal attention
+const showTemporal = phase < 0.5;
+ctx.fillStyle = '#fff';
+ctx.font = 'bold 16px sans-serif';
+ctx.textAlign = 'center';
+if (showTemporal) {
+ctx.fillText('Step 1: 时序注意力 — 同一空间位置，T帧之间', cx, cy + 40);
+const n = 1;
+for (let t = 0; t < T; t++) {
+const fx = cx - (T-1)*gap/2 + t*gap;
+ctx.beginPath();
+ctx.arc(fx, cy + 80, 12, 0, Math.PI*2);
+ctx.fillStyle = `hsla(${180+t*30}, 80%, 60%, 0.9)`;
+ctx.fill();
+if (t < T-1) {
+const nx = cx - (T-1)*gap/2 + (t+1)*gap;
+ctx.beginPath();
+ctx.moveTo(fx+12, cy+80);
+ctx.lineTo(nx-12, cy+80);
+ctx.strokeStyle = `hsla(180, 80%, 60%, ${0.5+Math.sin(time*0.1+t)*0.3})`;
+ctx.lineWidth = 2;
+ctx.stroke();
+}
+}
+ctx.fillStyle = '#aaa';
+ctx.font = '12px monospace';
+ctx.fillText('reshape: (B·T, N, D) → (B·N, T, D)', cx, cy + 120);
+ctx.fillText(`复杂度: O(N · T² · D) = O(${N} · ${T}² · D)`, cx, cy + 140);
+} else {
+ctx.fillText('Step 2: 空间注意力 — 每帧内，N个patch之间', cx, cy + 40);
+const t = 1;
+const fx = cx;
+for (let n = 0; n < N; n++) {
+const angle = (n / N) * Math.PI * 2 - Math.PI/2;
+const px = fx + Math.cos(angle) * 40;
+const py = cy + 80 + Math.sin(angle) * 40;
+ctx.beginPath();
+ctx.arc(px, py, 10, 0, Math.PI*2);
+ctx.fillStyle = `hsla(${n*60}, 80%, 60%, 0.9)`;
+ctx.fill();
+}
+// Attention lines
+for (let i = 0; i < N; i++) {
+for (let j = i+1; j < N; j++) {
+const a1 = (i/N)*Math.PI*2 - Math.PI/2;
+const a2 = (j/N)*Math.PI*2 - Math.PI/2;
+ctx.beginPath();
+ctx.moveTo(fx+Math.cos(a1)*40, cy+80+Math.sin(a1)*40);
+ctx.lineTo(fx+Math.cos(a2)*40, cy+80+Math.sin(a2)*40);
+ctx.strokeStyle = `hsla(60, 80%, 60%, ${0.3+Math.sin(time*0.1+i+j)*0.2})`;
+ctx.lineWidth = 1;
+ctx.stroke();
+}
+}
+ctx.fillStyle = '#aaa';
+ctx.font = '12px monospace';
+ctx.fillText('已是 (B·T, N, D) 形式，直接做注意力', cx, cy + 140);
+ctx.fillText(`复杂度: O(T · N² · D) = O(${T} · ${N}² · D)`, cx, cy + 160);
+}
+ctx.textAlign = 'start';
+}
+
+function drawDenseCaption() {
+const cx = W/2, cy = H/2 - 20;
+// Video timeline
+const tlX = cx - 250, tlW = 500, tlY = cy - 80;
+ctx.fillStyle = '#1a1a4e';
+ctx.fillRect(tlX, tlY, tlW, 30);
+ctx.strokeStyle = '#00d4ff';
+ctx.strokeRect(tlX, tlY, tlW, 30);
+ctx.fillStyle = '#00d4ff';
+ctx.font = '12px sans-serif';
+ctx.fillText('视频时间轴', tlX, tlY - 8);
+// Events
+const events = [
+{s: 0.05, e: 0.3, color: '#ff6b6b', label: '人物走进房间'},
+{s: 0.25, e: 0.55, color: '#ffd93d', label: '打开冰箱取饮料'},
+{s: 0.6, e: 0.85, color: '#6bff6b', label: '坐下看电视'},
+];
+events.forEach((ev, i) => {
+const x = tlX + ev.s * tlW;
+const w = (ev.e - ev.s) * tlW;
+const alpha = 0.5 + Math.sin(time * 0.05 + i) * 0.3;
+ctx.fillStyle = ev.color + Math.floor(alpha * 255).toString(16).padStart(2, '0');
+ctx.fillRect(x, tlY + 2, w, 26);
+// Caption arrow
+const midX = x + w/2;
+const capY = tlY + 60 + i * 35;
+ctx.beginPath();
+ctx.moveTo(midX, tlY + 30);
+ctx.lineTo(midX, capY - 5);
+ctx.strokeStyle = ev.color;
+ctx.lineWidth = 1.5;
+ctx.stroke();
+ctx.fillStyle = ev.color;
+ctx.font = '13px sans-serif';
+ctx.fillText(`"${ev.label}"`, midX - 50, capY + 5);
+ctx.font = '11px monospace';
+ctx.fillStyle = '#aaa';
+ctx.fillText(`[${ev.s.toFixed(1)}s, ${ev.e.toFixed(1)}s]`, midX - 30, capY + 20);
+});
+// Pipeline
+ctx.font = 'bold 14px sans-serif';
+ctx.fillStyle = '#fff';
+ctx.textAlign = 'center';
+ctx.fillText('Pipeline: VideoEncoder → ProposalNet → RoI Pool → CaptionDecoder', cx, cy + 120);
+ctx.textAlign = 'start';
+}
+
+function drawTemporalNMS() {
+const cx = W/2, cy = H/2 - 40;
+const tlW = 400, tlX = cx - tlW/2;
+// Proposals before NMS
+const proposals = [
+{s: 0.1, e: 0.4, score: 0.9}, {s: 0.15, e: 0.45, score: 0.85},
+{s: 0.12, e: 0.38, score: 0.7}, {s: 0.5, e: 0.8, score: 0.88},
+{s: 0.55, e: 0.75, score: 0.6}, {s: 0.3, e: 0.6, score: 0.5},
+];
+const phase = (time * 0.02) % 2;
+const showSoft = phase > 1;
+ctx.font = 'bold 14px sans-serif';
+ctx.fillStyle = '#00d4ff';
+ctx.textAlign = 'center';
+ctx.fillText(showSoft ? 'Soft-NMS: 高斯衰减置信度' : 'Hard NMS: 直接删除高 IoU 提议', cx, cy - 90);
+// Draw proposals
+proposals.forEach((p, i) => {
+const x = tlX + p.s * tlW;
+const w = (p.e - p.s) * tlW;
+const y = cy - 60 + i * 25;
+let alpha = 0.8;
+let label = `score=${p.score.toFixed(2)}`;
+if (!showSoft) {
+// Hard NMS: remove high IoU with top
+if (i > 0 && i < 3) { alpha = 0.15; label += ' ✗'; }
+} else {
+// Soft NMS: decay scores
+const decay = i > 0 && i < 3 ? Math.exp(-0.5 * (0.6 ** 2) / 0.5) : 1;
+const newScore = p.score * decay;
+alpha = newScore;
+label = `${p.score.toFixed(2)}→${newScore.toFixed(2)}`;
+}
+ctx.fillStyle = `hsla(${i*50}, 70%, 60%, ${alpha})`;
+ctx.fillRect(x, y, w, 18);
+ctx.fillStyle = '#fff';
+ctx.font = '10px monospace';
+ctx.textAlign = 'left';
+ctx.fillText(label, x + w + 5, y + 13);
+});
+ctx.fillStyle = '#aaa';
+ctx.font = '12px sans-serif';
+ctx.textAlign = 'center';
+ctx.fillText('Soft-NMS 优势: 密集事件不会被误删', cx, cy + 110);
+ctx.fillText('p_i ← p_i · exp(-tIoU² / σ)', cx, cy + 130);
+ctx.textAlign = 'start';
+}
+
+function drawDeformableAttn() {
+const cx = W/2, cy = H/2;
+// Timeline
+const tlW = 500, tlX = cx - tlW/2, tlY = cy - 30;
+ctx.fillStyle = '#1a1a4e';
+ctx.fillRect(tlX, tlY, tlW, 20);
+ctx.strokeStyle = '#444';
+ctx.strokeRect(tlX, tlY, tlW, 20);
+// Reference point
+const refT = 0.4 + Math.sin(time * 0.02) * 0.1;
+const refX = tlX + refT * tlW;
+ctx.beginPath();
+ctx.arc(refX, tlY + 10, 8, 0, Math.PI*2);
+ctx.fillStyle = '#ff6b6b';
+ctx.fill();
+ctx.fillStyle = '#ff6b6b';
+ctx.font = '12px sans-serif';
+ctx.fillText('Query参考点', refX - 30, tlY - 10);
+// Sampling points (K=4)
+const offsets = [-0.25, -0.08, 0.12, 0.3];
+offsets.forEach((off, k) => {
+const sampleX = refX + off * tlW * (0.5 + Math.sin(time * 0.03 + k) * 0.3);
+const attnW = 0.3 + Math.sin(time * 0.05 + k * 1.5) * 0.2;
+// Draw connection
+ctx.beginPath();
+ctx.moveTo(refX, tlY + 10);
+ctx.lineTo(sampleX, tlY + 50 + k * 20);
+ctx.strokeStyle = `hsla(${k*70+120}, 80%, 60%, ${attnW + 0.3})`;
+ctx.lineWidth = attnW * 4 + 1;
+ctx.stroke();
+// Sample point
+ctx.beginPath();
+ctx.arc(sampleX, tlY + 50 + k * 20, 6, 0, Math.PI*2);
+ctx.fillStyle = `hsla(${k*70+120}, 80%, 60%, 0.9)`;
+ctx.fill();
+ctx.fillStyle = '#aaa';
+ctx.font = '10px monospace';
+ctx.fillText(`Δt=${off.toFixed(2)}, w=${attnW.toFixed(2)}`, sampleX + 10, tlY + 54 + k * 20);
+});
+ctx.fillStyle = '#fff';
+ctx.font = '13px sans-serif';
+ctx.textAlign = 'center';
+ctx.fillText('只关注 K=4 个动态采样点 → O(T·K) 复杂度', cx, cy + 90);
+ctx.fillText('偏移量和权重从 Query 预测：每个 Query 学习"看哪里"', cx, cy + 110);
+ctx.textAlign = 'start';
+}
+
+function drawTemporalGrounding() {
+const cx = W/2, cy = H/2 - 20;
+// Text query
+ctx.fillStyle = '#ffd93d';
+ctx.font = 'bold 14px sans-serif';
+ctx.textAlign = 'center';
+ctx.fillText('文本查询: "一个人打开冰箱拿出饮料"', cx, cy - 100);
+// Video timeline
+const tlW = 450, tlX = cx - tlW/2, tlY = cy - 60;
+ctx.fillStyle = '#1a1a4e';
+ctx.fillRect(tlX, tlY, tlW, 30);
+ctx.strokeStyle = '#00d4ff';
+ctx.strokeRect(tlX, tlY, tlW, 30);
+// GT span
+const gtS = 0.3, gtE = 0.6;
+ctx.fillStyle = '#6bff6b44';
+ctx.fillRect(tlX + gtS * tlW, tlY, (gtE - gtS) * tlW, 30);
+ctx.fillStyle = '#6bff6b';
+ctx.font = '11px sans-serif';
+ctx.fillText('GT', tlX + gtS * tlW + 5, tlY + 18);
+// Predicted span (animated convergence)
+const progress = Math.min(1, time * 0.01);
+const predS = 0.1 + (gtS - 0.1) * progress;
+const predE = 0.8 + (gtE - 0.8) * progress;
+ctx.strokeStyle = '#ff6b6b';
+ctx.lineWidth = 2;
+ctx.strokeRect(tlX + predS * tlW, tlY - 5, (predE - predS) * tlW, 40);
+ctx.fillStyle = '#ff6b6b';
+ctx.fillText(`预测: [${predS.toFixed(2)}, ${predE.toFixed(2)}]`, tlX + predS * tlW, tlY - 12);
+// Cross-modal fusion
+ctx.fillStyle = '#fff';
+ctx.font = '13px sans-serif';
+ctx.fillText('Cross-Modal Fusion: 视频特征 × 文本特征 → Moment Queries', cx, cy + 40);
+ctx.font = '12px monospace';
+ctx.fillStyle = '#aaa';
+ctx.fillText(`tIoU = ${(Math.min(gtE,predE)-Math.max(gtS,predS))/(Math.max(gtE,predE)-Math.min(gtS,predS))||0:.2f}`, cx, cy + 65);
+const iou = Math.max(0,(Math.min(gtE,predE)-Math.max(gtS,predS)))/(Math.max(gtE,predE)-Math.min(gtS,predS));
+ctx.fillText(`tIoU = ${iou.toFixed(3)}`, cx, cy + 65);
+ctx.fillText('Loss = L1(span) + GIoU(span)', cx, cy + 85);
+ctx.textAlign = 'start';
+}
+
+function drawTokenMerging() {
+const cx = W/2, cy = H/2 - 20;
+const N = 16, r = 4;
+const tokenW = 24, gap = 4;
+const startX = cx - (N * (tokenW + gap)) / 2;
+// Original tokens
+ctx.fillStyle = '#fff';
+ctx.font = 'bold 13px sans-serif';
+ctx.textAlign = 'center';
+ctx.fillText(`原始: ${N} tokens`, cx, cy - 80);
+const colors = [];
+for (let i = 0; i < N; i++) {
+const hue = (i * 22) % 360;
+colors.push(hue);
+const x = startX + i * (tokenW + gap);
+ctx.fillStyle = `hsla(${hue}, 70%, 55%, 0.9)`;
+ctx.fillRect(x, cy - 70, tokenW, tokenW);
+ctx.fillStyle = '#fff';
+ctx.font = '10px monospace';
+ctx.fillText(i.toString(), x + tokenW/2, cy - 54);
+}
+// Merge pairs
+const pairs = [[0,1],[4,5],[8,9],[14,15]];
+const mergePhase = Math.min(1, time * 0.02);
+pairs.forEach(([a, b], pi) => {
+const xa = startX + a*(tokenW+gap) + tokenW/2;
+const xb = startX + b*(tokenW+gap) + tokenW/2;
+const midX = (xa + xb) / 2;
+const botY = cy - 70 + tokenW;
+const mergeY = cy - 10;
+ctx.beginPath();
+ctx.moveTo(xa, botY);
+ctx.quadraticCurveTo(xa, mergeY, midX, mergeY);
+ctx.strokeStyle = `hsla(${colors[a]}, 80%, 70%, ${mergePhase})`;
+ctx.lineWidth = 2;
+ctx.stroke();
+ctx.beginPath();
+ctx.moveTo(xb, botY);
+ctx.quadraticCurveTo(xb, mergeY, midX, mergeY);
+ctx.stroke();
+// Merged token
+ctx.beginPath();
+ctx.arc(midX, mergeY + 15, 10 * mergePhase, 0, Math.PI * 2);
+ctx.fillStyle = `hsla(${(colors[a]+colors[b])/2}, 80%, 65%, ${mergePhase})`;
+ctx.fill();
+});
+// Result
+ctx.fillStyle = '#fff';
+ctx.font = 'bold 13px sans-serif';
+ctx.fillText(`合并后: ${N - r} tokens (压缩 ${(r/N*100).toFixed(0)}%)`, cx, cy + 55);
+ctx.font = '12px sans-serif';
+ctx.fillStyle = '#aaa';
+ctx.fillText('h_merged = (n_i · h_i + n_j · h_j) / (n_i + n_j)', cx, cy + 80);
+ctx.fillText('每层合并 r 对最相似 token → L 层后减少 L·r 个', cx, cy + 100);
+ctx.textAlign = 'start';
+}
+
+function drawTemporalFPN() {
+const cx = W/2, cy = H/2;
+const levels = [
+{T: 32, label: 'Level 0 (T=32): 细粒度动作', color: '#6bff6b'},
+{T: 16, label: 'Level 1 (T=16): 中等事件', color: '#ffd93d'},
+{T: 8, label: 'Level 2 (T=8): 长程事件', color: '#ff6b6b'},
+];
+ctx.textAlign = 'center';
+ctx.font = 'bold 14px sans-serif';
+ctx.fillStyle = '#00d4ff';
+ctx.fillText('时序特征金字塔 (Temporal FPN)', cx, cy - 120);
+levels.forEach((lv, li) => {
+const y = cy - 80 + li * 60;
+const barW = lv.T * 12;
+const x = cx - barW/2;
+// Feature bar
+for (let t = 0; t < lv.T; t++) {
+const alpha = 0.4 + Math.sin(time * 0.04 + t * 0.5 + li) * 0.3;
+ctx.fillStyle = lv.color + Math.floor(alpha * 255).toString(16).padStart(2, '0');
+ctx.fillRect(x + t * 12, y, 10, 25);
+}
+ctx.fillStyle = '#fff';
+ctx.font = '11px sans-serif';
+ctx.fillText(lv.label, cx, y + 42);
+// Down/Up arrows between levels
+if (li < levels.length - 1) {
+const ny = y + 60;
+// Down arrow
+ctx.beginPath();
+ctx.moveTo(cx - 60, y + 25);
+ctx.lineTo(cx - 60, ny);
+ctx.strokeStyle = '#ff6b6b88';
+ctx.lineWidth = 2;
+ctx.stroke();
+ctx.fillStyle = '#ff6b6b';
+ctx.fillText('↓ AvgPool', cx - 90, (y+25+ny)/2);
+// Up arrow
+ctx.beginPath();
+ctx.moveTo(cx + 60, ny);
+ctx.lineTo(cx + 60, y + 25);
+ctx.strokeStyle = '#6bff6b88';
+ctx.stroke();
+ctx.fillStyle = '#6bff6b';
+ctx.fillText('↑ Upsample+Add', cx + 80, (y+25+ny)/2);
+}
+});
+ctx.fillStyle = '#aaa';
+ctx.font = '12px sans-serif';
+ctx.fillText('不同层级检测不同时长的事件', cx, cy + 110);
+ctx.textAlign = 'start';
+}
+
+const drawFns = [drawTimeSformer, drawDenseCaption, drawTemporalNMS, drawDeformableAttn, drawTemporalGrounding, drawTokenMerging, drawTemporalFPN];
+
+function animate() {
+ctx.fillStyle = '#0a0a2e';
+ctx.fillRect(0, 0, W, H);
+time++;
+drawFns[step]();
+requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>

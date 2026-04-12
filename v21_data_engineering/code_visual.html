@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>V21 - 多模态数据工程：代码讲解</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,sans-serif}.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}.badge{background:linear-gradient(135deg,#ff9800,#ffb74d);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px;color:#000}.title{font-size:18px;font-weight:600;flex:1}.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}.dots{display:flex;gap:6px;margin-left:16px}.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}.dot.active{background:#ff9800;box-shadow:0 0 8px #ff9800}.dot.done{background:#ffb74d}.main{display:flex;height:calc(100vh - 136px)}.code-panel{flex:4;padding:16px;overflow-y:auto;background:#0d1117;font-family:monospace;font-size:13px;line-height:1.6}.code-line{padding:2px 8px;border-radius:3px;white-space:pre}.code-line.highlight{background:#ff980022;border-left:3px solid #ff9800}.canvas-area{flex:6;position:relative;display:flex;align-items:center;justify-content:center;background:#111827}canvas{border-radius:8px}.info-box{position:absolute;bottom:16px;left:16px;right:16px;background:#1a1e2eee;border:1px solid #333;border-radius:8px;padding:12px}.info-title{font-size:14px;font-weight:700;color:#ff9800;margin-bottom:4px}.info-text{font-size:13px;color:#ccc}.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}.btn:hover{border-color:#ff9800}.btn:disabled{opacity:.3}.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}</style></head>
+<body>
+<div class="header"><span class="badge">V21</span><span class="title">多模态数据工程</span><span class="page-type">代码讲解</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="code-panel" id="codePanel"></div><div class="canvas-area"><canvas id="canvas"></canvas><div class="info-box"><div class="info-title" id="infoTitle"></div><div class="info-text" id="infoText"></div></div></div></div>
+<div class="controls"><button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button><div class="step-counter" id="stepCounter"></div><button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button><button class="btn" onclick="replay()">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-120}window.addEventListener('resize',resize);resize();
+function RR(x,y,w,h,r,f,s){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(f){ctx.fillStyle=f;ctx.fill()}if(s){ctx.strokeStyle=s;ctx.stroke()}}
+function arr(x1,y1,x2,y2,c='#555'){ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();const a=Math.atan2(y2-y1,x2-x1),l=7;ctx.fillStyle=c;ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-l*Math.cos(a-.3),y2-l*Math.sin(a-.3));ctx.lineTo(x2-l*Math.cos(a+.3),y2-l*Math.sin(a+.3));ctx.fill()}
+function txt(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+const steps=[
+{title:"MinHashDedup: 近似去重",info:"MinHash 近似 Jaccard 相似度，高效检测近重复数据",
+code:[{text:'class MinHashDedup:',hl:false},{text:'    def compute_minhash(self, features):',hl:true},{text:'        # features: token set / shingle set',hl:false},{text:'        signatures = []',hl:false},{text:'        for h_func in self.hash_funcs:',hl:true},{text:'            min_val = min(h_func(x) for x in features)',hl:false},{text:'            signatures.append(min_val)',hl:false},{text:'        return signatures  # [num_hashes]',hl:false},{text:'',hl:false},{text:'    def find_duplicates(self, dataset):',hl:true},{text:'        # LSH 分桶加速',hl:false},{text:'        for bands in split(sigs, num_bands):',hl:false},{text:'            bucket = hash(band)',hl:true},{text:'            candidates = buckets[bucket]',hl:false},{text:'        # 验证候选对的真实相似度',hl:false},{text:'        return deduplicated_indices',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('MinHash 近似去重流程',cx,20,'#ff9800',14);
+const steps=[{n:'原始数据 N=1000',y:40,c:'#aaa'},{n:'Shingling (n-gram)',y:80,c:'#ff9800'},{n:'MinHash签名 [k=128]',y:120,c:'#ffb74d'},{n:'LSH分桶 (b=16 bands)',y:160,c:'#4caf50'},{n:'候选对验证',y:200,c:'#2196f3'},{n:'去重后 N\'=850',y:240,c:'#00e5ff'}];
+steps.forEach((s,i)=>{const prog=Math.min(1,p*(steps.length+1)/(i+1));if(prog<=0)return;ctx.globalAlpha=Math.min(1,prog);RR(cx-100,s.y,200,30,4,'#1a1e2e',s.c);txt(s.n,cx,s.y+20,s.c,11);if(i>0)arr(cx,steps[i-1].y+34,cx,s.y-2,'#555');ctx.globalAlpha=1})}},
+
+{title:"CutMix / MixUp 增强",info:"通过混合样本生成新训练数据，提升泛化能力",
+code:[{text:'class CutMixMixUp:',hl:false},{text:'    def cutmix(self, img1, img2, lam):',hl:true},{text:'        # lam ~ Beta(alpha, alpha)',hl:false},{text:'        # 计算裁剪区域',hl:false},{text:'        cx = random(0, W)',hl:true},{text:'        cy = random(0, H)',hl:false},{text:'        rw = W * sqrt(1 - lam)',hl:false},{text:'        rh = H * sqrt(1 - lam)',hl:false},{text:'        # 替换区域',hl:true},{text:'        mixed = img1.clone()',hl:false},{text:'        mixed[:, cy:cy+rh, cx:cx+rw] = \\',hl:false},{text:'            img2[:, cy:cy+rh, cx:cx+rw]',hl:false},{text:'        return mixed, lam',hl:false},{text:'',hl:false},{text:'    def mixup(self, img1, img2, lam):',hl:true},{text:'        return lam*img1 + (1-lam)*img2',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-30;
+// Image A
+RR(30,cy-50,100,100,4,'#ff980044','#ff9800');txt('图像A',80,cy-60,'#ff9800',11);
+// Image B
+RR(160,cy-50,100,100,4,'#2196f344','#2196f3');txt('图像B',210,cy-60,'#2196f3',11);
+// CutMix result
+if(p>0.3){arr(265,cy,310,cy,'#aaa');
+RR(320,cy-50,100,100,4,'#1a1e2e','#4caf50');
+ctx.fillStyle='#ff980044';ctx.fillRect(325,cy-45,90,90);
+if(p>0.5){const cw=40,ch=40,ccx=350,ccy=cy-20;ctx.fillStyle='#2196f344';ctx.fillRect(ccx,ccy,cw,ch);ctx.strokeStyle='#00e5ff';ctx.setLineDash([3,3]);ctx.strokeRect(ccx,ccy,cw,ch);ctx.setLineDash([])}
+txt('CutMix',370,cy-60,'#4caf50',11);txt('λ=0.7',370,cy+60,'#888',10)}
+// MixUp result
+if(p>0.7){RR(320,cy+80,100,100,4,'#1a1e2e','#e040fb');
+ctx.fillStyle='rgba(255,152,0,0.3)';ctx.fillRect(325,cy+85,90,90);
+ctx.fillStyle='rgba(33,150,243,0.15)';ctx.fillRect(325,cy+85,90,90);
+txt('MixUp',370,cy+70,'#e040fb',11);txt('0.7A+0.3B',370,cy+190,'#888',10)}}},
+
+{title:"CurriculumScheduler: 课程学习",info:"从易到难调度训练样本，模拟人类学习过程",
+code:[{text:'class CurriculumScheduler:',hl:false},{text:'    def get_pacing(self, epoch, total):',hl:true},{text:'        # 控制每轮使用的数据比例',hl:false},{text:'        t = epoch / total',hl:false},{text:'        if self.mode == "linear":',hl:true},{text:'            return min(1.0, 0.2 + 0.8 * t)',hl:false},{text:'        elif self.mode == "root":',hl:true},{text:'            return min(1.0, sqrt(t))',hl:false},{text:'        elif self.mode == "step":',hl:true},{text:'            return [0.3, 0.6, 1.0][min(2,int(t*3))]',hl:false},{text:'',hl:false},{text:'    def score_difficulty(self, loss_history):',hl:true},{text:'        # 用历史 loss 估计样本难度',hl:false},{text:'        return loss_history.mean()',hl:false},{text:'        # 高 loss = 难样本 → 后期引入',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('Curriculum Learning 训练进度',cx,20,'#ff9800',14);
+// Pacing curves
+const gx=50,gy=40,gw=W-100,gh=150;
+ctx.strokeStyle='#333';ctx.strokeRect(gx,gy,gw,gh);
+txt('使用比例',gx-5,gy+gh/2,'#888',10);txt('训练轮次',cx,gy+gh+15,'#888',10);
+const curves=[{name:'linear',c:'#ff9800',fn:t=>Math.min(1,.2+.8*t)},{name:'root',c:'#4caf50',fn:t=>Math.min(1,Math.sqrt(t))},{name:'step',c:'#2196f3',fn:t=>[.3,.6,1][Math.min(2,Math.floor(t*3))]}];
+curves.forEach((curve,ci)=>{const prog=Math.min(1,p*3-ci*0.5);if(prog<=0)return;ctx.strokeStyle=curve.c;ctx.lineWidth=2;ctx.beginPath();
+for(let i=0;i<=100;i++){const t=i/100;const v=curve.fn(t*Math.min(1,prog));const x=gx+t*gw*Math.min(1,prog),y=gy+gh*(1-v);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.stroke();
+txt(curve.name,gx+gw+40,gy+20+ci*20,curve.c,10)})}},
+
+{title:"QualityScorer: 数据质量评估",info:"多维度评估数据质量，过滤低质量样本",
+code:[{text:'class QualityScorer:',hl:false},{text:'    def score(self, image, text):',hl:true},{text:'        scores = {}',hl:false},{text:'        ',hl:false},{text:'        # 分辨率',hl:true},{text:'        scores["resolution"] = min(1,',hl:false},{text:'            min(H,W) / self.min_resolution)',hl:false},{text:'        ',hl:false},{text:'        # 宽高比',hl:true},{text:'        ratio = max(H/W, W/H)',hl:false},{text:'        scores["aspect"] = 1 if r<2 else 0.5',hl:false},{text:'        ',hl:false},{text:'        # CLIP 质量分 (模拟)',hl:true},{text:'        scores["clip_score"] = clip_sim(img, txt)',hl:false},{text:'        ',hl:false},{text:'        # 加权总分',hl:true},{text:'        total = weighted_sum(scores, weights)',hl:false},{text:'        return total, scores',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+const dims=['分辨率','宽高比','CLIP分数','清晰度','文本质量'];
+const scores=[0.95,0.85,0.72,0.88,0.65];const colors=['#4caf50','#8bc34a','#ff9800','#2196f3','#f44336'];
+txt('数据质量评估雷达图',cx,20,'#ff9800',14);
+const ctrX=cx,ctrY=H/2+10,radius=80;
+dims.forEach((d,i)=>{const angle=i/dims.length*Math.PI*2-Math.PI/2;const prog=Math.min(1,p*2);
+const ex=ctrX+radius*Math.cos(angle),ey=ctrY+radius*Math.sin(angle);
+ctx.strokeStyle='#333';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(ctrX,ctrY);ctx.lineTo(ex,ey);ctx.stroke();
+const lx=ctrX+(radius+25)*Math.cos(angle),ly=ctrY+(radius+25)*Math.sin(angle);
+txt(d,lx,ly,colors[i],10);
+const sx=ctrX+radius*scores[i]*prog*Math.cos(angle),sy=ctrY+radius*scores[i]*prog*Math.sin(angle);
+ctx.fillStyle=colors[i];ctx.beginPath();ctx.arc(sx,sy,4,0,Math.PI*2);ctx.fill()});
+if(p>0.5){ctx.strokeStyle='#ff9800';ctx.lineWidth=2;ctx.beginPath();
+dims.forEach((d,i)=>{const angle=i/dims.length*Math.PI*2-Math.PI/2;const r=radius*scores[i]*Math.min(1,(p-.5)*3);const x=ctrX+r*Math.cos(angle),y=ctrY+r*Math.sin(angle);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)});ctx.closePath();ctx.stroke();ctx.fillStyle='#ff980022';ctx.fill()}}},
+
+{title:"DataBalancer: 数据平衡",info:"处理类别不平衡，通过过采样和权重调整",
+code:[{text:'class DataBalancer:',hl:false},{text:'    def compute_weights(self, labels):',hl:true},{text:'        counts = Counter(labels)',hl:false},{text:'        total = len(labels)',hl:false},{text:'        # 逆频率权重',hl:true},{text:'        weights = {c: total/(len(counts)*n)',hl:false},{text:'                   for c, n in counts.items()}',hl:false},{text:'        return weights',hl:false},{text:'',hl:false},{text:'    def oversample(self, dataset, target):',hl:true},{text:'        # 少数类过采样到 target 数量',hl:false},{text:'        for cls in minority_classes:',hl:false},{text:'            needed = target - counts[cls]',hl:true},{text:'            indices = random.choices(',hl:false},{text:'                cls_indices, k=needed)',hl:false},{text:'            augmented.extend(indices)',hl:false},{text:'        return balanced_dataset',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('类别分布平衡',cx,20,'#ff9800',14);
+const classes=['A','B','C','D','E'];const counts=[500,120,80,300,50];const max_c=500;
+const bw=40,gap=15,bx=cx-(classes.length*(bw+gap))/2;
+// Before
+txt('平衡前',bx+100,45,'#aaa',12);
+classes.forEach((c,i)=>{const h=counts[i]/max_c*100*Math.min(1,p*2);const x=bx+i*(bw+gap);ctx.fillStyle=counts[i]<100?'#f44336':'#ff9800';ctx.fillRect(x,150-h,bw,h);txt(c,x+bw/2,165,'#aaa',10);txt(counts[i]+'',x+bw/2,145-h,'#888',9)});
+// After
+if(p>0.5){txt('平衡后',bx+100,195,'#aaa',12);
+const balanced=[500,400,400,400,400];
+classes.forEach((c,i)=>{const prog=Math.min(1,(p-.5)*3);const h=balanced[i]/max_c*100*prog;const x=bx+i*(bw+gap);ctx.fillStyle='#4caf50';ctx.fillRect(x,300-h,bw,h);txt(c,x+bw/2,315,'#aaa',10);txt(balanced[i]+'',x+bw/2,295-h,'#888',9)})}}}
+];
+
+function renderCode(){const p=document.getElementById('codePanel');p.innerHTML='';steps[currentStep].code.forEach(l=>{const d=document.createElement('div');d.className='code-line'+(l.hl?' highlight':'');d.textContent=l.text;p.appendChild(d)})}
+function animate(){animProgress+=.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('infoTitle').textContent=steps[currentStep].title;document.getElementById('infoText').textContent=steps[currentStep].info;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))});renderCode()}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});init();
+</script></body></html>

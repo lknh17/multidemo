@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p05 GRPO 强化学习 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(108,92,231,.25);border-left:3px solid var(--primary);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(9,132,227,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(9,132,227,.5);background:rgba(9,132,227,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(9,132,227,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(9,132,227,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p05</span>
+  <h1>GRPO 强化学习</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'extract_model_answer: 答案提取',
+   desc:'从模型响应中提取最终数值答案。支持 #### 格式、\\boxed{}、"答案是" 等多种模式，逐一尝试匹配，提高鲁棒性。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">extract_model_answer</span>(response):',hl:false},
+     {text:'    <span class="cm"># 尝试 #### 格式</span>',hl:false},
+     {text:'    <span class="kw">if</span> <span class="str">"####"</span> <span class="kw">in</span> response:',hl:true},
+     {text:'        ans = response.split(<span class="str">"####"</span>)[-1].strip()',hl:true},
+     {text:'        <span class="kw">return</span> float(ans)',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 尝试 \\boxed{} 格式</span>',hl:false},
+     {text:'    boxed = re.findall(r<span class="str">\'\\\\boxed\\{([^}]+)\\}\'</span>, response)',hl:true},
+     {text:'    <span class="kw">if</span> boxed: <span class="kw">return</span> float(boxed[-1])',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 尝试 "答案是" 格式</span>',hl:false},
+     {text:'    patterns = [r<span class="str">\'答案[是为]\\s*(-?\\d+)\'</span>, ...]',hl:true},
+     {text:'    <span class="kw">for</span> pat <span class="kw">in</span> patterns:',hl:false},
+     {text:'        match = re.search(pat, response)',hl:false},
+     {text:'        <span class="kw">if</span> match: <span class="kw">return</span> float(match.group(1))',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 最后: 取最后一个数字</span>',hl:false},
+     {text:'    numbers = re.findall(r<span class="str">\'-?\\d+\\.?\\d*\'</span>, response)',hl:true},
+     {text:'    <span class="kw">return</span> float(numbers[-1]) <span class="kw">if</span> numbers <span class="kw">else</span> None',hl:false},
+   ],
+   highlightLines:[2,3,7,11,17]},
+  {title:'correctness_reward: 正确性奖励',
+   desc:'核心奖励函数：提取模型答案，与标准答案比较。使用容差(1e-5)和相对误差(<1%)处理浮点精度问题。无法提取答案惩罚最重(-1.0)。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">correctness_reward</span>(response, ground_truth):',hl:false},
+     {text:'    model_answer = extract_model_answer(response)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="kw">if</span> model_answer <span class="kw">is</span> None:',hl:false},
+     {text:'        <span class="kw">return</span> <span class="num">-1.0</span>  <span class="cm"># 无法提取 → 强惩罚</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 精确匹配（含容差）</span>',hl:false},
+     {text:'    <span class="kw">if</span> abs(model_answer - ground_truth) < <span class="num">1e-5</span>:',hl:true},
+     {text:'        <span class="kw">return</span> <span class="num">1.0</span>   <span class="cm"># 完全正确</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 相对误差 < 1%</span>',hl:false},
+     {text:'    <span class="kw">if</span> abs(answer - gt) / abs(gt) < <span class="num">0.01</span>:',hl:true},
+     {text:'        <span class="kw">return</span> <span class="num">1.0</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="kw">return</span> <span class="num">-0.5</span>  <span class="cm"># 错误但有答案</span>',hl:true},
+   ],
+   highlightLines:[1,4,7,8,11,14]},
+  {title:'composite_reward: 组合奖励',
+   desc:'加权组合三种奖励，返回包含各分项的字典。权重比 6:3:1 确保正确性优先。字典格式便于调试和分析。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">composite_reward</span>(response, ground_truth):',hl:false},
+     {text:'    r_correct = correctness_reward(response, gt)',hl:true},
+     {text:'    r_format = format_reward(response)',hl:true},
+     {text:'    r_length = length_penalty(response)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 加权求和</span>',hl:false},
+     {text:'    total = (',hl:false},
+     {text:'        <span class="num">0.6</span> * r_correct  <span class="cm"># 正确性最重要</span>',hl:true},
+     {text:'      + <span class="num">0.3</span> * r_format   <span class="cm"># 格式是辅助信号</span>',hl:true},
+     {text:'      + <span class="num">0.1</span> * r_length   <span class="cm"># 长度控制</span>',hl:true},
+     {text:'    )',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="kw">return</span> {',hl:false},
+     {text:'        <span class="str">"total"</span>: total,',hl:true},
+     {text:'        <span class="str">"correctness"</span>: r_correct,',hl:false},
+     {text:'        <span class="str">"format"</span>: r_format,',hl:false},
+     {text:'        <span class="str">"length"</span>: r_length,',hl:false},
+     {text:'    }',hl:false},
+   ],
+   highlightLines:[1,2,3,7,8,9,13]},
+  {title:'GRPOTrainer 配置与训练',
+   desc:'使用 trl 的 GRPOTrainer。num_generations=G 是核心参数，beta=KL系数控制策略偏离。数据集只需包含 prompt 列。',
+   code:[
+     {text:'<span class="kw">from</span> trl <span class="kw">import</span> GRPOConfig, GRPOTrainer',hl:false},
+     {text:'',hl:false},
+     {text:'training_config = GRPOConfig(',hl:false},
+     {text:'    num_generations=<span class="num">8</span>,  <span class="cm"># Group Size G</span>',hl:true},
+     {text:'    max_completion_length=<span class="num">512</span>,',hl:false},
+     {text:'    beta=<span class="num">0.05</span>,  <span class="cm"># KL 惩罚系数</span>',hl:true},
+     {text:'    learning_rate=<span class="num">5e-7</span>,  <span class="cm"># 极小学习率</span>',hl:true},
+     {text:'    per_device_train_batch_size=<span class="num">2</span>,',hl:false},
+     {text:'    gradient_accumulation_steps=<span class="num">8</span>,',hl:false},
+     {text:'    bf16=True,',hl:false},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'trainer = GRPOTrainer(',hl:false},
+     {text:'    model=model,',hl:false},
+     {text:'    reward_funcs=reward_fn,  <span class="cm"># 奖励函数</span>',hl:true},
+     {text:'    args=training_config,',hl:false},
+     {text:'    train_dataset=train_ds,  <span class="cm"># 含 prompt 列</span>',hl:true},
+     {text:'    processing_class=tokenizer,',hl:false},
+     {text:')',hl:false},
+     {text:'trainer.train()',hl:true},
+   ],
+   highlightLines:[3,5,6,14,16,19]},
+  {title:'detect_reward_hacking: 奖励欺骗检测',
+   desc:'三维度检测：(1)奖励后期加速 (2)KL过大 (3)方差消失。正常训练应该奖励增速递减、KL稳定、方差适中。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">detect_reward_hacking</span>(log_dir):',hl:false},
+     {text:'    <span class="cm"># 检查1: 奖励后期加速上升</span>',hl:false},
+     {text:'    first_slope = rewards[:N//2] 的斜率',hl:false},
+     {text:'    second_slope = rewards[N//2:] 的斜率',hl:false},
+     {text:'    <span class="kw">if</span> second_slope > first_slope * <span class="num">2</span>:',hl:true},
+     {text:'        warn(<span class="str">"奖励后半段上升过快"</span>)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 检查2: KL 散度过大</span>',hl:false},
+     {text:'    <span class="kw">if</span> max(kls) > <span class="num">10.0</span>:',hl:true},
+     {text:'        warn(<span class="str">"策略偏离参考模型过多"</span>)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 检查3: 奖励方差急剧减小</span>',hl:false},
+     {text:'    early_var = var(rewards[:10])',hl:false},
+     {text:'    late_var = var(rewards[-10:])',hl:false},
+     {text:'    <span class="kw">if</span> late_var < early_var * <span class="num">0.1</span>:',hl:true},
+     {text:'        warn(<span class="str">"可能收敛到固定模式"</span>)',hl:true},
+   ],
+   highlightLines:[4,5,8,9,14,15]},
+  {title:'eval_gsm8k: 准确率评估',
+   desc:'自动化的 GSM8K 评估：生成响应→提取答案→精确比较。同时计算组合奖励分数，全面评估模型表现。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">eval_gsm8k</span>(model, tokenizer, data_path):',hl:false},
+     {text:'    samples = load_jsonl(data_path)',hl:false},
+     {text:'    correct, total = <span class="num">0</span>, <span class="num">0</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="kw">for</span> s <span class="kw">in</span> samples:',hl:false},
+     {text:'        gt = extract_answer(s[<span class="str">"answer"</span>])',hl:true},
+     {text:'        response = generate(model, tokenizer, s[<span class="str">"question"</span>])',hl:true},
+     {text:'        model_ans = extract_model_answer(response)',hl:true},
+     {text:'',hl:false},
+     {text:'        is_correct = abs(model_ans - gt) < <span class="num">1e-5</span>',hl:true},
+     {text:'        <span class="kw">if</span> is_correct: correct += <span class="num">1</span>',hl:false},
+     {text:'        total += <span class="num">1</span>',hl:false},
+     {text:'',hl:false},
+     {text:'        <span class="cm"># 同时计算组合奖励</span>',hl:false},
+     {text:'        r = composite_reward(response, gt)',hl:true},
+     {text:'',hl:false},
+     {text:'    accuracy = correct / total',hl:true},
+     {text:'    print(f<span class="str">"准确率: {accuracy*100:.1f}%"</span>)',hl:false},
+   ],
+   highlightLines:[5,6,7,9,14,16]},
+];
+
+function resize(){const r=window.devicePixelRatio||1;const rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0);}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+// Step 0: Answer extraction flow
+function renderStep0(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  // Input response
+  const ip=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=ip;
+  ctx.fillStyle='rgba(108,92,231,.1)';ctx.strokeStyle='rgba(108,92,231,.5)';
+  drawRoundRect(20,topY,W-40,40,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#E2E8F0';ctx.font='12px Courier New';ctx.textAlign='left';
+  ctx.fillText('"步骤1：15-3=12  步骤2：12+7=19  #### 19"',30,topY+25);
+  ctx.globalAlpha=1;
+  // Extraction pipeline
+  const methods=[
+    {name:'#### 格式',pattern:'split("####")[-1]',match:true,color:'#10B981'},
+    {name:'\\boxed{}',pattern:'re.findall(\\boxed{...})',match:false,color:'#94A3B8'},
+    {name:'"答案是"',pattern:'re.search(答案[是为])',match:false,color:'#94A3B8'},
+    {name:'最后数字',pattern:'re.findall(-?\\d+)',match:false,color:'#94A3B8'},
+  ];
+  const my=topY+70;
+  for(let i=0;i<methods.length;i++){
+    const delay=.25+i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=my+i*45;
+    const m=methods[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=(m.match?m.color:'#94A3B8')+'15';ctx.strokeStyle=m.match?m.color:'rgba(148,163,184,.3)';
+    drawRoundRect(30,y,W-60,35,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=m.match?m.color:'#64748B';ctx.font='12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(`${i+1}. ${m.name}: ${m.pattern}`,45,y+22);
+    ctx.textAlign='right';
+    ctx.fillText(m.match?'✓ 匹配!':'跳过',W-45,y+22);
+    ctx.globalAlpha=1;
+  }
+  // Result
+  if(p>.85){
+    const rp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=rp;
+    ctx.fillStyle='rgba(16,185,129,.15)';ctx.strokeStyle='#10B981';
+    drawRoundRect(30,my+4*45+10,W-60,35,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#10B981';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('提取结果: 19.0',cx,my+4*45+32);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Correctness reward scoring
+function renderStep1(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  // Cases
+  const cases=[
+    {input:'答案=19, GT=19',result:'+1.0',color:'#10B981',label:'完全正确'},
+    {input:'答案=19.001, GT=19',result:'+1.0',color:'#10B981',label:'容差内'},
+    {input:'答案=20, GT=19',result:'-0.5',color:'#F59E0B',label:'错误'},
+    {input:'答案=None',result:'-1.0',color:'#EF4444',label:'无法提取'},
+  ];
+  for(let i=0;i<cases.length;i++){
+    const delay=i*.18;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const y=topY+i*65;
+    const c=cases[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=c.color+'12';ctx.strokeStyle=c.color;
+    drawRoundRect(20,y,W-40,52,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#E2E8F0';ctx.font='12px Courier New';ctx.textAlign='left';
+    ctx.fillText(c.input,35,y+20);
+    ctx.fillStyle=c.color;ctx.font='bold 16px Courier New';ctx.textAlign='right';
+    ctx.fillText(c.result,W-35,y+22);
+    ctx.fillStyle='rgba(255,255,255,.5)';ctx.font='11px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(c.label,35,y+42);
+    ctx.globalAlpha=1;
+  }
+  // Summary
+  if(p>.85){
+    ctx.globalAlpha=easeInOut((p-.85)/.15);
+    ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';ctx.textAlign='center';
+    ctx.fillText('无答案(-1.0) 比 错误(-0.5) 惩罚更重 → 鼓励至少给出数字',cx,topY+4*65+15);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Composite reward breakdown
+function renderStep2(p){
+  const cx=W/2,topY=15;
+  // Pie-like visualization
+  const components=[
+    {name:'正确性',weight:.6,val:1.0,weighted:.6,color:'#10B981'},
+    {name:'格式',weight:.3,val:.6,weighted:.18,color:'#0984E3'},
+    {name:'长度',weight:.1,val:0,weighted:0,color:'#94A3B8'},
+  ];
+  // Stacked bar
+  const barY=topY+10, barH=35, barW=W-80, bx=40;
+  let offsetX=0;
+  for(let i=0;i<components.length;i++){
+    const delay=i*.2;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const c=components[i];
+    const w=c.weight*barW;
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=c.color+'44';ctx.strokeStyle=c.color;
+    drawRoundRect(bx+offsetX,barY,w,barH,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle=c.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(`${c.name} ${c.weight*100}%`,bx+offsetX+w/2,barY+22);
+    ctx.globalAlpha=1;
+    offsetX+=w;
+  }
+  // Detail cards
+  const cardY=barY+55;
+  for(let i=0;i<components.length;i++){
+    const delay=.3+i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const y=cardY+i*55;
+    const c=components[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=c.color+'10';ctx.strokeStyle=c.color+'66';
+    drawRoundRect(30,y,W-60,42,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=c.color;ctx.font='12px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(`${c.name}: 分数=${c.val.toFixed(1)} × 权重=${c.weight}`,45,y+18);
+    ctx.font='bold 14px Courier New';ctx.textAlign='right';
+    ctx.fillText(`= ${c.weighted.toFixed(2)}`,W-45,y+18);
+    ctx.fillStyle='rgba(255,255,255,.3)';ctx.font='11px PingFang SC';ctx.textAlign='left';
+    const descs=['答案19 = 标准答案19 → 1.0','有2个步骤+答案标记 → 0.6','未超长 → 0.0'];
+    ctx.fillText(descs[i],45,y+35);
+    ctx.globalAlpha=1;
+  }
+  // Total
+  if(p>.8){
+    const tp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=tp;
+    const ty=cardY+3*55+10;
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';
+    drawRoundRect(30,ty,W-60,35,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 15px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('总奖励 = 0.60 + 0.18 + 0.00 = 0.78',cx,ty+23);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: GRPOTrainer flow
+function renderStep3(p){
+  const cx=W/2,topY=15;
+  const flow=[
+    {label:'model + tokenizer',color:'#6C5CE7'},
+    {label:'GRPOConfig(G=8, β=0.05)',color:'#F59E0B'},
+    {label:'reward_fn = composite_reward',color:'#10B981'},
+    {label:'train_ds = {prompt, ground_truth}',color:'#0984E3'},
+    {label:'GRPOTrainer(model, reward, config, data)',color:'#6C5CE7'},
+    {label:'trainer.train()',color:'#00B894'},
+    {label:'trainer.save_model()',color:'#94A3B8'},
+  ];
+  let y=topY;
+  for(let i=0;i<flow.length;i++){
+    const delay=i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.18)));
+    const f=flow[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=f.color+'15';ctx.strokeStyle=f.color+'88';
+    drawRoundRect(cx-130,y,260,32,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=f.color;ctx.font='12px Courier New';ctx.textAlign='center';
+    ctx.fillText(f.label,cx,y+21);
+    if(i>0 && ap>.5){
+      ctx.strokeStyle=f.color+'44';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(cx,y-6);ctx.lineTo(cx,y);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=42;
+  }
+}
+
+// Step 4: Reward hacking detection
+function renderStep4(p){
+  const cx=W/2,topY=10;
+  const checks=[
+    {name:'检查1: 奖励加速',icon:'📈',detail:'后期斜率 > 前期×2',color:'#EF4444',threshold:'异常'},
+    {name:'检查2: KL 爆炸',icon:'💥',detail:'max(KL) > 10.0',color:'#F59E0B',threshold:'危险'},
+    {name:'检查3: 方差消失',icon:'📉',detail:'late_var < early_var×0.1',color:'#6C5CE7',threshold:'可疑'},
+  ];
+  for(let i=0;i<checks.length;i++){
+    const delay=i*.25;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const y=topY+i*90;
+    const c=checks[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=c.color+'10';ctx.strokeStyle=c.color;
+    drawRoundRect(20,y,W-40,75,10);ctx.fill();ctx.stroke();
+    ctx.fillStyle=c.color;ctx.font='bold 14px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(`${c.icon} ${c.name}`,35,y+22);
+    ctx.fillStyle='rgba(255,255,255,.6)';ctx.font='12px Courier New';
+    ctx.fillText(c.detail,35,y+42);
+    ctx.fillStyle=c.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='right';
+    ctx.fillText(`→ ${c.threshold}`,W-35,y+42);
+    ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='11px PingFang SC';ctx.textAlign='left';
+    const suggestions=['增大 β','减小学习率','检查生成质量'];
+    ctx.fillText(`建议: ${suggestions[i]}`,35,y+62);
+    ctx.globalAlpha=1;
+  }
+  if(p>.85){
+    ctx.globalAlpha=easeInOut((p-.85)/.15);
+    ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';ctx.textAlign='center';
+    ctx.fillText('三维度联合检测，提前发现奖励欺骗',cx,topY+3*90+15);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: GSM8K evaluation pipeline
+function renderStep5(p){
+  const cx=W/2,topY=10;
+  const pipeline=[
+    {label:'加载测试集',sub:'gsm8k_test.jsonl',color:'#94A3B8'},
+    {label:'生成响应',sub:'model.generate(question)',color:'#6C5CE7'},
+    {label:'提取答案',sub:'extract_model_answer(response)',color:'#0984E3'},
+    {label:'精确比较',sub:'|model_ans - gt| < 1e-5',color:'#F59E0B'},
+    {label:'计算奖励',sub:'composite_reward(response, gt)',color:'#10B981'},
+    {label:'统计准确率',sub:'correct / total × 100%',color:'#00B894'},
+  ];
+  let y=topY;
+  for(let i=0;i<pipeline.length;i++){
+    const delay=i*.13;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=pipeline[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'12';ctx.strokeStyle=s.color;
+    drawRoundRect(cx-120,y,240,42,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(s.label,cx,y+16);
+    ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='10px Courier New';
+    ctx.fillText(s.sub,cx,y+32);
+    if(i>0){
+      ctx.strokeStyle=s.color+'44';ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(cx,y-6);ctx.lineTo(cx,y);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=52;
+  }
+  // Result table
+  if(p>.85){
+    const tp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=tp;
+    ctx.font='13px PingFang SC';ctx.fillStyle='#00B894';ctx.textAlign='center';
+    ctx.fillText('Base ~5% → SFT ~15% → DPO ~20% → GRPO ~25%',cx,y+10);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+
+function updateCodePanel(){
+  const panel=document.getElementById('codePanel');
+  const s=steps[currentStep];
+  panel.innerHTML=s.code.map((line,i)=>{
+    const cls=s.highlightLines.includes(i)?'code-line highlight':'code-line';
+    return `<div class="${cls}">${line.text||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress);}
+
+function startAnim(){
+  animProgress=0;const start=performance.now(),duration=2200;
+  function tick(now){animProgress=Math.min(1,(now-start)/duration);render();if(animProgress<1)animId=requestAnimationFrame(tick);}
+  if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick);
+}
+
+function updateUI(){
+  const s=steps[currentStep];
+  document.getElementById('infoTitle').textContent=s.title;
+  document.getElementById('infoDesc').innerHTML=s.desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCodePanel();
+  const dotsEl=document.getElementById('dots');dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){const d=document.createElement('span');if(i===currentStep)d.className='active';d.onclick=()=>{currentStep=i;updateUI();startAnim();};dotsEl.appendChild(d);}
+}
+
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim();}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim();}}
+function replay(){startAnim();}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep();});
+
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

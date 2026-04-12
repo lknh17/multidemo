@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>V23 - 在线推理服务：代码讲解</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,sans-serif}.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}.badge{background:linear-gradient(135deg,#607d8b,#90a4ae);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px}.title{font-size:18px;font-weight:600;flex:1}.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}.dots{display:flex;gap:6px;margin-left:16px}.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}.dot.active{background:#607d8b}.dot.done{background:#90a4ae}.main{display:flex;height:calc(100vh - 136px)}.code-panel{flex:4;padding:16px;overflow-y:auto;background:#0d1117;font-family:monospace;font-size:13px;line-height:1.6}.code-line{padding:2px 8px;border-radius:3px;white-space:pre}.code-line.highlight{background:#607d8b22;border-left:3px solid #607d8b}.canvas-area{flex:6;position:relative;display:flex;align-items:center;justify-content:center;background:#111827}canvas{border-radius:8px}.info-box{position:absolute;bottom:16px;left:16px;right:16px;background:#1a1e2eee;border:1px solid #333;border-radius:8px;padding:12px}.info-title{font-size:14px;font-weight:700;color:#607d8b;margin-bottom:4px}.info-text{font-size:13px;color:#ccc}.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}.btn:hover{border-color:#607d8b}.btn:disabled{opacity:.3}.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}</style></head>
+<body>
+<div class="header"><span class="badge">V23</span><span class="title">在线推理服务系统</span><span class="page-type">代码讲解</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="code-panel" id="codePanel"></div><div class="canvas-area"><canvas id="canvas"></canvas><div class="info-box"><div class="info-title" id="infoTitle"></div><div class="info-text" id="infoText"></div></div></div></div>
+<div class="controls"><button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button><div class="step-counter" id="stepCounter"></div><button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button><button class="btn" onclick="replay()">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-120}window.addEventListener('resize',resize);resize();
+function RR(x,y,w,h,r,f,s){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(f){ctx.fillStyle=f;ctx.fill()}if(s){ctx.strokeStyle=s;ctx.stroke()}}
+function arr(x1,y1,x2,y2,c='#555'){ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
+function txt(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+const steps=[
+{title:"DynamicBatcher.try_form_batch",info:"超时 + 队列满两种条件触发凑批",
+code:[{text:'def try_form_batch(self):',hl:true},{text:'    if not self.queue:',hl:false},{text:'        return None',hl:false},{text:'    ',hl:false},{text:'    # 条件1: 队列满',hl:true},{text:'    if len(queue) >= max_batch_size:',hl:false},{text:'        return self._drain_batch(max_bs)',hl:false},{text:'    ',hl:false},{text:'    # 条件2: 超时',hl:true},{text:'    wait_ms = (now - oldest) * 1000',hl:false},{text:'    if wait_ms >= max_wait_ms:',hl:true},{text:'        return self._drain_batch(len(q))',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('Request Queue',80,20,'#aaa',11);
+const n=Math.min(6,Math.floor(p*8));for(let i=0;i<n;i++){RR(20,30+i*25,120,20,3,'#607d8b33','#607d8b');txt(`req_${i}`,80,30+i*25+14,'#90a4ae',10)}
+if(p>.5){arr(150,90,200,90,'#607d8b');RR(210,70,100,40,4,'#1a1e2e','#00e5ff');txt('Batch',260,95,'#00e5ff',11)}
+if(p>.8){arr(320,90,360,90,'#4caf50');txt('→ GPU',390,94,'#4caf50',11)}}},
+
+{title:"ModelCache.get / put",info:"LRU缓存 + TTL过期机制，命中时移到末尾",
+code:[{text:'def get(self, key):',hl:true},{text:'    if key in self.cache:',hl:false},{text:'        # 检查 TTL',hl:true},{text:'        if expired(key):',hl:false},{text:'            self._evict(key)',hl:false},{text:'            return None  # Miss',hl:false},{text:'        # 命中 → LRU 移到末尾',hl:true},{text:'        cache.move_to_end(key)',hl:false},{text:'        return cache[key]  # Hit',hl:true},{text:'    return None  # Miss',hl:false},{text:'',hl:false},{text:'def put(self, key, value):',hl:true},{text:'    if len(cache) >= capacity:',hl:false},{text:'        cache.popitem(last=False)',hl:true},{text:'    cache[key] = value',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+txt('LRU Cache',cx,20,'#aaa',13);
+const items=['A','B','C','D','E'];const cap=4;
+items.slice(0,cap).forEach((it,i)=>{const y=35+i*30;const age=cap-i;const alpha=Math.min(1,p*3);ctx.globalAlpha=alpha;RR(cx-60,y,120,24,3,i===0?'#607d8b33':'#1a1e2e',i===0?'#f7c948':'#607d8b');txt(`${it} (age:${age})`,cx,y+16,i===0?'#f7c948':'#90a4ae',10);ctx.globalAlpha=1});
+if(p>.5){txt('← oldest (LRU淘汰)',cx+90,50,'#f7c948',10);txt('← newest',cx+90,35+3*30+15,'#4caf50',10)}
+if(p>.7){txt(`Hit Rate = hits/(hits+misses)`,cx,190,'#00e5ff',11)}}},
+
+{title:"FeatureStore.search_ivf",info:"IVF索引：先找最近簇，再簇内暴力搜索",
+code:[{text:'def search_ivf(self, query, top_k):',hl:true},{text:'    # 1. 找最近 nprobe 个聚类中心',hl:true},{text:'    c_dists = norm(centroids - query)',hl:false},{text:'    probe_ids = topk(c_dists, nprobe)',hl:false},{text:'    ',hl:false},{text:'    # 2. 在这些簇中搜索',hl:true},{text:'    candidates = []',hl:false},{text:'    for cid in probe_ids:',hl:false},{text:'        for key in inverted[cid]:',hl:true},{text:'            d = norm(query - vec[key])',hl:false},{text:'            candidates.append((d, key))',hl:false},{text:'    ',hl:false},{text:'    return sorted(candidates)[:top_k]',hl:true}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-20;
+const cls=[[cx-100,cy-50,'#607d8b'],[cx+80,cy-40,'#90a4ae'],[cx-60,cy+50,'#00e5ff'],[cx+100,cy+40,'#f7c948']];
+cls.forEach(([x,y,c],i)=>{ctx.strokeStyle=c+'66';ctx.beginPath();ctx.arc(x,y,35,0,Math.PI*2);ctx.stroke();ctx.fillStyle=c;ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fill();txt(`C${i}`,x,y-10,c,9)});
+if(p>.3){ctx.fillStyle='#ff4444';ctx.beginPath();ctx.arc(cx,cy,5,0,Math.PI*2);ctx.fill();txt('Q',cx+10,cy-5,'#ff4444',10)}
+if(p>.6){ctx.setLineDash([3,3]);arr(cx,cy,cls[2][0],cls[2][1],'#ff4444');arr(cx,cy,cls[0][0],cls[0][1],'#ff4444');ctx.setLineDash([])}}},
+
+{title:"ServingPipeline.forward",info:"预处理 → ViT编码 → 分类 → Top-K 后处理",
+code:[{text:'def forward(self, images):',hl:true},{text:'    # 1. 预处理：归一化',hl:true},{text:'    x = (images - mean) / std',hl:false},{text:'    ',hl:false},{text:'    # 2. 编码',hl:true},{text:'    features = self.encoder(x)',hl:false},{text:'    cls_feat = features[:, 0]',hl:false},{text:'    ',hl:false},{text:'    # 3. 分类',hl:true},{text:'    logits = self.classifier(cls_feat)',hl:false},{text:'    ',hl:false},{text:'    # 4. 后处理',hl:true},{text:'    probs = softmax(logits)',hl:false},{text:'    top_k = probs.topk(5)',hl:false},{text:'    return {logits, probs, top_k}',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2,y0=20;
+const stages=[{n:'Preprocess',c:'#607d8b'},{n:'ViT Encoder',c:'#90a4ae'},{n:'Classifier',c:'#00e5ff'},{n:'Softmax+TopK',c:'#f7c948'}];
+stages.forEach((s,i)=>{const prog=Math.min(1,p*(stages.length+1)/(i+1));if(prog<=0)return;ctx.globalAlpha=Math.min(1,prog);const y=y0+i*50;RR(cx-70,y,140,30,4,'#1a1e2e',s.c);txt(s.n,cx,y+20,s.c,11);if(i>0)arr(cx,y-15,cx,y,'#555');ctx.globalAlpha=1});
+if(p>.8){txt('[B, 100]',cx+100,y0+3*50+20,'#fff',10)}}},
+
+{title:"QuantizedModel.quantize_dynamic",info:"INT8动态量化 → 4x压缩、2-4x加速",
+code:[{text:'@staticmethod',hl:false},{text:'def quantize_dynamic(model):',hl:true},{text:'    model_cpu = model.cpu().eval()',hl:false},{text:'    ',hl:false},{text:'    quantized = quantize_dynamic(',hl:true},{text:'        model_cpu,',hl:false},{text:'        {nn.Linear},  # 量化目标',hl:true},{text:'        dtype=torch.qint8',hl:false},{text:'    )',hl:false},{text:'    return quantized',hl:false},{text:'',hl:false},{text:'# 对比输出:',hl:false},{text:'# MSE < 0.01, Top1 agree > 95%',hl:true},{text:'# Speedup: 2-4x on CPU',hl:true}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+// FP32 bar
+txt('FP32',60,25,'#607d8b',12);const fp32w=200*Math.min(1,p*2);RR(20,35,fp32w,25,3,'#607d8b88','#607d8b');txt(`${(fp32w/200*100).toFixed(0)}%`,fp32w+35,52,'#aaa',10);
+// INT8 bar
+if(p>.3){txt('INT8',60,80,'#00e5ff',12);const i8w=fp32w/4;RR(20,90,i8w,25,3,'#00e5ff88','#00e5ff');txt(`${(i8w/200*100).toFixed(0)}%`,i8w+35,107,'#aaa',10);txt('4x 压缩',cx+50,100,'#f7c948',11)}
+// Speed comparison
+if(p>.6){txt('推理速度',cx,145,'#aaa',12);const fp32t=150*Math.min(1,(p-.3)*2);RR(cx-100,155,fp32t,20,3,'#607d8b88','#607d8b');txt('FP32',cx-120,170,'#607d8b',9);const i8t=fp32t/2.5;RR(cx-100,185,i8t,20,3,'#00e5ff88','#00e5ff');txt('INT8',cx-120,200,'#00e5ff',9);txt('~2.5x faster',cx+80,195,'#f7c948',11)}}}
+];
+
+function renderCode(){const p=document.getElementById('codePanel');p.innerHTML='';steps[currentStep].code.forEach(l=>{const d=document.createElement('div');d.className='code-line'+(l.hl?' highlight':'');d.textContent=l.text;p.appendChild(d)})}
+function animate(){animProgress+=.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('infoTitle').textContent=steps[currentStep].title;document.getElementById('infoText').textContent=steps[currentStep].info;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))});renderCode()}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});init();
+</script></body></html>

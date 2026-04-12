@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V20 - 知识增强嵌入代码可视化</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{background:#0d1117;color:#e0e0e0;font-family:'Segoe UI',sans-serif;overflow:hidden}canvas{display:block}
+#controls{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
+#controls button{padding:10px 20px;border:1px solid #58a6ff;border-radius:25px;background:rgba(88,166,255,0.1);color:#58a6ff;cursor:pointer;font-size:13px;transition:all 0.3s}
+#controls button:hover{background:rgba(88,166,255,0.3)}#controls button.active{background:#58a6ff;color:#0d1117}
+#info{position:fixed;top:20px;left:50%;transform:translateX(-50%);text-align:center;z-index:10}
+#title{font-size:20px;color:#58a6ff;margin-bottom:5px}#desc{font-size:13px;color:#8b949e}
+</style>
+</head>
+<body>
+<div id="info"><div id="title">V20 - 知识增强嵌入代码实现可视化</div><div id="desc"></div></div>
+<canvas id="canvas"></canvas>
+<div id="controls">
+<button onclick="setStep(0)" class="active">TransE训练</button>
+<button onclick="setStep(1)">GNN传播</button>
+<button onclick="setStep(2)">KG注意力</button>
+<button onclick="setStep(3)">门控融合</button>
+<button onclick="setStep(4)">蒸馏损失</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,step=0,time=0;
+const descs=['TransE margin loss：正样本距离小，负样本距离大，margin保证间隔','GNN消息传递：scatter_add聚合邻居消息，注意力加权','KG注意力：K_aug=[K;K_kg], V_aug=[V;V_kg]，扩展KV空间','门控融合：sigmoid门控决定KG信息注入比例','蒸馏损失：T²·KL(softmax(z_s/T) || softmax(z_t/T))'];
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+window.addEventListener('resize',resize);resize();
+function setStep(s){step=s;time=0;document.querySelectorAll('#controls button').forEach((b,i)=>b.classList.toggle('active',i===s));document.getElementById('desc').textContent=descs[s]}
+setStep(0);
+
+function drawCode(lines,x,y,hl){
+ctx.font='11px "Courier New",monospace';ctx.textAlign='start';
+lines.forEach((l,i)=>{
+const h=hl&&hl.includes(i);
+if(h){ctx.fillStyle='#ffd93d22';ctx.fillRect(x-5,y+i*16-11,500,16);ctx.fillStyle='#ffd93d'}
+else ctx.fillStyle='#8b949e';
+ctx.fillText(l,x,y+i*16);
+});
+}
+
+function drawTransECode(){
+const cx=W/2,cy=H/2;
+const code=[
+'class TransEEmbedding(nn.Module):',
+'    def score(self, h, r, t):',
+'        h_emb = normalize(self.entity_embed(h))',
+'        r_emb = self.relation_embed(r)',
+'        t_emb = normalize(self.entity_embed(t))',
+'        return -norm(h_emb + r_emb - t_emb, p=2)',
+'',
+'    def compute_loss(self, pos, neg):',
+'        pos_score = self.score(pos_h, pos_r, pos_t)',
+'        neg_score = self.score(neg_h, neg_r, neg_t)',
+'        # Margin ranking loss',
+'        loss = relu(margin + neg_score - pos_score)',
+'        return loss.mean()',
+];
+drawCode(code,cx-230,cy-100,[5,11]);
+
+// Visual: score bars
+const barX=cx+120,barY=cy-60;
+ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.textAlign='center';
+ctx.fillText('评分对比',barX+40,barY-10);
+const posScore=0.8+Math.sin(time*0.03)*0.1;
+const negScore=0.3+Math.sin(time*0.03+1)*0.1;
+// Positive
+ctx.fillStyle='#6bff6b44';ctx.fillRect(barX,barY,posScore*100,20);
+ctx.strokeStyle='#6bff6b';ctx.strokeRect(barX,barY,100,20);
+ctx.fillStyle='#6bff6b';ctx.font='10px sans-serif';
+ctx.fillText(`正: ${posScore.toFixed(2)}`,barX+50,barY+14);
+// Negative
+ctx.fillStyle='#ff6b6b44';ctx.fillRect(barX,barY+30,negScore*100,20);
+ctx.strokeStyle='#ff6b6b';ctx.strokeRect(barX,barY+30,100,20);
+ctx.fillStyle='#ff6b6b';ctx.font='10px sans-serif';
+ctx.fillText(`负: ${negScore.toFixed(2)}`,barX+50,barY+44);
+// Margin
+ctx.strokeStyle='#ffd93d';ctx.setLineDash([4,4]);ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(barX+60,barY-5);ctx.lineTo(barX+60,barY+55);ctx.stroke();
+ctx.setLineDash([]);
+ctx.fillStyle='#ffd93d';ctx.fillText('γ=1.0',barX+60,barY+68);
+ctx.textAlign='start';
+}
+
+function drawGNNCode(){
+const cx=W/2,cy=H/2;
+const code=[
+'class SimpleGNNLayer(nn.Module):',
+'    def forward(self, nodes, edge_idx, edge_type):',
+'        src_feat = nodes[edge_idx[0]]',
+'        rel_feat = self.rel_embed(edge_type)',
+'        messages = self.msg_net(cat([src,rel],-1))',
+'',
+'        # Attention weights',
+'        dst_feat = nodes[edge_idx[1]]',
+'        attn = self.attn_net(cat([dst,msg],-1))',
+'        attn = softmax_per_dst(attn)',
+'',
+'        # Scatter aggregation',
+'        aggr = scatter_add(attn * messages, dst)',
+'        return nodes + aggr  # residual',
+];
+drawCode(code,cx-240,cy-100,[4,9,12]);
+
+// Visual: message flow
+const nodeX=cx+140,nodeY=cy-30;
+const neighbors=[{dx:-50,dy:-40},{dx:-50,dy:40},{dx:50,dy:-40}];
+ctx.fillStyle='#58a6ff';
+ctx.beginPath();ctx.arc(nodeX,nodeY,14,0,Math.PI*2);ctx.fill();
+ctx.fillStyle='#0d1117';ctx.font='bold 10px sans-serif';ctx.textAlign='center';
+ctx.fillText('dst',nodeX,nodeY+4);
+neighbors.forEach((n,i)=>{
+const nx=nodeX+n.dx,ny=nodeY+n.dy;
+ctx.fillStyle=['#ff6b6b','#6bff6b','#ffd93d'][i];
+ctx.beginPath();ctx.arc(nx,ny,10,0,Math.PI*2);ctx.fill();
+// Message animation
+const prog=(time*0.02+i*0.3)%1;
+const mx=nx+(nodeX-nx)*prog;
+const my=ny+(nodeY-ny)*prog;
+ctx.fillStyle=['#ff6b6b','#6bff6b','#ffd93d'][i];
+ctx.beginPath();ctx.arc(mx,my,4,0,Math.PI*2);ctx.fill();
+// Arrow
+ctx.beginPath();ctx.moveTo(nx,ny);ctx.lineTo(nodeX,nodeY);
+ctx.strokeStyle='#444';ctx.lineWidth=1;ctx.stroke();
+});
+ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
+ctx.fillText('scatter_add 聚合',nodeX,nodeY+60);
+ctx.textAlign='start';
+}
+
+function drawKGAttnCode(){
+const cx=W/2,cy=H/2;
+const code=[
+'class KGAttentionLayer(nn.Module):',
+'    def forward(self, x, kg_embeds):',
+'        q = self.q_proj(x)          # [B,L,D]',
+'        k = self.k_proj(x)          # [B,L,D]',
+'        v = self.v_proj(x)          # [B,L,D]',
+'',
+'        # Inject KG as extra KV',
+'        k_kg = self.kg_k_proj(kg_embeds)',
+'        v_kg = self.kg_v_proj(kg_embeds)',
+'        k_aug = cat([k, k_kg], dim=1)',
+'        v_aug = cat([v, v_kg], dim=1)',
+'',
+'        attn = softmax(q @ k_aug.T / √d)',
+'        out = attn @ v_aug',
+];
+drawCode(code,cx-240,cy-110,[9,10,12,13]);
+
+// Visual: attention matrix
+const matX=cx+110,matY=cy-60,sz=100;
+ctx.strokeStyle='#444';ctx.strokeRect(matX,matY,sz,sz);
+ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
+ctx.fillText('Q',matX-10,matY+sz/2);
+ctx.fillText('K  |  K_kg',matX+sz/2,matY-5);
+// Attention pattern
+for(let i=0;i<8;i++)for(let j=0;j<10;j++){
+const isKG=j>=8;
+const val=isKG?0.3+Math.sin(time*0.03+i+j)*0.2:0.2+Math.random()*0.3;
+ctx.fillStyle=isKG?`rgba(107,255,107,${val})`:`rgba(88,166,255,${val})`;
+ctx.fillRect(matX+j*10,matY+i*12.5,9,11.5);
+}
+// Divider
+ctx.strokeStyle='#ffd93d';ctx.lineWidth=2;
+ctx.beginPath();ctx.moveTo(matX+80,matY);ctx.lineTo(matX+80,matY+sz);ctx.stroke();
+ctx.fillStyle='#58a6ff';ctx.font='9px sans-serif';
+ctx.fillText('标准K',matX+40,matY+sz+12);
+ctx.fillStyle='#6bff6b';
+ctx.fillText('K_kg',matX+90,matY+sz+12);
+ctx.textAlign='start';
+}
+
+function drawGateCode(){
+const cx=W/2,cy=H/2;
+const code=[
+'def gated_fusion(self, visual, kg):',
+'    # 计算门控值',
+'    gate = sigmoid(',
+'        self.gate_proj(cat([visual, kg], -1))',
+'    )',
+'',
+'    # 加权融合',
+'    fused = (1-gate) * visual + gate * kg',
+'    return fused',
+'',
+'# gate≈0: 保留视觉特征（无相关实体）',
+'# gate≈1: 注入KG知识（强相关实体）',
+];
+drawCode(code,cx-230,cy-90,[2,3,7]);
+
+// Visual: gate slider
+const slX=cx+100,slY=cy-50,slW=120;
+const gateVal=0.5+Math.sin(time*0.02)*0.4;
+ctx.fillStyle='#444';ctx.fillRect(slX,slY,slW,20);
+// Visual part
+ctx.fillStyle='#ff6b6b88';ctx.fillRect(slX,slY,(1-gateVal)*slW,20);
+// KG part
+ctx.fillStyle='#6bff6b88';ctx.fillRect(slX+(1-gateVal)*slW,slY,gateVal*slW,20);
+ctx.strokeStyle='#fff';ctx.strokeRect(slX,slY,slW,20);
+// Labels
+ctx.fillStyle='#ff6b6b';ctx.font='10px sans-serif';ctx.textAlign='center';
+ctx.fillText('Visual',slX+30,slY+14);
+ctx.fillStyle='#6bff6b';
+ctx.fillText('KG',slX+slW-20,slY+14);
+// Gate value
+ctx.fillStyle='#ffd93d';ctx.font='12px sans-serif';
+ctx.fillText(`gate = ${gateVal.toFixed(2)}`,slX+slW/2,slY+40);
+// Result bars
+ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
+ctx.fillText('融合结果',slX+slW/2,slY+65);
+const barW=100;
+ctx.fillStyle='#ff6b6b44';ctx.fillRect(slX+10,slY+75,(1-gateVal)*barW,15);
+ctx.fillStyle='#6bff6b44';ctx.fillRect(slX+10+(1-gateVal)*barW,slY+75,gateVal*barW,15);
+ctx.strokeStyle='#58a6ff';ctx.strokeRect(slX+10,slY+75,barW,15);
+ctx.textAlign='start';
+}
+
+function drawDistillCode(){
+const cx=W/2,cy=H/2;
+const code=[
+'def compute_distill_loss(s_logits, t_logits, T=4):',
+'    s_probs = log_softmax(s_logits / T, dim=-1)',
+'    t_probs = softmax(t_logits / T, dim=-1)',
+'    kl = kl_div(s_probs, t_probs, reduction="bm")',
+'    return T * T * kl  # T²缩放补偿',
+'',
+'def compute_feature_loss(s_feat, t_feat):',
+'    projected = self.align_proj(t_feat)',
+'    return mse_loss(s_feat, projected.detach())',
+'',
+'# Total loss',
+'L = (1-α)*L_task + α*L_distill + β*L_feat',
+];
+drawCode(code,cx-240,cy-90,[1,2,4,11]);
+
+// Visual: temperature effect
+const tX=cx+110,tY=cy-70;
+ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.textAlign='center';
+ctx.fillText('温度 T 的效果',tX+50,tY-5);
+const temps=[1,2,4,8];
+const colors=['#ff6b6b','#ffd93d','#6bff6b','#58a6ff'];
+temps.forEach((T,ti)=>{
+const y=tY+ti*30+10;
+ctx.fillStyle=colors[ti];ctx.font='10px sans-serif';
+ctx.fillText(`T=${T}`,tX-20,y+8);
+// Softmax distribution
+const vals=[3,1,0.5,0.3,0.2];
+const softmax=vals.map(v=>Math.exp(v/T));
+const sum=softmax.reduce((a,b)=>a+b);
+const probs=softmax.map(v=>v/sum);
+let xOff=0;
+probs.forEach((p,pi)=>{
+const bw=p*100;
+ctx.fillStyle=colors[ti]+Math.floor(p*255).toString(16).padStart(2,'0');
+ctx.fillRect(tX+10+xOff,y,bw,18);
+xOff+=bw;
+});
+ctx.strokeStyle=colors[ti]+'88';ctx.strokeRect(tX+10,y,100,18);
+});
+ctx.fillStyle='#aaa';ctx.font='10px sans-serif';
+ctx.fillText('T↑ 分布更平滑',tX+50,tY+140);
+ctx.fillText('→ 更多 dark knowledge',tX+50,tY+155);
+ctx.textAlign='start';
+}
+
+const drawFns=[drawTransECode,drawGNNCode,drawKGAttnCode,drawGateCode,drawDistillCode];
+function animate(){ctx.fillStyle='#0d1117';ctx.fillRect(0,0,W,H);time++;drawFns[step]();requestAnimationFrame(animate)}
+animate();
+</script>
+</body>
+</html>

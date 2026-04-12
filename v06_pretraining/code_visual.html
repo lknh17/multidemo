@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v06 多模态预训练 - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:14px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre;overflow-x:auto}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v06</span><h1>多模态预训练</h1><span class="tag">代码可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'PretrainModel 三路输出',desc:'PretrainModel 包含三个输出头：<br><br>1. <strong>ITC 输出</strong>：img_proj 和 txt_proj 将 CLS/pooled embedding 投影到共享空间，计算 logits_itc = scale * img_emb @ txt_emb^T<br><br>2. <strong>ITM 输出</strong>：将 img_cls 和 txt_pool 拼接后通过 itm_head（MLP→2分类），输出 logits_itm<br><br>3. <strong>Cap 输出</strong>：text encoder 的输出直接通过 cap_head（Linear→vocab_size），输出 logits_cap',formula:'# ITC\nimg_emb = normalize(img_proj(vis[:,0]))\ntxt_emb = normalize(txt_proj(txt.mean(1)))\nlogits_itc = scale * img_emb @ txt_emb.T\n\n# ITM\nfused = cat([vis[:,0], txt.mean(1)])\nlogits_itm = itm_head(fused)\n\n# Cap\nlogits_cap = cap_head(txt)'},
+{title:'PretrainLoss 各 Loss 计算',desc:'三个 Loss 分别计算：<br><br><strong>ITC Loss</strong>：对称交叉熵<br>labels = arange(B)（对角线为正样本）<br>loss = (CE(logits, labels) + CE(logits^T, labels)) / 2<br><br><strong>ITM Loss</strong>：标准二分类交叉熵<br><br><strong>Cap Loss</strong>：语言模型交叉熵（忽略 padding=0）<br><br>加权求和：total = λ₁·itc + λ₂·itm + λ₃·cap',formula:'# ITC: 对称 CrossEntropy\nlabels = arange(B)\nitc = (CE(logits, labels)\n     + CE(logits.T, labels)) / 2\n\n# ITM: 二分类 CE\nitm = CE(itm_logits, itm_labels)\n\n# Cap: LM CE (ignore padding)\ncap = CE(cap_logits.view(-1,V),\n        cap_labels.view(-1))'},
+{title:'训练循环：多任务联合优化',desc:'训练循环的关键步骤：<br><br>1. <strong>数据加载</strong>：每个 batch 包含 images, input_ids, itm_labels, cap_labels<br>2. <strong>前向传播</strong>：model(images, input_ids) → 三路输出<br>3. <strong>Loss 计算</strong>：PretrainLoss 计算加权总 loss<br>4. <strong>反向传播</strong>：loss.backward() + optimizer.step()<br>5. <strong>日志记录</strong>：分别记录 itc/itm/cap 各自的 loss 值<br><br>使用 AdamW + cosine schedule + warmup 的标准训练策略。',formula:'for batch in dataloader:\n  outputs = model(images, input_ids)\n  loss, details = criterion(\n    outputs, itm_labels, cap_labels\n  )\n  optimizer.zero_grad()\n  loss.backward()\n  optimizer.step()\n  scheduler.step()\n  # log: details["itc"], ["itm"], ["cap"]'},
+{title:'Zero-shot 评估 (R@K)',desc:'预训练模型的评估使用 <strong>Zero-shot Retrieval</strong>：<br><br>1. 对所有测试图文对编码为 embedding<br>2. 计算图文相似度矩阵<br>3. 对每张图像，按相似度排序找到最匹配的文本<br>4. 计算 <strong>Recall@K</strong>：正确文本出现在 Top-K 中的比例<br><br>常用指标：R@1, R@5, R@10<br>还可以反过来做 Text→Image 检索<br><br>无需任何微调即可评估模型的跨模态对齐质量。',formula:'# 编码所有样本\nimg_embs = [encode_image(img) for img]\ntxt_embs = [encode_text(txt) for txt]\n\n# 相似度矩阵\nsims = img_embs @ txt_embs.T\n\n# R@K\nfor k in [1, 5, 10]:\n  topk = sims.topk(k, dim=1).indices\n  recall = (labels in topk).float().mean()'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+  const cx=W/2,topY=15;
+  // Model box
+  const mp=easeInOut(Math.min(1,p/.1));
+  ctx.globalAlpha=mp;ctx.fillStyle='rgba(108,92,231,.08)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=2;
+  drawRR(15,topY,W-30,60,10);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillText('PretrainModel.forward(images, input_ids)',cx,topY+25);
+  ctx.font='11px Courier New';ctx.fillStyle='#94A3B8';
+  ctx.fillText('vis = vision_enc(images)  |  txt = text_enc(input_ids)',cx,topY+45);
+  ctx.globalAlpha=1;
+  // Three output branches
+  const branches=[
+    {label:'ITC 输出',code:'logits_itc = scale * img_emb @ txt_emb.T',color:'#0984E3',shape:'[N,N]'},
+    {label:'ITM 输出',code:'logits_itm = itm_head(cat(img_cls, txt_pool))',color:'#6C5CE7',shape:'[N,2]'},
+    {label:'Cap 输出',code:'logits_cap = cap_head(txt)',color:'#00B894',shape:'[N,L,V]'}
+  ];
+  const bw=W/3-25,bh=90,by=topY+90;
+  for(let i=0;i<3;i++){
+    const delay=.2+i*.2;
+    const bp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const b=branches[i],bx=20+i*(bw+15);
+    ctx.globalAlpha=bp;
+    // Arrow from model
+    ctx.strokeStyle=b.color+'88';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(cx,topY+60);ctx.lineTo(bx+bw/2,by);ctx.stroke();
+    // Branch box
+    ctx.fillStyle=b.color+'1A';ctx.strokeStyle=b.color;ctx.lineWidth=1.5;
+    drawRR(bx,by,bw,bh,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=b.color;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+    ctx.fillText(b.label,bx+bw/2,by+20);
+    ctx.font='9px Courier New';ctx.fillStyle='#E2E8F0';
+    ctx.fillText(b.code,bx+bw/2,by+42);
+    ctx.fillStyle='#F59E0B';ctx.font='11px Courier New';
+    ctx.fillText('→ '+b.shape,bx+bw/2,by+62);
+    // Output shape box
+    if(bp>.8){
+      ctx.fillStyle=b.color+'33';
+      drawRR(bx+10,by+bh-15,bw-20,12,3);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=10;
+  const losses=[
+    {name:'ITC Loss',steps:['labels = arange(B)','loss_i2t = CE(logits, labels)','loss_t2i = CE(logits.T, labels)','itc = (loss_i2t + loss_t2i) / 2'],color:'#0984E3',t:0},
+    {name:'ITM Loss',steps:['itm = CE(itm_logits, itm_labels)','# itm_labels ∈ {0, 1}'],color:'#6C5CE7',t:.35},
+    {name:'Cap Loss',steps:['logits = cap_logits.view(-1, V)','targets = cap_labels.view(-1)','cap = CE(logits, targets, ignore=0)'],color:'#00B894',t:.55}
+  ];
+  let y=topY;
+  for(const l of losses){
+    const lp=easeInOut(Math.max(0,Math.min(1,(p-l.t)/.2)));
+    ctx.globalAlpha=lp;
+    ctx.fillStyle=l.color;ctx.font='bold 13px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(l.name,25,y+15);
+    y+=22;
+    for(let i=0;i<l.steps.length;i++){
+      const sp=easeInOut(Math.max(0,Math.min(1,(p-l.t-.05-i*.05)/.12)));
+      ctx.globalAlpha=sp;
+      ctx.fillStyle=l.color+'1A';ctx.strokeStyle=l.color+'66';ctx.lineWidth=1;
+      drawRR(25,y,W-50,22,4);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#E2E8F0';ctx.font='11px Courier New';ctx.textAlign='left';
+      ctx.fillText(l.steps[i],35,y+15);
+      y+=28;
+    }
+    y+=15;
+    ctx.globalAlpha=1;
+  }
+  // Weighted sum
+  if(p>.8){
+    const wp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=wp;
+    ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    drawRR(25,y,W-50,35,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 12px Courier New';ctx.textAlign='center';
+    ctx.fillText('total = λ₁*itc + λ₂*itm + λ₃*cap',cx,y+22);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=10;
+  const flowSteps=[
+    {label:'for batch in dataloader:',color:'#94A3B8',indent:0},
+    {label:'  outputs = model(images, input_ids)',color:'#6C5CE7',indent:1},
+    {label:'  loss, details = criterion(outputs, ...)',color:'#F59E0B',indent:1},
+    {label:'  optimizer.zero_grad()',color:'#0984E3',indent:1},
+    {label:'  loss.backward()',color:'#EF4444',indent:1},
+    {label:'  optimizer.step()',color:'#00B894',indent:1},
+    {label:'  scheduler.step()',color:'#94A3B8',indent:1},
+    {label:'  log(details)',color:'#94A3B8',indent:1}
+  ];
+  const lineH=36;
+  for(let i=0;i<flowSteps.length;i++){
+    const delay=i*.1;
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+    const s=flowSteps[i],y=topY+i*lineH;
+    ctx.globalAlpha=sp;
+    // Highlight current executing line
+    const isActive=animProgress>delay&&animProgress<delay+.15;
+    if(isActive){ctx.fillStyle=s.color+'22';ctx.fillRect(20,y,W-40,lineH-4)}
+    ctx.fillStyle=s.color+'1A';ctx.strokeStyle=s.color+'44';ctx.lineWidth=1;
+    drawRR(25+s.indent*20,y+2,W-55-s.indent*20,lineH-6,5);ctx.fill();ctx.stroke();
+    // Line number
+    ctx.fillStyle='#64748B';ctx.font='10px Courier New';ctx.textAlign='right';
+    ctx.fillText(String(i+1),20,y+lineH/2+3);
+    // Code
+    ctx.fillStyle=isActive?'#FFFFFF':s.color;ctx.font='12px Courier New';ctx.textAlign='left';
+    ctx.fillText(s.label,35+s.indent*20,y+lineH/2+4);
+    ctx.globalAlpha=1;
+  }
+  // Loss curve
+  if(p>.6){
+    const cp=easeInOut((p-.6)/.4);
+    ctx.globalAlpha=cp;
+    const cy=topY+flowSteps.length*lineH+20,cw=W-60,ch=H-cy-20;
+    ctx.strokeStyle='rgba(255,255,255,.1)';ctx.lineWidth=1;
+    ctx.strokeRect(30,cy,cw,ch);
+    ctx.fillStyle='#94A3B8';ctx.font='11px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('Training Loss',30+cw/2,cy-5);
+    // Curve
+    ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;ctx.beginPath();
+    for(let x=0;x<=cw*cp;x++){
+      const t=x/cw;const loss=3*Math.exp(-3*t)+0.5+0.2*Math.sin(t*20)*Math.exp(-2*t);
+      const py=cy+ch-loss/4*ch;
+      x===0?ctx.moveTo(30+x,py):ctx.lineTo(30+x,py);
+    }
+    ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=15;
+  // Similarity matrix
+  const N=6,sz=30,pad=3;
+  const sx=cx-N*(sz+pad)/2,sy=topY+25;
+  const mp=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=mp;ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle='#0984E3';ctx.fillText('Image→Text 检索',cx,topY+10);
+  // Matrix
+  ctx.font='8px Courier New';
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const isDiag=i===j;const v=isDiag?.8:.1+Math.random()*.2;
+    const dp=easeInOut(Math.max(0,Math.min(1,(p-.1-(i*N+j)*.005)/.2)));
+    ctx.fillStyle=isDiag?`rgba(0,184,148,${dp*.7})`:`rgba(100,116,139,${dp*.3})`;
+    ctx.fillRect(sx+j*(sz+pad),sy+i*(sz+pad),sz,sz);
+    ctx.fillStyle=`rgba(255,255,255,${dp*.8})`;ctx.textAlign='center';
+    ctx.fillText(v.toFixed(1),sx+j*(sz+pad)+sz/2,sy+i*(sz+pad)+sz/2+3);
+  }
+  ctx.globalAlpha=1;
+  // Top-K highlight
+  if(p>.4){
+    const tp=easeInOut((p-.4)/.3);
+    ctx.globalAlpha=tp;
+    // Highlight top-1 for each row
+    for(let i=0;i<N;i++){
+      ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+      ctx.strokeRect(sx+i*(sz+pad),sy+i*(sz+pad),sz,sz);
+    }
+    ctx.globalAlpha=1;
+  }
+  // R@K results
+  if(p>.65){
+    const rp=easeInOut((p-.65)/.35);
+    ctx.globalAlpha=rp;
+    const ry=sy+N*(sz+pad)+20;
+    ctx.font='bold 14px PingFang SC';ctx.fillStyle='#F59E0B';ctx.textAlign='center';
+    ctx.fillText('Recall@K 结果',cx,ry);
+    const metrics=[{k:'R@1',v:'45.2%',color:'#EF4444'},{k:'R@5',v:'78.6%',color:'#F59E0B'},{k:'R@10',v:'89.1%',color:'#00B894'}];
+    const bw=80,bgap=20,bsx=cx-(3*bw+2*bgap)/2;
+    for(let i=0;i<3;i++){
+      const m=metrics[i],x=bsx+i*(bw+bgap);
+      ctx.fillStyle=m.color+'22';ctx.strokeStyle=m.color;ctx.lineWidth=1.5;
+      drawRR(x,ry+12,bw,40,8);ctx.fill();ctx.stroke();
+      ctx.fillStyle=m.color;ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(m.k,x+bw/2,ry+28);
+      ctx.font='bold 14px Courier New';
+      ctx.fillText(m.v,x+bw/2,ry+45);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(()=>{const idx=i;return()=>{currentStep=idx;updateUI();startAnim()}})();d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v02 Vision Encoder - 代码可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(108,92,231,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--primary),var(--blue)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--primary),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(108,92,231,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:14px; color:var(--warn); text-align:left; line-height:1.8; white-space:pre-wrap; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(108,92,231,.5); background:rgba(108,92,231,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(108,92,231,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(108,92,231,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">v02</span>
+  <h1>Vision Encoder (ViT)</h1>
+  <span class="tag">代码可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/5</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'PatchEmbedding 的 Conv2d 等价实现',
+    desc: '<strong>Conv2d(in_channels, d_model, kernel_size=P, stride=P)</strong> 是实现 Patch Embedding 的巧妙方式。<br><br>当 kernel_size = stride = patch_size 时，卷积核恰好在图像上<strong>不重叠地滑动</strong>，每次覆盖一个 patch 区域。<br><br>卷积输出的每个空间位置就对应一个 patch 的 embedding。这比手动切分 + reshape + 线性投影更高效。<br><br>输出 shape: [B, d_model, H/P, W/P]，再 flatten + transpose 得到 [B, num_patches, d_model]。',
+    formula: 'self.projection = nn.Conv2d(\n    in_channels,    # 3 (RGB)\n    d_model,         # 128\n    kernel_size=patch_size,  # 4\n    stride=patch_size        # 4 (不重叠)\n)\n# [B,3,32,32] → [B,128,8,8]\n# .flatten(2).transpose(1,2) → [B,64,128]' },
+  { title: 'ViT.__init__ 组件初始化',
+    desc: 'ViT 的构造函数初始化四个核心组件：<br><br>① <strong>patch_embed</strong>: PatchEmbedding 层<br>② <strong>cls_token</strong>: 可学习的 [CLS] 参数，shape [1,1,d_model]，初始化为 N(0,0.02)<br>③ <strong>pos_embed</strong>: 可学习位置编码，shape [1, num_patches+1, d_model]<br>④ <strong>encoder</strong>: N 层 TransformerEncoderLayer，使用 Pre-Norm (norm_first=True)<br>⑤ <strong>norm + head</strong>: 最终 LayerNorm + Linear 分类头<br><br>权重初始化使用 <strong>truncated normal (std=0.02)</strong>。',
+    formula: 'self.cls_token = nn.Parameter(\n    torch.randn(1, 1, d_model) * 0.02\n)\nself.pos_embed = nn.Parameter(\n    torch.randn(1, num_patches+1, d_model) * 0.02\n)\nself.encoder = TransformerEncoder(\n    TransformerEncoderLayer(d_model, n_heads,\n        d_ff, norm_first=True),\n    num_layers=n_layers\n)' },
+  { title: 'ViT.forward 数据流',
+    desc: 'forward 方法的完整数据流：<br><br>① <strong>patch_embed(x)</strong>: 图像→patch tokens<br>② <strong>cls_token.expand(B,-1,-1)</strong>: 将 CLS 广播到 batch 维<br>③ <strong>torch.cat([cls, x], dim=1)</strong>: 拼接 CLS 到序列头部<br>④ <strong>x + pos_embed</strong>: 加位置编码<br>⑤ <strong>pos_drop(x)</strong>: Dropout 正则化<br>⑥ <strong>encoder(x)</strong>: N 层 Transformer<br>⑦ <strong>norm(x[:,0])</strong>: 取 CLS 输出并归一化<br>⑧ <strong>head(x)</strong>: 线性分类<br><br>关键点：expand 用于广播（不复制内存），cat 拼接后序列长度 +1。',
+    formula: 'def forward(self, x):  # [B,3,32,32]\n    x = self.patch_embed(x)        # [B,64,D]\n    cls = self.cls_token.expand(B,-1,-1)\n    x = torch.cat([cls, x], dim=1) # [B,65,D]\n    x = x + self.pos_embed         # [B,65,D]\n    x = self.pos_drop(x)\n    x = self.encoder(x)            # [B,65,D]\n    x = self.norm(x[:, 0])         # [B,D]\n    return self.head(x)            # [B,C]' },
+  { title: '分类头：[CLS] → Linear → logits',
+    desc: '分类过程非常简洁：<br><br>① 取 Encoder 输出的<strong>第 0 个 token</strong>（即 [CLS]）: x[:, 0] → [B, d_model]<br><br>② 通过 <strong>LayerNorm</strong> 归一化：稳定数值<br><br>③ 通过 <strong>Linear(d_model, num_classes)</strong> 映射到类别数<br><br>为什么用 [CLS] 而不是所有 token 的平均？因为 [CLS] 在训练过程中学会了<strong>聚合全局信息</strong>，是 ViT 的标准做法（源自 BERT）。<br><br>输出 logits 可以直接用于 CrossEntropyLoss。',
+    formula: '# 取 [CLS] 输出\ncls_output = x[:, 0]        # [B, d_model]\ncls_output = self.norm(cls_output)\n\n# 分类\nlogits = self.head(cls_output)  # [B, num_classes]\n# → 直接送入 CrossEntropyLoss' },
+  { title: '训练循环：图像分类标准流程',
+    desc: '完整的 ViT 图像分类训练循环：<br><br>① <strong>数据增强</strong>: RandomCrop + RandomHorizontalFlip<br>② <strong>前向传播</strong>: logits = model(images)<br>③ <strong>计算损失</strong>: loss = CrossEntropyLoss(logits, labels)<br>④ <strong>反向传播</strong>: loss.backward()<br>⑤ <strong>梯度裁剪</strong>: clip_grad_norm_(1.0) 防止梯度爆炸<br>⑥ <strong>优化器更新</strong>: AdamW + CosineAnnealingLR<br><br>在 CIFAR-10 上，这个 Mini ViT 可以达到 ~75% 准确率。',
+    formula: 'for images, labels in dataloader:\n    logits = model(images)         # 前向\n    loss = F.cross_entropy(logits, labels)\n    optimizer.zero_grad()\n    loss.backward()                # 反向\n    nn.utils.clip_grad_norm_(\n        model.parameters(), 1.0)   # 裁剪\n    optimizer.step()\n    scheduler.step()' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+function drawCodeBox(x,y,w,h,lines,color,alpha){
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle='rgba(26,31,46,.9)'; ctx.strokeStyle=color+'66';
+  drawRoundRect(x,y,w,h,10); ctx.fill(); ctx.stroke();
+  ctx.font='12px Courier New'; ctx.textAlign='left';
+  lines.forEach((line,i)=>{
+    ctx.fillStyle=line.color||color;
+    ctx.fillText(line.text,x+12,y+20+i*18);
+  });
+  ctx.globalAlpha=1;
+}
+
+// Step 0: Conv2d equivalence
+function renderStep0(p) {
+  const cx=W/2, topY=25;
+  // Show image grid
+  const p1=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=p1;
+  const imgSz=120, imgX=40, imgY=topY+20;
+  ctx.strokeStyle='rgba(108,92,231,.6)'; ctx.lineWidth=2;
+  ctx.strokeRect(imgX,imgY,imgSz,imgSz);
+  ctx.fillStyle='rgba(108,92,231,.08)';
+  ctx.fillRect(imgX,imgY,imgSz,imgSz);
+  ctx.font='12px PingFang SC'; ctx.textAlign='center'; ctx.fillStyle='#6C5CE7';
+  ctx.fillText('[B,3,32,32]',imgX+imgSz/2,imgY-8);
+  // Show grid lines for patches
+  for(let i=1;i<8;i++){
+    ctx.strokeStyle='rgba(108,92,231,.2)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(imgX+i*imgSz/8,imgY); ctx.lineTo(imgX+i*imgSz/8,imgY+imgSz); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(imgX,imgY+i*imgSz/8); ctx.lineTo(imgX+imgSz,imgY+i*imgSz/8); ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+
+  // Conv2d kernel sliding animation
+  if(p>.2){
+    const kp=easeInOut((p-.2)/.3);
+    const kernelPos=Math.floor(kp*7);
+    const ki=Math.floor(kernelPos/3), kj=kernelPos%3;
+    const ks=imgSz/8;
+    ctx.globalAlpha=.6;
+    ctx.fillStyle='rgba(249,158,11,.3)'; ctx.strokeStyle='#F59E0B'; ctx.lineWidth=2;
+    ctx.fillRect(imgX+kj*ks,imgY+ki*ks,ks,ks);
+    ctx.strokeRect(imgX+kj*ks,imgY+ki*ks,ks,ks);
+    ctx.globalAlpha=1;
+    ctx.font='10px PingFang SC'; ctx.fillStyle='#F59E0B'; ctx.textAlign='center';
+    ctx.fillText('kernel=stride=4',imgX+imgSz/2,imgY+imgSz+15);
+  }
+
+  // Arrow
+  const p2=easeInOut(Math.max(0,Math.min(1,(p-.4)/.2)));
+  if(p2>0){
+    ctx.globalAlpha=p2; ctx.strokeStyle='#F59E0B'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(imgX+imgSz+15,imgY+imgSz/2);
+    ctx.lineTo(imgX+imgSz+55,imgY+imgSz/2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(imgX+imgSz+50,imgY+imgSz/2-5);
+    ctx.lineTo(imgX+imgSz+57,imgY+imgSz/2);
+    ctx.lineTo(imgX+imgSz+50,imgY+imgSz/2+5); ctx.stroke();
+    ctx.fillStyle='#F59E0B'; ctx.font='11px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText('Conv2d',imgX+imgSz+35,imgY+imgSz/2-10);
+    ctx.globalAlpha=1;
+  }
+
+  // Output feature map
+  const p3=easeInOut(Math.max(0,Math.min(1,(p-.55)/.25)));
+  if(p3>0){
+    const outX=imgX+imgSz+65, outY=imgY+10;
+    ctx.globalAlpha=p3;
+    ctx.fillStyle='rgba(0,184,148,.1)'; ctx.strokeStyle='rgba(0,184,148,.6)'; ctx.lineWidth=2;
+    ctx.strokeRect(outX,outY,100,100);
+    ctx.fillRect(outX,outY,100,100);
+    for(let i=1;i<8;i++){
+      ctx.strokeStyle='rgba(0,184,148,.2)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(outX+i*100/8,outY); ctx.lineTo(outX+i*100/8,outY+100); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(outX,outY+i*100/8); ctx.lineTo(outX+100,outY+i*100/8); ctx.stroke();
+    }
+    ctx.font='12px PingFang SC'; ctx.textAlign='center'; ctx.fillStyle='#00B894';
+    ctx.fillText('[B,128,8,8]',outX+50,outY-8);
+    ctx.globalAlpha=1;
+  }
+
+  // Final reshape
+  const p4=easeInOut(Math.max(0,Math.min(1,(p-.8)/.2)));
+  if(p4>0){
+    ctx.globalAlpha=p4;
+    const fX=imgX+imgSz+65, fY=imgY+125;
+    ctx.strokeStyle='#00B894'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(fX+50,imgY+112); ctx.lineTo(fX+50,fY); ctx.stroke();
+    ctx.fillStyle='rgba(0,184,148,.15)'; ctx.strokeStyle='rgba(0,184,148,.6)';
+    drawRoundRect(fX-20,fY,140,30,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='12px Courier New'; ctx.textAlign='center';
+    ctx.fillText('[B, 64, 128]',fX+50,fY+20);
+    ctx.font='11px PingFang SC'; ctx.fillStyle='#94A3B8';
+    ctx.fillText('flatten + transpose',fX+50,fY+48);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: ViT.__init__ components
+function renderStep1(p) {
+  const cx=W/2, topY=15;
+  const bw=180, bh=42, gap=12;
+  const components=[
+    {label:'patch_embed',sub:'PatchEmbedding',color:'#6C5CE7',t:0},
+    {label:'cls_token',sub:'nn.Parameter [1,1,D]',color:'#00B894',t:.12},
+    {label:'pos_embed',sub:'nn.Parameter [1,65,D]',color:'#F59E0B',t:.24},
+    {label:'encoder',sub:'N × TransformerEncoderLayer',color:'#0984E3',t:.36},
+    {label:'norm',sub:'LayerNorm(d_model)',color:'#94A3B8',t:.50},
+    {label:'head',sub:'Linear(d_model, n_cls)',color:'#EF4444',t:.62},
+  ];
+
+  let y=topY;
+  ctx.textAlign='center';
+  for(const comp of components){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-comp.t)/.15)));
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=comp.color+'1A'; ctx.strokeStyle=comp.color+'99'; ctx.lineWidth=1.5;
+    drawRoundRect(cx-bw/2,y,bw,bh,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=comp.color; ctx.font='bold 13px Courier New';
+    ctx.fillText(comp.label,cx,y+17);
+    ctx.font='11px PingFang SC'; ctx.fillStyle=comp.color+'BB';
+    ctx.fillText(comp.sub,cx,y+34);
+    // Connection line
+    if(y>topY && sp>.5){
+      ctx.strokeStyle=comp.color+'33'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,y); ctx.lineTo(cx,y-gap); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=bh+gap;
+  }
+
+  // Init weights note
+  if(p>.8){
+    const np=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=np; ctx.font='13px PingFang SC'; ctx.fillStyle='#F59E0B';
+    ctx.fillText('权重初始化: trunc_normal_(std=0.02)',cx,y+10);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: ViT.forward data flow
+function renderStep2(p) {
+  const cx=W/2, topY=10;
+  const bw=220, bh=28, gap=6;
+  const drawBox=(x,y,label,color,alpha)=>{
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=color+'1A'; ctx.strokeStyle=color; ctx.lineWidth=1.5;
+    drawRoundRect(x-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=color; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText(label,x,y+18);
+    ctx.globalAlpha=1;
+  };
+
+  const flow=[
+    {label:'x = patch_embed(x)',color:'#6C5CE7',t:0},
+    {label:'cls = cls_token.expand(B,-1,-1)',color:'#00B894',t:.08},
+    {label:'x = cat([cls, x], dim=1)',color:'#00B894',t:.16},
+    {label:'x = x + pos_embed',color:'#F59E0B',t:.24},
+    {label:'x = pos_drop(x)',color:'#64748B',t:.32},
+    {label:'x = encoder(x)',color:'#0984E3',t:.42},
+    {label:'x = norm(x[:, 0])',color:'#F59E0B',t:.55},
+    {label:'logits = head(x)',color:'#EF4444',t:.68},
+  ];
+
+  const shapes=[
+    '[B,64,D]','[1,1,D]→[B,1,D]','[B,65,D]','[B,65,D]','[B,65,D]','[B,65,D]','[B,D]','[B,C]'
+  ];
+
+  let y=topY;
+  for(let i=0;i<flow.length;i++){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-flow[i].t)/.12)));
+    drawBox(cx-30,y,flow[i].label,flow[i].color,sp);
+    // Shape annotation
+    ctx.globalAlpha=sp; ctx.font='10px Courier New'; ctx.fillStyle='#94A3B8'; ctx.textAlign='left';
+    ctx.fillText('→ '+shapes[i],cx-30+bw/2+8,y+18);
+    ctx.globalAlpha=1;
+    if(i<flow.length-1 && sp>.5){
+      ctx.strokeStyle=flow[i].color+'44'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx-30,y+bh); ctx.lineTo(cx-30,y+bh+gap); ctx.stroke();
+    }
+    y+=bh+gap;
+  }
+
+  // Highlight current flowing data
+  if(p>.8){
+    const pp=((p-.8)/.2)*flow.length;
+    const idx=Math.floor(pp)%flow.length;
+    const hy=topY+idx*(bh+gap);
+    ctx.globalAlpha=.15; ctx.fillStyle='#fff';
+    drawRoundRect(cx-30-bw/2-3,hy-3,bw+6,bh+6,10); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Classification head
+function renderStep3(p) {
+  const cx=W/2, topY=30;
+
+  // Encoder output
+  const p1=easeInOut(Math.min(1,p/.25));
+  ctx.globalAlpha=p1;
+  const seqW=280, tokW=seqW/10, tokH=60;
+  const sx=cx-seqW/2, sy=topY;
+  for(let i=0;i<10;i++){
+    const isClS=i===0;
+    ctx.fillStyle=isClS?'rgba(0,184,148,.25)':'rgba(108,92,231,.15)';
+    ctx.strokeStyle=isClS?'#00B894':'rgba(108,92,231,.4)';
+    ctx.lineWidth=isClS?2:1;
+    drawRoundRect(sx+i*tokW+1,sy,tokW-2,tokH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=isClS?'#00B894':'#94A3B8';
+    ctx.font=isClS?'bold 10px Courier New':'10px Courier New'; ctx.textAlign='center';
+    ctx.fillText(isClS?'CLS':'P'+(i-1),sx+i*tokW+tokW/2,sy+tokH/2+3);
+  }
+  ctx.font='13px PingFang SC'; ctx.fillStyle='#94A3B8'; ctx.textAlign='center';
+  ctx.fillText('Encoder 输出 [B, 65, d_model]',cx,sy-10);
+  ctx.globalAlpha=1;
+
+  // Arrow: extract CLS
+  const p2=easeInOut(Math.max(0,Math.min(1,(p-.3)/.2)));
+  if(p2>0){
+    ctx.globalAlpha=p2;
+    ctx.strokeStyle='#00B894'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(sx+tokW/2,sy+tokH+5); ctx.lineTo(sx+tokW/2,sy+tokH+35); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx+tokW/2-4,sy+tokH+30); ctx.lineTo(sx+tokW/2,sy+tokH+37); ctx.lineTo(sx+tokW/2+4,sy+tokH+30); ctx.stroke();
+    ctx.font='12px PingFang SC'; ctx.fillStyle='#00B894';
+    ctx.fillText('x[:, 0]  取第 0 个 token',cx,sy+tokH+25);
+    ctx.globalAlpha=1;
+  }
+
+  // CLS output box
+  const p3=easeInOut(Math.max(0,Math.min(1,(p-.5)/.2)));
+  if(p3>0){
+    const clsY=sy+tokH+45;
+    ctx.globalAlpha=p3;
+    ctx.fillStyle='rgba(0,184,148,.2)'; ctx.strokeStyle='#00B894'; ctx.lineWidth=2;
+    drawRoundRect(cx-80,clsY,160,35,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='13px Courier New'; ctx.textAlign='center';
+    ctx.fillText('[B, d_model]',cx,clsY+22);
+    ctx.globalAlpha=1;
+
+    // LayerNorm
+    const p4=easeInOut(Math.max(0,Math.min(1,(p-.6)/.15)));
+    if(p4>0){
+      ctx.globalAlpha=p4;
+      ctx.strokeStyle='#F59E0B55'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,clsY+35); ctx.lineTo(cx,clsY+55); ctx.stroke();
+      ctx.fillStyle='rgba(249,158,11,.15)'; ctx.strokeStyle='#F59E0B';
+      drawRoundRect(cx-60,clsY+55,120,28,8); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#F59E0B'; ctx.font='12px PingFang SC';
+      ctx.fillText('LayerNorm',cx,clsY+74);
+      ctx.globalAlpha=1;
+    }
+
+    // Linear head
+    const p5=easeInOut(Math.max(0,Math.min(1,(p-.75)/.15)));
+    if(p5>0){
+      const headY=clsY+95;
+      ctx.globalAlpha=p5;
+      ctx.strokeStyle='#EF444455'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,clsY+83); ctx.lineTo(cx,headY); ctx.stroke();
+      ctx.fillStyle='rgba(239,68,68,.15)'; ctx.strokeStyle='#EF4444';
+      drawRoundRect(cx-80,headY,160,35,10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#EF4444'; ctx.font='13px Courier New';
+      ctx.fillText('[B, num_classes]',cx,headY+22);
+      ctx.font='12px PingFang SC'; ctx.fillStyle='#EF4444';
+      ctx.fillText('Linear(d_model, num_classes)',cx,headY+50);
+      ctx.globalAlpha=1;
+    }
+  }
+}
+
+// Step 4: Training loop
+function renderStep4(p) {
+  const cx=W/2, topY=20;
+  const bw=220, bh=35, gap=10;
+  const stages=[
+    {label:'images, labels = batch',icon:'📦',color:'#94A3B8',t:0},
+    {label:'logits = model(images)',icon:'🔮',color:'#6C5CE7',t:.12},
+    {label:'loss = CrossEntropy()',icon:'📉',color:'#EF4444',t:.24},
+    {label:'optimizer.zero_grad()',icon:'🔄',color:'#64748B',t:.36},
+    {label:'loss.backward()',icon:'⬅',color:'#F59E0B',t:.48},
+    {label:'clip_grad_norm_(1.0)',icon:'✂',color:'#10B981',t:.60},
+    {label:'optimizer.step()',icon:'🚀',color:'#0984E3',t:.72},
+    {label:'scheduler.step()',icon:'📊',color:'#00B894',t:.84},
+  ];
+
+  // Draw loop outline
+  const loopX=cx-bw/2-30, loopY=topY-5;
+  const loopH=stages.length*(bh+gap)+20;
+  const lp=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=lp*.3; ctx.strokeStyle='rgba(108,92,231,.3)'; ctx.lineWidth=1;
+  ctx.setLineDash([5,5]);
+  drawRoundRect(loopX,loopY,bw+60,loopH,15); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha=lp; ctx.font='12px PingFang SC'; ctx.fillStyle='#6C5CE7'; ctx.textAlign='left';
+  ctx.fillText('for epoch / for batch:',loopX+10,loopY+14);
+  ctx.globalAlpha=1;
+
+  let y=topY+15;
+  for(const s of stages){
+    const sp=easeInOut(Math.max(0,Math.min(1,(p-s.t)/.12)));
+    ctx.globalAlpha=sp;
+    ctx.fillStyle=s.color+'1A'; ctx.strokeStyle=s.color+'88'; ctx.lineWidth=1.5;
+    drawRoundRect(cx-bw/2,y,bw,bh,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=s.color; ctx.font='12px Courier New'; ctx.textAlign='center';
+    ctx.fillText(s.label,cx,y+22);
+    if(y>topY+15 && sp>.5){
+      ctx.strokeStyle=s.color+'33'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx,y); ctx.lineTo(cx,y-gap); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    y+=bh+gap;
+  }
+}
+
+const renderers = [renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function startAnim() {
+  animProgress=0;
+  const start=performance.now(), duration=2500;
+  function tick(now){
+    animProgress=Math.min(1,(now-start)/duration);
+    render();
+    if(animProgress<1) animId=requestAnimationFrame(tick);
+  }
+  if(animId) cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(tick);
+}
+
+function updateUI() {
+  const s=steps[currentStep];
+  document.getElementById('stepTitle').textContent=s.title;
+  document.getElementById('stepDesc').innerHTML=s.desc;
+  const fb=document.getElementById('formulaBox');
+  if(s.formula){ fb.style.display='block'; fb.textContent=s.formula; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  const dotsEl=document.getElementById('dots');
+  dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){
+    const d=document.createElement('span');
+    if(i===currentStep) d.className='active';
+    d.onclick=()=>{ currentStep=i; updateUI(); startAnim(); };
+    dotsEl.appendChild(d);
+  }
+}
+
+function nextStep(){ if(currentStep<steps.length-1){ currentStep++; updateUI(); startAnim(); } }
+function prevStep(){ if(currentStep>0){ currentStep--; updateUI(); startAnim(); } }
+function replay(){ startAnim(); }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight') nextStep();
+  else if(e.key==='ArrowLeft') prevStep();
+});
+
+resize(); updateUI(); startAnim();
+</script>
+</body>
+</html>

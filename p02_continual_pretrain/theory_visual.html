@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p02 继续预训练 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+  --orange: #F97316; --pink: #EC4899;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(249,115,22,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(249,115,22,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--orange),var(--danger)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(249,115,22,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--orange),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(249,115,22,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; white-space:pre-line; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(249,115,22,.5); background:rgba(249,115,22,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(249,115,22,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(249,115,22,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p02</span>
+  <h1>继续预训练</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/5</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: 'CLM 因果语言模型目标',
+    desc: '继续预训练的核心目标是 <strong>Causal Language Modeling (CLM)</strong>：<br><br>给定一个 token 序列 x₁, x₂, ..., xₙ，模型学习预测<strong>下一个 token</strong>：<br><br>• 输入: [x₁, x₂, ..., xₙ₋₁]<br>• 目标: [x₂, x₃, ..., xₙ]<br><br>通过<strong>因果注意力掩码</strong>，每个 token 只能看到自己和前面的 token，不能"偷看"后面的内容。<br><br>这与 BERT 的 MLM（随机掩码）不同，CLM 保持了自回归生成的一致性。',
+    formula: 'CLM 目标函数:\nL = -∑ᵢ log P(xᵢ | x₁, x₂, ..., xᵢ₋₁)\n\n移位实现:\n  input_ids:  [x₁, x₂, x₃, x₄, x₅]\n  labels:     [x₂, x₃, x₄, x₅, EOS]' },
+  { title: 'Packing vs Padding 策略对比',
+    desc: '数据处理的两种策略直接影响训练效率：<br><br><strong>Padding 模式</strong>:<br>• 每条数据独立 tokenize，短文本补 pad<br>• pad 部分<strong>不参与 loss</strong>但占用显存和算力<br>• 文本越短，浪费越严重<br><br><strong>Packing 模式（推荐）</strong>:<br>• 多条短文本拼接为固定长度的长序列<br>• 几乎没有浪费，效率接近 100%<br>• 用 EOS 分隔不同文档<br><br>对于平均 200 tokens、max_length=512 的场景，Packing 比 Padding 效率提升 <strong>2-3 倍</strong>。',
+    formula: 'Padding 效率 ≈ avg_length / max_length\n  = 200 / 512 ≈ 39%\n\nPacking 效率 ≈ 100% (拼满即可)\n\n效率提升 = 100% / 39% ≈ 2.56×' },
+  { title: '学习率调度策略',
+    desc: '继续预训练常用三种<strong>学习率调度</strong>策略：<br><br>1. <strong>Cosine</strong>（推荐）: 余弦衰减，平滑下降<br>   • 开始快速学习，后期精细调整<br>   • 最终 lr 衰减到初始值的 ~10%<br><br>2. <strong>Linear</strong>: 线性衰减，简单直接<br>   • 匀速下降到 0<br><br>3. <strong>Warmup + Constant</strong>: 预热后保持恒定<br>   • 适合短期训练<br><br>所有策略都需要 <strong>Warmup</strong> 阶段（前 5%），避免初期梯度过大导致训练不稳定。',
+    formula: 'Cosine Scheduler:\n  lr(t) = lr_min + 0.5(lr_max - lr_min)(1 + cos(πt/T))\n\nWarmup 阶段 (前 5%):\n  lr(t) = lr_max × (t / warmup_steps)\n\n推荐: lr=2e-5, warmup_ratio=0.05' },
+  { title: 'Gradient Checkpointing 梯度检查点',
+    desc: '<strong>用时间换空间</strong>的经典显存优化技巧：<br><br><strong>正常训练</strong>：前向传播时保存每层的激活值<br>• 显存 ∝ L（层数）<br>• 24 层模型需要保存 24 层激活<br><br><strong>Gradient Checkpointing</strong>：只保存部分层的激活<br>• 显存 ∝ √L<br>• 反向传播时重新计算丢弃的激活<br>• 速度代价约 30%<br><br>对 Qwen2.5-0.5B（24 层）：<br>• 无 GC: 保存 24 层 → ~0.82 GB 激活值<br>• 有 GC: 保存 ~5 层 → ~0.17 GB 激活值<br><br>节省约 <strong>80%</strong> 的激活值显存！',
+    formula: '无 Checkpointing:\n  激活显存 ∝ B × S × H × L\n  = 4 × 512 × 896 × 24 ≈ 0.82 GB\n\n有 Checkpointing:\n  激活显存 ∝ B × S × H × √L\n  = 4 × 512 × 896 × √24 ≈ 0.17 GB\n\n速度代价 ≈ 30%' },
+  { title: 'Catastrophic Forgetting 灾难性遗忘',
+    desc: '继续预训练的最大风险：<strong>灾难性遗忘</strong>。<br><br>模型在学习新知识时，可能<strong>覆盖</strong>已有的通用能力：<br><br>• <strong>遗忘现象</strong>: 中文预训练后，英文能力下降<br>• <strong>过拟合</strong>: 在小数据集上重复训练导致多样性丧失<br><br>缓解策略：<br>1. <strong>小学习率</strong>: lr=2e-5（比 SFT 的 5e-5 更小）<br>2. <strong>少训练轮数</strong>: 1-3 epochs 即可<br>3. <strong>数据混合</strong>: 混入通用数据保持原有能力<br>4. <strong>LoRA</strong>: 只更新少量参数，减少遗忘风险<br>5. <strong>正则化</strong>: L2 weight decay 防止参数偏移过大',
+    formula: '遗忘缓解策略对比:\n\n全参 + 小lr:  新知识 ★★★★  遗忘风险 ★★★\nLoRA r=64:    新知识 ★★★   遗忘风险 ★★\n数据混合:     新知识 ★★★   遗忘风险 ★\n\n推荐: 小lr + 少epoch + 数据混合' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+function drawArrow(x1,y1,x2,y2,color,width){
+  ctx.strokeStyle=color; ctx.lineWidth=width||1.5;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  const angle=Math.atan2(y2-y1,x2-x1);
+  const hl=8;
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-hl*Math.cos(angle-Math.PI/6),y2-hl*Math.sin(angle-Math.PI/6));
+  ctx.lineTo(x2-hl*Math.cos(angle+Math.PI/6),y2-hl*Math.sin(angle+Math.PI/6));
+  ctx.closePath(); ctx.fill();
+}
+
+// Step 0: CLM next-token prediction
+function renderStep0(p) {
+  const cx=W/2, cy=H/2-20;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('Causal Language Modeling — 下一个 Token 预测',cx,30);
+
+  const tokens = ['我','喜','欢','学','习','深','度','学'];
+  const boxW=55, boxH=40, gap=8;
+  const startX=cx-(tokens.length*(boxW+gap))/2;
+  const inputY=cy-40, labelY=cy+60;
+
+  // Input row
+  ctx.font='bold 13px PingFang SC'; ctx.textAlign='left';
+  ctx.fillStyle='rgba(108,92,231,.7)';
+  const p0=easeInOut(Math.min(1,p/.2));
+  ctx.globalAlpha=p0;
+  ctx.fillText('Input:',startX-60,inputY+boxH/2+5);
+  ctx.globalAlpha=1;
+
+  for(let i=0;i<tokens.length-1;i++){
+    const delay=i*.08;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=startX+i*(boxW+gap);
+
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='rgba(108,92,231,.2)';
+    ctx.strokeStyle='rgba(108,92,231,.5)';
+    ctx.lineWidth=1.5;
+    drawRoundRect(x,inputY,boxW,boxH,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#C792EA'; ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(tokens[i],x+boxW/2,inputY+boxH/2+6);
+    ctx.globalAlpha=1;
+  }
+
+  // Label row
+  ctx.font='bold 13px PingFang SC'; ctx.textAlign='left';
+  ctx.fillStyle='rgba(0,184,148,.7)';
+  const p1=easeInOut(Math.max(0,(p-.3)/.2));
+  ctx.globalAlpha=p1;
+  ctx.fillText('Label:',startX-60,labelY+boxH/2+5);
+  ctx.globalAlpha=1;
+
+  for(let i=1;i<tokens.length;i++){
+    const delay=.3+i*.08;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=startX+(i-1)*(boxW+gap);
+
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='rgba(0,184,148,.15)';
+    ctx.strokeStyle='rgba(0,184,148,.5)';
+    ctx.lineWidth=1.5;
+    drawRoundRect(x,labelY,boxW,boxH,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#00B894'; ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(tokens[i],x+boxW/2,labelY+boxH/2+6);
+    ctx.globalAlpha=1;
+  }
+
+  // Arrows from input to label
+  if(p>.5){
+    const ap=easeInOut((p-.5)/.2);
+    for(let i=0;i<tokens.length-1;i++){
+      const x=startX+i*(boxW+gap)+boxW/2;
+      ctx.globalAlpha=ap*.5;
+      drawArrow(x,inputY+boxH,x,labelY,`rgba(249,115,22,${ap*.6})`,1.5);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // Causal mask
+  if(p>.7){
+    const mp=easeInOut((p-.7)/.3);
+    ctx.globalAlpha=mp;
+    const maskX=cx-80, maskY=labelY+boxH+30;
+    ctx.font='bold 13px PingFang SC'; ctx.textAlign='center';
+    ctx.fillStyle='rgba(249,115,22,.8)';
+    ctx.fillText('因果注意力掩码 (Causal Mask)',cx,maskY);
+
+    const ms=18, mg=2;
+    const n=5;
+    const mx=cx-n*(ms+mg)/2;
+    for(let r=0;r<n;r++){
+      for(let c=0;c<n;c++){
+        const x=mx+c*(ms+mg), y=maskY+10+r*(ms+mg);
+        if(c<=r){
+          ctx.fillStyle='rgba(0,184,148,.4)';
+          drawRoundRect(x,y,ms,ms,3); ctx.fill();
+          ctx.fillStyle='rgba(0,184,148,.8)'; ctx.font='10px Courier New';
+          ctx.fillText('✓',x+ms/2,y+ms/2+3);
+        } else {
+          ctx.fillStyle='rgba(239,68,68,.15)';
+          drawRoundRect(x,y,ms,ms,3); ctx.fill();
+          ctx.fillStyle='rgba(239,68,68,.4)'; ctx.font='10px Courier New';
+          ctx.fillText('✗',x+ms/2,y+ms/2+3);
+        }
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: Packing vs Padding
+function renderStep1(p) {
+  const cx=W/2;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('Packing vs Padding 数据处理效率对比',cx,30);
+
+  const maxLen=512;
+  const docs=[120,80,200,60,150,90,180,70];
+  const colors=['#6C5CE7','#0984E3','#F97316','#EF4444','#10B981','#EC4899','#F59E0B','#00B894'];
+  const barScale=(W-120)/maxLen;
+
+  // Padding mode
+  const py1=55;
+  const p1=easeInOut(Math.min(1,p/.4));
+  ctx.globalAlpha=p1;
+  ctx.font='bold 14px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.8)'; ctx.textAlign='left';
+  ctx.fillText('Padding 模式 — 每条独立，短的补 pad',20,py1);
+
+  for(let i=0;i<Math.min(docs.length,5);i++){
+    const delay=i*.06;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const y=py1+10+i*28;
+    const docW=docs[i]*barScale*ap;
+    const padW=(maxLen-docs[i])*barScale*ap;
+
+    ctx.globalAlpha=ap*.8;
+    // doc part
+    ctx.fillStyle=colors[i];
+    drawRoundRect(60,y,docW,20,4); ctx.fill();
+    // pad part
+    ctx.fillStyle='rgba(100,116,139,.2)';
+    drawRoundRect(60+docW,y,padW,20,4); ctx.fill();
+    // striped pattern for pad
+    ctx.strokeStyle='rgba(100,116,139,.3)'; ctx.lineWidth=0.5;
+    for(let s=60+docW;s<60+docW+padW;s+=6){
+      ctx.beginPath(); ctx.moveTo(s,y); ctx.lineTo(s+10,y+20); ctx.stroke();
+    }
+
+    ctx.font='10px Courier New'; ctx.fillStyle='rgba(255,255,255,.5)'; ctx.textAlign='left';
+    ctx.fillText(docs[i]+'t',62,y+14);
+    if(padW>30){
+      ctx.fillStyle='rgba(239,68,68,.5)'; ctx.textAlign='center';
+      ctx.fillText('pad',60+docW+padW/2,y+14);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // Efficiency bar for padding
+  if(p>.35){
+    const ep=easeInOut((p-.35)/.15);
+    ctx.globalAlpha=ep;
+    const ey=py1+10+5*28+5;
+    const avgEff=docs.slice(0,5).reduce((a,b)=>a+b,0)/(5*maxLen);
+    ctx.fillStyle='rgba(239,68,68,.3)';
+    drawRoundRect(60,ey,(W-120)*avgEff,16,3); ctx.fill();
+    ctx.font='bold 11px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.8)'; ctx.textAlign='left';
+    ctx.fillText('效率: '+(avgEff*100).toFixed(0)+'%',65+(W-120)*avgEff,ey+12);
+    ctx.globalAlpha=1;
+  }
+
+  // Packing mode
+  const py2=py1+10+6*28+15;
+  const p2=easeInOut(Math.max(0,(p-.45)/.4));
+  ctx.globalAlpha=p2;
+  ctx.font='bold 14px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.8)'; ctx.textAlign='left';
+  ctx.fillText('Packing 模式 — 多条拼接，几乎无浪费',20,py2);
+
+  // Pack docs into rows of 512
+  let packRows=[], cur=[], curLen=0;
+  for(let i=0;i<docs.length;i++){
+    if(curLen+docs[i]>maxLen){ packRows.push({segs:cur,total:curLen}); cur=[]; curLen=0; }
+    cur.push({len:docs[i],ci:i}); curLen+=docs[i];
+  }
+  if(cur.length) packRows.push({segs:cur,total:curLen});
+
+  for(let r=0;r<packRows.length;r++){
+    const delay=.45+r*.1;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const y=py2+10+r*28;
+    let xOff=60;
+    ctx.globalAlpha=ap*.8;
+    for(let s=0;s<packRows[r].segs.length;s++){
+      const seg=packRows[r].segs[s];
+      const sw=seg.len*barScale;
+      ctx.fillStyle=colors[seg.ci];
+      drawRoundRect(xOff,y,sw,20,4); ctx.fill();
+      // EOS separator
+      if(s<packRows[r].segs.length-1){
+        ctx.fillStyle='rgba(249,115,22,.6)';
+        ctx.fillRect(xOff+sw,y,2,20);
+      }
+      ctx.font='10px Courier New'; ctx.fillStyle='rgba(255,255,255,.5)'; ctx.textAlign='left';
+      ctx.fillText(seg.len+'t',xOff+3,y+14);
+      xOff+=sw+2;
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // Efficiency bar for packing
+  if(p>.8){
+    const ep=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=ep;
+    const ey=py2+10+packRows.length*28+5;
+    ctx.fillStyle='rgba(0,184,148,.3)';
+    drawRoundRect(60,ey,(W-120)*.97,16,3); ctx.fill();
+    ctx.font='bold 11px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.8)'; ctx.textAlign='left';
+    ctx.fillText('效率: ~97%',(W-120)*.97+70,ey+12);
+
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.9)'; ctx.textAlign='center';
+    ctx.fillText('Packing 效率提升 ~2.5×',cx,ey+35);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: Learning rate schedules
+function renderStep2(p) {
+  const cx=W/2;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('学习率调度策略 — Warmup + Decay',cx,25);
+
+  const padL=70, padR=30, padT=50, padB=60;
+  const gW=W-padL-padR, gH=H-padT-padB;
+  const totalSteps=1000;
+  const warmupSteps=50;
+  const lrMax=2e-5;
+
+  // Axes
+  const ap0=easeInOut(Math.min(1,p/.15));
+  ctx.globalAlpha=ap0;
+  ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(padL,padT); ctx.lineTo(padL,padT+gH); ctx.lineTo(padL+gW,padT+gH); ctx.stroke();
+  ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.4)'; ctx.textAlign='center';
+  ctx.fillText('训练步数',padL+gW/2,padT+gH+35);
+  ctx.save(); ctx.translate(15,padT+gH/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('学习率',0,0); ctx.restore();
+  ctx.font='10px Courier New';
+  ctx.fillText('0',padL,padT+gH+15);
+  ctx.fillText(totalSteps+'',padL+gW,padT+gH+15);
+  ctx.textAlign='right';
+  ctx.fillText('2e-5',padL-5,padT+8);
+  ctx.fillText('0',padL-5,padT+gH+4);
+  ctx.globalAlpha=1;
+
+  // Warmup region
+  const warmupX=padL+(warmupSteps/totalSteps)*gW;
+  if(p>.1){
+    const wp=easeInOut((p-.1)/.1);
+    ctx.globalAlpha=wp*.15;
+    ctx.fillStyle='#F59E0B';
+    ctx.fillRect(padL,padT,warmupX-padL,gH);
+    ctx.globalAlpha=wp*.6;
+    ctx.font='10px PingFang SC'; ctx.textAlign='center'; ctx.fillStyle='#F59E0B';
+    ctx.fillText('warmup',padL+(warmupX-padL)/2,padT+gH+15);
+    ctx.globalAlpha=1;
+  }
+
+  const schedules=[
+    {name:'Cosine (推荐)',color:'#6C5CE7',fn:function(t){
+      if(t<warmupSteps) return lrMax*(t/warmupSteps);
+      const prog=(t-warmupSteps)/(totalSteps-warmupSteps);
+      return lrMax*0.1+0.5*(lrMax-lrMax*0.1)*(1+Math.cos(Math.PI*prog));
+    }},
+    {name:'Linear',color:'#0984E3',fn:function(t){
+      if(t<warmupSteps) return lrMax*(t/warmupSteps);
+      return lrMax*(1-(t-warmupSteps)/(totalSteps-warmupSteps));
+    }},
+    {name:'Constant + Warmup',color:'#F97316',fn:function(t){
+      if(t<warmupSteps) return lrMax*(t/warmupSteps);
+      return lrMax;
+    }}
+  ];
+
+  schedules.forEach(function(sch,si){
+    const delay=.15+si*.2;
+    const drawP=easeInOut(Math.max(0,Math.min(1,(p-delay)/.35)));
+    if(drawP<=0) return;
+
+    ctx.globalAlpha=.9;
+    ctx.strokeStyle=sch.color; ctx.lineWidth=2.5;
+    ctx.beginPath();
+    const maxT=Math.floor(totalSteps*drawP);
+    for(let t=0;t<=maxT;t+=2){
+      const x=padL+(t/totalSteps)*gW;
+      const y=padT+gH-(sch.fn(t)/lrMax)*gH;
+      if(t===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+
+    // Label
+    if(drawP>.8){
+      const lp=easeInOut((drawP-.8)/.2);
+      ctx.globalAlpha=lp;
+      const labelT=totalSteps*0.7;
+      const lx=padL+(labelT/totalSteps)*gW;
+      const ly=padT+gH-(sch.fn(labelT)/lrMax)*gH;
+      ctx.fillStyle=sch.color; ctx.font='bold 12px PingFang SC'; ctx.textAlign='left';
+      ctx.fillText(sch.name,lx+8,ly-5+si*18);
+    }
+    ctx.globalAlpha=1;
+  });
+
+  // Highlight cosine
+  if(p>.9){
+    const hp=easeInOut((p-.9)/.1);
+    ctx.globalAlpha=hp;
+    ctx.strokeStyle='rgba(108,92,231,.4)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
+    drawRoundRect(padL+gW*.55,padT-5,gW*.45+padR,35,8); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='rgba(108,92,231,.8)'; ctx.font='bold 11px PingFang SC'; ctx.textAlign='right';
+    ctx.fillText('← 推荐 Cosine！',padL+gW+padR-5,padT+15);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: Gradient Checkpointing
+function renderStep3(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('Gradient Checkpointing: 用时间换空间',W/2,30);
+
+  const L=12;
+  const layerW=Math.min(50,(W-80)/L-6), layerH=32, gap=5;
+  const sx=W/2-L*(layerW+gap)/2;
+
+  // Without GC
+  const y1=60;
+  ctx.font='bold 13px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.8)'; ctx.textAlign='left';
+  const pa=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=pa;
+  ctx.fillText('无 Checkpointing — 保存全部 12 层激活值',20,y1);
+
+  for(let i=0;i<L;i++){
+    const delay=i*.04;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const x=sx+i*(layerW+gap);
+    ctx.globalAlpha=ap;
+    // layer box
+    ctx.fillStyle='rgba(239,68,68,.25)'; ctx.strokeStyle='rgba(239,68,68,.5)'; ctx.lineWidth=1;
+    drawRoundRect(x,y1+8,layerW,layerH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.6)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+    ctx.fillText('L'+i,x+layerW/2,y1+8+layerH/2+3);
+    // memory bar below
+    ctx.fillStyle='rgba(239,68,68,.4)';
+    drawRoundRect(x,y1+8+layerH+4,layerW,10,3); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  // Memory label
+  if(p>.3){
+    const mp=easeInOut((p-.3)/.1);
+    ctx.globalAlpha=mp;
+    ctx.font='bold 12px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.7)'; ctx.textAlign='right';
+    ctx.fillText('显存: 12 层全保存 ≈ 0.82 GB',W-20,y1+8+layerH+14);
+    ctx.globalAlpha=1;
+  }
+
+  // With GC
+  const y2=y1+layerH+45;
+  const p2=easeInOut(Math.max(0,(p-.4)/.3));
+  ctx.globalAlpha=p2;
+  ctx.font='bold 13px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.8)'; ctx.textAlign='left';
+  ctx.fillText('有 Checkpointing — 只保存 √12 ≈ 3 个检查点',20,y2);
+
+  const checkpoints=[0,4,8,11];
+  for(let i=0;i<L;i++){
+    const isCp=checkpoints.includes(i);
+    const x=sx+i*(layerW+gap);
+    ctx.fillStyle=isCp?'rgba(0,184,148,.25)':'rgba(100,116,139,.1)';
+    ctx.strokeStyle=isCp?'rgba(0,184,148,.5)':'rgba(100,116,139,.25)'; ctx.lineWidth=1;
+    drawRoundRect(x,y2+8,layerW,layerH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=isCp?'rgba(0,184,148,.8)':'rgba(255,255,255,.25)'; ctx.font='10px Courier New'; ctx.textAlign='center';
+    ctx.fillText('L'+i,x+layerW/2,y2+8+layerH/2+3);
+    if(isCp){
+      ctx.fillStyle='rgba(0,184,148,.4)';
+      drawRoundRect(x,y2+8+layerH+4,layerW,10,3); ctx.fill();
+      ctx.font='8px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.7)';
+      ctx.fillText('✓ save',x+layerW/2,y2+8+layerH+12);
+    } else {
+      ctx.font='8px PingFang SC'; ctx.fillStyle='rgba(100,116,139,.4)';
+      ctx.fillText('重算',x+layerW/2,y2+8+layerH+12);
+    }
+  }
+  ctx.globalAlpha=1;
+
+  // Memory label
+  if(p>.65){
+    const mp=easeInOut((p-.65)/.1);
+    ctx.globalAlpha=mp;
+    ctx.font='bold 12px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.7)'; ctx.textAlign='right';
+    ctx.fillText('显存: 仅 4 层 ≈ 0.17 GB (节省 80%)',W-20,y2+8+layerH+14);
+    ctx.globalAlpha=1;
+  }
+
+  // Forward/backward flow
+  if(p>.75){
+    const fp=easeInOut((p-.75)/.25);
+    ctx.globalAlpha=fp;
+    const flowY=y2+layerH+55;
+
+    // Forward pass
+    ctx.font='bold 13px PingFang SC'; ctx.fillStyle='rgba(108,92,231,.8)'; ctx.textAlign='center';
+    ctx.fillText('前向传播 →',W/2,flowY);
+    drawArrow(80,flowY-5,W-80,flowY-5,'rgba(108,92,231,.4)',1.5);
+
+    // Backward pass
+    ctx.fillStyle='rgba(249,115,22,.8)';
+    ctx.fillText('← 反向传播（遇到丢弃的层 → 重新前向计算）',W/2,flowY+25);
+    drawArrow(W-80,flowY+20,80,flowY+20,'rgba(249,115,22,.4)',1.5);
+
+    // Trade-off box
+    const tY=flowY+45;
+    ctx.fillStyle='rgba(249,115,22,.1)'; ctx.strokeStyle='rgba(249,115,22,.3)'; ctx.lineWidth=1;
+    drawRoundRect(W/2-130,tY,260,30,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='rgba(249,115,22,.8)'; ctx.font='bold 12px PingFang SC';
+    ctx.fillText('代价: 速度慢 ~30%，但显存省 ~80%',W/2,tY+20);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Catastrophic Forgetting
+function renderStep4(p) {
+  const cx=W/2, cy=H/2-30;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('Catastrophic Forgetting — 灾难性遗忘与缓解',cx,30);
+
+  // Knowledge bars - before training
+  const barW=160, barH=25, gapY=8;
+  const leftX=cx-barW-80, rightX=cx+80;
+  const startY=60;
+
+  const knowledgeBefore=[
+    {name:'英文能力',val:0.9,color:'#0984E3'},
+    {name:'通用推理',val:0.85,color:'#6C5CE7'},
+    {name:'代码生成',val:0.7,color:'#10B981'},
+    {name:'中文知识',val:0.3,color:'#F97316'},
+    {name:'领域知识',val:0.1,color:'#EC4899'},
+  ];
+
+  const knowledgeAfter=[
+    {name:'英文能力',val:0.5,color:'#0984E3',drop:true},
+    {name:'通用推理',val:0.65,color:'#6C5CE7',drop:true},
+    {name:'代码生成',val:0.55,color:'#10B981',drop:true},
+    {name:'中文知识',val:0.8,color:'#F97316',gain:true},
+    {name:'领域知识',val:0.6,color:'#EC4899',gain:true},
+  ];
+
+  // Before column
+  const pb=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=pb;
+  ctx.font='bold 14px PingFang SC'; ctx.fillStyle='rgba(108,92,231,.8)'; ctx.textAlign='center';
+  ctx.fillText('训练前 (Base Model)',leftX+barW/2,startY);
+
+  knowledgeBefore.forEach(function(k,i){
+    const delay=i*.05;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const y=startY+15+i*(barH+gapY);
+    ctx.globalAlpha=ap;
+    // label
+    ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.5)'; ctx.textAlign='right';
+    ctx.fillText(k.name,leftX-5,y+barH/2+4);
+    // bg
+    ctx.fillStyle='rgba(255,255,255,.05)';
+    drawRoundRect(leftX,y,barW,barH,4); ctx.fill();
+    // bar
+    ctx.fillStyle=k.color+'BB';
+    drawRoundRect(leftX,y,barW*k.val*ap,barH,4); ctx.fill();
+    // value
+    ctx.font='10px Courier New'; ctx.fillStyle='rgba(255,255,255,.6)'; ctx.textAlign='left';
+    ctx.fillText((k.val*100).toFixed(0)+'%',leftX+barW*k.val*ap+5,y+barH/2+4);
+    ctx.globalAlpha=1;
+  });
+
+  // Arrow
+  if(p>.35){
+    const arP=easeInOut((p-.35)/.15);
+    ctx.globalAlpha=arP;
+    ctx.font='bold 20px PingFang SC'; ctx.fillStyle='rgba(249,115,22,.6)'; ctx.textAlign='center';
+    ctx.fillText('→',cx,startY+15+2*(barH+gapY)+barH/2+5);
+    ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(249,115,22,.6)';
+    ctx.fillText('继续预训练',cx,startY+15+2*(barH+gapY)+barH/2+25);
+    ctx.globalAlpha=1;
+  }
+
+  // After column
+  const pa=easeInOut(Math.max(0,(p-.4)/.3));
+  ctx.globalAlpha=pa;
+  ctx.font='bold 14px PingFang SC'; ctx.fillStyle='rgba(249,115,22,.8)'; ctx.textAlign='center';
+  ctx.fillText('训练后 (无缓解措施)',rightX+barW/2,startY);
+
+  knowledgeAfter.forEach(function(k,i){
+    const delay=.4+i*.05;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+    const y=startY+15+i*(barH+gapY);
+    ctx.globalAlpha=ap;
+    ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.5)'; ctx.textAlign='right';
+    ctx.fillText(k.name,rightX-5,y+barH/2+4);
+    ctx.fillStyle='rgba(255,255,255,.05)';
+    drawRoundRect(rightX,y,barW,barH,4); ctx.fill();
+    ctx.fillStyle=k.color+'BB';
+    drawRoundRect(rightX,y,barW*k.val*ap,barH,4); ctx.fill();
+    ctx.font='10px Courier New'; ctx.textAlign='left';
+    if(k.drop){
+      ctx.fillStyle='rgba(239,68,68,.8)';
+      ctx.fillText('↓'+(knowledgeBefore[i].val*100-k.val*100).toFixed(0)+'%',rightX+barW*k.val*ap+5,y+barH/2+4);
+    } else if(k.gain){
+      ctx.fillStyle='rgba(0,184,148,.8)';
+      ctx.fillText('↑'+(k.val*100-knowledgeBefore[i].val*100).toFixed(0)+'%',rightX+barW*k.val*ap+5,y+barH/2+4);
+    }
+    ctx.globalAlpha=1;
+  });
+
+  // Mitigation strategies
+  if(p>.75){
+    const sp=easeInOut((p-.75)/.25);
+    ctx.globalAlpha=sp;
+    const sY=startY+15+5*(barH+gapY)+20;
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.8)'; ctx.textAlign='center';
+    ctx.fillText('缓解策略',cx,sY);
+
+    const strategies=[
+      {icon:'🔽',text:'小学习率 lr=2e-5',c:'#6C5CE7'},
+      {icon:'1️⃣',text:'少 epoch (1~3)',c:'#0984E3'},
+      {icon:'🔀',text:'混入通用数据',c:'#10B981'},
+      {icon:'🔧',text:'LoRA 局部更新',c:'#F97316'},
+      {icon:'⚖️',text:'L2 正则化',c:'#EC4899'},
+    ];
+
+    const boxW=Math.min(110,(W-40)/strategies.length-8), boxH2=40;
+    const totalW=strategies.length*(boxW+8);
+    const bx=cx-totalW/2;
+
+    strategies.forEach(function(s,i){
+      const x=bx+i*(boxW+8);
+      ctx.fillStyle=s.c+'22'; ctx.strokeStyle=s.c+'66'; ctx.lineWidth=1;
+      drawRoundRect(x,sY+10,boxW,boxH2,6); ctx.fill(); ctx.stroke();
+      ctx.font='14px sans-serif'; ctx.textAlign='center';
+      ctx.fillText(s.icon,x+boxW/2,sY+28);
+      ctx.font='10px PingFang SC'; ctx.fillStyle=s.c;
+      ctx.fillText(s.text,x+boxW/2,sY+10+boxH2-5);
+    });
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function animate() {
+  animProgress += .012;
+  if(animProgress > 1.5) animProgress = 1.5;
+  render();
+  animId = requestAnimationFrame(animate);
+}
+
+function goToStep(i) {
+  currentStep = Math.max(0, Math.min(i, steps.length-1));
+  animProgress = 0;
+  document.getElementById('stepTitle').textContent = steps[currentStep].title;
+  document.getElementById('stepDesc').innerHTML = steps[currentStep].desc;
+  const fb = document.getElementById('formulaBox');
+  if(steps[currentStep].formula){ fb.textContent = steps[currentStep].formula; fb.style.display='block'; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent = 'Step '+(currentStep+1)+'/'+steps.length;
+  const dots = document.getElementById('dots');
+  dots.innerHTML = '';
+  for(var j=0;j<steps.length;j++){
+    var s = document.createElement('span');
+    if(j===currentStep) s.className='active';
+    s.onclick = (function(jj){ return function(){ goToStep(jj); }; })(j);
+    dots.appendChild(s);
+  }
+}
+
+function nextStep(){ goToStep(currentStep+1); }
+function prevStep(){ goToStep(currentStep-1); }
+function replay(){ animProgress=0; }
+
+resize();
+goToStep(0);
+animate();
+</script>
+</body>
+</html>

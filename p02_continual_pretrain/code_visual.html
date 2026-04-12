@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p02 继续预训练 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;--orange:#F97316;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(249,115,22,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--orange),var(--danger));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(249,115,22,.2);border-left:3px solid var(--orange);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(249,115,22,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(249,115,22,.5);background:rgba(249,115,22,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(249,115,22,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(249,115,22,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+.shape-tag{display:inline-block;background:rgba(249,115,22,.2);border:1px solid rgba(249,115,22,.4);padding:2px 8px;border-radius:6px;font-size:11px;font-family:'Courier New',monospace;color:var(--orange);margin:2px;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p02</span>
+  <h1>继续预训练</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'PackedDataset._pack() — Tokenize 与拼接打包',
+   desc:'将多条短文本 tokenize 后，拼接成一个长序列，再切分为 max_seq_length 的块。每个块就是一个训练样本，labels = input_ids（CLM 移位在模型内部处理）。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">_pack</span>(self, texts, tokenizer):',hl:false},
+     {text:'    all_token_ids = []',hl:false},
+     {text:'    eos_id = tokenizer.eos_token_id',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="kw">for</span> text <span class="kw">in</span> texts:',hl:false},
+     {text:'        <span class="cm"># 逐条 tokenize</span>',hl:false},
+     {text:'        tokens = tokenizer.encode(text)',hl:true},
+     {text:'        all_token_ids.extend(tokens)',hl:true},
+     {text:'        all_token_ids.append(eos_id)  <span class="cm"># 文档分隔</span>',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 切分为固定长度的块</span>',hl:false},
+     {text:'    samples = []',hl:false},
+     {text:'    <span class="kw">for</span> i <span class="kw">in</span> range(<span class="num">0</span>, len(all_token_ids)',hl:false},
+     {text:'                     - max_seq_length,',hl:false},
+     {text:'                     max_seq_length):',hl:false},
+     {text:'        chunk = all_token_ids[i:i+<span class="num">512</span>]',hl:true},
+     {text:'        samples.append({',hl:true},
+     {text:'            <span class="str">"input_ids"</span>:  torch.tensor(chunk),',hl:true},
+     {text:'            <span class="str">"labels"</span>:     torch.tensor(chunk),',hl:true},
+     {text:'        })',hl:false},
+   ]},
+  {title:'DataCollatorForLanguageModeling — CLM Shift',
+   desc:'HuggingFace 的 DataCollator 负责将 input_ids 右移一位生成 labels。mlm=False 表示使用 CLM（因果语言模型），不是 MLM（掩码语言模型）。模型内部处理移位。',
+   code:[
+     {text:'<span class="kw">from</span> transformers <span class="kw">import</span> (',hl:false},
+     {text:'    <span class="fn">DataCollatorForLanguageModeling</span>,',hl:false},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'data_collator = DataCollatorForLanguageModeling(',hl:false},
+     {text:'    tokenizer=tokenizer,',hl:false},
+     {text:'    mlm=<span class="num">False</span>,  <span class="cm"># CLM, 不是 MLM</span>',hl:true},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># CLM 内部移位逻辑 (模型自动处理):</span>',hl:false},
+     {text:'<span class="cm"># logits = model(input_ids).logits</span>',hl:false},
+     {text:'<span class="cm"># shift_logits = logits[..., :-1, :]</span>',hl:true},
+     {text:'<span class="cm"># shift_labels = labels[..., 1:]</span>',hl:true},
+     {text:'<span class="cm"># loss = CrossEntropy(shift_logits, shift_labels)</span>',hl:true},
+   ]},
+  {title:'TrainingArguments — 关键训练参数',
+   desc:'TrainingArguments 集中管理所有训练超参数。继续预训练的关键：小学习率 2e-5、cosine 调度、warmup 5%、gradient checkpointing 省显存。',
+   code:[
+     {text:'training_args = TrainingArguments(',hl:false},
+     {text:'    output_dir=<span class="str">"outputs/pretrain"</span>,',hl:false},
+     {text:'    num_train_epochs=<span class="num">1</span>,',hl:false},
+     {text:'    per_device_train_batch_size=<span class="num">4</span>,',hl:true},
+     {text:'    gradient_accumulation_steps=<span class="num">4</span>,',hl:true},
+     {text:'    <span class="cm"># 等效 batch = 4 × 4 = 16</span>',hl:false},
+     {text:'',hl:false},
+     {text:'    learning_rate=<span class="num">2e-5</span>,',hl:true},
+     {text:'    lr_scheduler_type=<span class="str">"cosine"</span>,',hl:true},
+     {text:'    warmup_ratio=<span class="num">0.05</span>,',hl:true},
+     {text:'    weight_decay=<span class="num">0.01</span>,',hl:false},
+     {text:'    max_grad_norm=<span class="num">1.0</span>,',hl:false},
+     {text:'',hl:false},
+     {text:'    bf16=<span class="num">True</span>,',hl:true},
+     {text:'    gradient_checkpointing=<span class="num">True</span>,',hl:true},
+     {text:'    deepspeed=<span class="str">"ds_config_zero2.json"</span>,',hl:true},
+     {text:')',hl:false},
+   ]},
+  {title:'DeepSpeed ZeRO-2 配置集成',
+   desc:'DeepSpeed ZeRO-2 将优化器状态和梯度分片到多 GPU。通过 JSON 配置文件集成到 HuggingFace Trainer。"auto" 表示由 Trainer 自动填充。',
+   code:[
+     {text:'<span class="cm">// ds_config_zero2.json</span>',hl:false},
+     {text:'{',hl:false},
+     {text:'  <span class="str">"bf16"</span>: { <span class="str">"enabled"</span>: <span class="num">true</span> },',hl:true},
+     {text:'  <span class="str">"optimizer"</span>: {',hl:false},
+     {text:'    <span class="str">"type"</span>: <span class="str">"AdamW"</span>,',hl:false},
+     {text:'    <span class="str">"params"</span>: {',hl:false},
+     {text:'      <span class="str">"lr"</span>: <span class="str">"auto"</span>,',hl:true},
+     {text:'      <span class="str">"betas"</span>: [<span class="num">0.9</span>, <span class="num">0.95</span>],',hl:false},
+     {text:'    }',hl:false},
+     {text:'  },',hl:false},
+     {text:'  <span class="str">"zero_optimization"</span>: {',hl:false},
+     {text:'    <span class="str">"stage"</span>: <span class="num">2</span>,',hl:true},
+     {text:'    <span class="str">"allgather_partitions"</span>: <span class="num">true</span>,',hl:false},
+     {text:'    <span class="str">"overlap_comm"</span>: <span class="num">true</span>,',hl:true},
+     {text:'    <span class="str">"reduce_scatter"</span>: <span class="num">true</span>,',hl:false},
+     {text:'    <span class="str">"contiguous_gradients"</span>: <span class="num">true</span>,',hl:false},
+     {text:'  }',hl:false},
+     {text:'}',hl:false},
+   ]},
+  {title:'LoRA 预训练配置 — 低秩适配',
+   desc:'LoRA 通过低秩矩阵分解，只更新少量参数即可学习新知识。r=64 的 LoRA 只更新 ~2% 参数，显存大幅降低，且遗忘风险更小。target_modules 覆盖注意力和 FFN 层。',
+   code:[
+     {text:'<span class="kw">from</span> peft <span class="kw">import</span> LoraConfig, get_peft_model',hl:false},
+     {text:'',hl:false},
+     {text:'peft_config = LoraConfig(',hl:false},
+     {text:'    task_type=TaskType.CAUSAL_LM,',hl:false},
+     {text:'    r=<span class="num">64</span>,              <span class="cm"># LoRA 秩（预训练用大 r）</span>',hl:true},
+     {text:'    lora_alpha=<span class="num">128</span>,     <span class="cm"># 通常 = 2 × r</span>',hl:true},
+     {text:'    lora_dropout=<span class="num">0.05</span>,',hl:false},
+     {text:'    target_modules=[',hl:false},
+     {text:'        <span class="str">"q_proj"</span>, <span class="str">"k_proj"</span>,',hl:true},
+     {text:'        <span class="str">"v_proj"</span>, <span class="str">"o_proj"</span>,   <span class="cm"># 注意力</span>',hl:true},
+     {text:'        <span class="str">"gate_proj"</span>,',hl:true},
+     {text:'        <span class="str">"up_proj"</span>, <span class="str">"down_proj"</span>, <span class="cm"># FFN</span>',hl:true},
+     {text:'    ],',hl:false},
+     {text:'    bias=<span class="str">"none"</span>,',hl:false},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'model = get_peft_model(model, peft_config)',hl:true},
+     {text:'<span class="cm"># 可训练参数: ~2% (全参 0.5B → LoRA ~10M)</span>',hl:false},
+   ]},
+];
+
+function resize(){
+  const r=window.devicePixelRatio||1;
+  const rect=canvas.parentElement.getBoundingClientRect();
+  canvas.width=rect.width*r; canvas.height=rect.height*r;
+  W=rect.width; H=rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize',resize);
+
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+function drawArrow(x1,y1,x2,y2,color,width){
+  ctx.strokeStyle=color;ctx.lineWidth=width||1.5;
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  var angle=Math.atan2(y2-y1,x2-x1),hl=7;
+  ctx.fillStyle=color;ctx.beginPath();
+  ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-hl*Math.cos(angle-Math.PI/6),y2-hl*Math.sin(angle-Math.PI/6));
+  ctx.lineTo(x2-hl*Math.cos(angle+Math.PI/6),y2-hl*Math.sin(angle+Math.PI/6));
+  ctx.closePath();ctx.fill();
+}
+
+function renderCanvas(){
+  ctx.clearRect(0,0,W,H);
+  var p=Math.min(animProgress,1);
+  var cx=W/2,cy=(H-80)/2;
+
+  if(currentStep===0){
+    // Packing flow: texts -> tokenize -> concat -> chunk
+    var phases=[
+      {label:'文本列表',items:['Doc A','Doc B','Doc C'],color:'#6C5CE7',x:40},
+      {label:'Tokenize',items:['[101,23,...]','[55,78,...]','[12,44,...]'],color:'#0984E3',x:W*.25},
+      {label:'拼接 + EOS',items:['101,23,...,EOS,55,78,...,EOS,12,44,...,EOS'],color:'#F97316',x:W*.52},
+      {label:'切分为 512 块',items:['Chunk 0','Chunk 1','Chunk 2'],color:'#10B981',x:W*.78},
+    ];
+
+    phases.forEach(function(ph,pi){
+      var delay=pi*.2;
+      var ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+      if(ap<=0) return;
+      ctx.globalAlpha=ap;
+
+      ctx.font='bold 13px PingFang SC';ctx.fillStyle=ph.color;ctx.textAlign='center';
+      ctx.fillText(ph.label,ph.x+60,25);
+
+      ph.items.forEach(function(item,ii){
+        var bh=30, bw=pi===2?160:110;
+        var y=40+ii*(bh+8);
+        ctx.fillStyle=ph.color+'22';ctx.strokeStyle=ph.color+'66';ctx.lineWidth=1;
+        drawRoundRect(ph.x,y,bw,bh,6);ctx.fill();ctx.stroke();
+        ctx.fillStyle=ph.color;ctx.font='11px Courier New';ctx.textAlign='center';
+        ctx.fillText(item,ph.x+bw/2,y+bh/2+4);
+      });
+
+      // Arrow to next phase
+      if(pi<phases.length-1&&ap>.5){
+        var arP=easeInOut((ap-.5)/.5);
+        ctx.globalAlpha=arP*.5;
+        var bw=pi===2?160:110;
+        drawArrow(ph.x+bw+5,cy,phases[pi+1].x-5,cy,'rgba(255,255,255,.3)',1.5);
+      }
+      ctx.globalAlpha=1;
+    });
+
+    // Final note
+    if(p>.85){
+      var np=easeInOut((p-.85)/.15);
+      ctx.globalAlpha=np;
+      ctx.font='bold 13px PingFang SC';ctx.fillStyle='rgba(0,184,148,.8)';ctx.textAlign='center';
+      ctx.fillText('labels = input_ids (CLM 移位在模型内部处理)',cx,H-100);
+      ctx.globalAlpha=1;
+    }
+
+  } else if(currentStep===1){
+    // CLM shift visualization
+    var tokens=['我','喜','欢','机','器','学','习','EOS'];
+    var boxW=Math.min(55,(W-60)/tokens.length-4),boxH=36,gap=4;
+    var sx=cx-tokens.length*(boxW+gap)/2;
+
+    // input_ids row
+    var ap1=easeInOut(Math.min(1,p/.3));
+    ctx.globalAlpha=ap1;
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='rgba(108,92,231,.8)';ctx.textAlign='left';
+    ctx.fillText('input_ids:',10,cy-50+boxH/2+5);
+
+    for(var i=0;i<tokens.length;i++){
+      var delay=i*.05;
+      var ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.25)));
+      var x=sx+i*(boxW+gap);
+      ctx.globalAlpha=ap;
+      ctx.fillStyle='rgba(108,92,231,.2)';ctx.strokeStyle='rgba(108,92,231,.5)';ctx.lineWidth=1;
+      drawRoundRect(x,cy-50,boxW,boxH,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#C792EA';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(tokens[i],x+boxW/2,cy-50+boxH/2+5);
+      ctx.globalAlpha=1;
+    }
+
+    // Shift arrows
+    if(p>.35){
+      var arP=easeInOut((p-.35)/.2);
+      ctx.globalAlpha=arP*.4;
+      for(var i=0;i<tokens.length-1;i++){
+        var x1=sx+i*(boxW+gap)+boxW/2;
+        var x2=sx+i*(boxW+gap)+boxW/2;
+        drawArrow(x1,cy-50+boxH,x2,cy+20,'rgba(249,115,22,.5)',1.5);
+      }
+      ctx.globalAlpha=1;
+    }
+
+    // logits row (shift_logits = logits[..., :-1, :])
+    var ap2=easeInOut(Math.max(0,(p-.3)/.3));
+    ctx.globalAlpha=ap2;
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='rgba(249,115,22,.8)';ctx.textAlign='left';
+    ctx.fillText('shift_logits:',10,cy+20+boxH/2+5);
+
+    for(var i=0;i<tokens.length-1;i++){
+      var x=sx+i*(boxW+gap);
+      ctx.globalAlpha=ap2;
+      ctx.fillStyle='rgba(249,115,22,.15)';ctx.strokeStyle='rgba(249,115,22,.4)';ctx.lineWidth=1;
+      drawRoundRect(x,cy+20,boxW,boxH,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#F97316';ctx.font='12px PingFang SC';ctx.textAlign='center';
+      ctx.fillText('P('+tokens[i]+'→?)',x+boxW/2,cy+20+boxH/2+5);
+      ctx.globalAlpha=1;
+    }
+
+    // labels row (shift_labels = labels[..., 1:])
+    var ap3=easeInOut(Math.max(0,(p-.5)/.3));
+    ctx.globalAlpha=ap3;
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='rgba(0,184,148,.8)';ctx.textAlign='left';
+    ctx.fillText('shift_labels:',10,cy+80+boxH/2+5);
+
+    for(var i=1;i<tokens.length;i++){
+      var x=sx+(i-1)*(boxW+gap);
+      ctx.globalAlpha=ap3;
+      ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='rgba(0,184,148,.4)';ctx.lineWidth=1;
+      drawRoundRect(x,cy+80,boxW,boxH,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#00B894';ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(tokens[i],x+boxW/2,cy+80+boxH/2+5);
+      ctx.globalAlpha=1;
+    }
+
+    // CrossEntropy label
+    if(p>.8){
+      var lp=easeInOut((p-.8)/.2);
+      ctx.globalAlpha=lp;
+      ctx.font='bold 13px PingFang SC';ctx.fillStyle='rgba(249,115,22,.8)';ctx.textAlign='center';
+      ctx.fillText('loss = CrossEntropy(shift_logits, shift_labels)',cx,cy+80+boxH+25);
+      ctx.globalAlpha=1;
+    }
+
+  } else if(currentStep===2){
+    // TrainingArguments parameter groups
+    var groups=[
+      {name:'批次参数',params:[{k:'batch_size',v:'4'},{k:'grad_accum',v:'4'},{k:'等效batch',v:'16'}],color:'#6C5CE7',x:20,y:20},
+      {name:'学习率',params:[{k:'lr',v:'2e-5'},{k:'scheduler',v:'cosine'},{k:'warmup',v:'5%'}],color:'#0984E3',x:W*.35,y:20},
+      {name:'显存优化',params:[{k:'bf16',v:'True'},{k:'grad_ckpt',v:'True'},{k:'deepspeed',v:'ZeRO-2'}],color:'#F97316',x:20,y:cy+20},
+      {name:'正则化',params:[{k:'weight_decay',v:'0.01'},{k:'max_grad_norm',v:'1.0'},{k:'epochs',v:'1'}],color:'#10B981',x:W*.35,y:cy+20},
+    ];
+
+    var boxW2=Math.min(180,W*.3);
+    groups.forEach(function(g,gi){
+      var delay=gi*.15;
+      var ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+      if(ap<=0) return;
+      ctx.globalAlpha=ap;
+
+      // Group box
+      ctx.fillStyle=g.color+'15';ctx.strokeStyle=g.color+'44';ctx.lineWidth=1;
+      drawRoundRect(g.x,g.y,boxW2,100,10);ctx.fill();ctx.stroke();
+
+      // Title
+      ctx.font='bold 13px PingFang SC';ctx.fillStyle=g.color;ctx.textAlign='left';
+      ctx.fillText(g.name,g.x+12,g.y+20);
+
+      // Params
+      g.params.forEach(function(param,pi){
+        var py=g.y+38+pi*22;
+        ctx.font='12px Courier New';ctx.fillStyle='rgba(255,255,255,.5)';ctx.textAlign='left';
+        ctx.fillText(param.k+':',g.x+15,py);
+        ctx.fillStyle=g.color;ctx.font='bold 12px Courier New';
+        ctx.fillText(param.v,g.x+15+90,py);
+      });
+      ctx.globalAlpha=1;
+    });
+
+    // Center: Trainer integration
+    if(p>.7){
+      var tp=easeInOut((p-.7)/.3);
+      ctx.globalAlpha=tp;
+      var tcx=cx+20,tcy=cy;
+      ctx.fillStyle='rgba(249,115,22,.1)';ctx.strokeStyle='rgba(249,115,22,.4)';ctx.lineWidth=2;
+      drawRoundRect(W*.68,tcy-25,W*.28,50,12);ctx.fill();ctx.stroke();
+      ctx.font='bold 15px PingFang SC';ctx.fillStyle='#F97316';ctx.textAlign='center';
+      ctx.fillText('→ Trainer(args)',W*.82,tcy+5);
+
+      // arrows from each group
+      groups.forEach(function(g){
+        drawArrow(g.x+boxW2,g.y+50,W*.68,tcy,'rgba(255,255,255,.15)',1);
+      });
+      ctx.globalAlpha=1;
+    }
+
+  } else if(currentStep===3){
+    // DeepSpeed ZeRO-2 data flow
+    var gpuCount=2;
+    var gpuW=Math.min(140,W*.28),gpuH=200;
+
+    ctx.font='bold 15px PingFang SC';ctx.textAlign='center';
+    ctx.fillStyle='rgba(226,232,240,.8)';
+    ctx.fillText('DeepSpeed ZeRO Stage 2 — 数据分布',cx,20);
+
+    var totalW=gpuCount*(gpuW+40);
+    var gsx=cx-totalW/2;
+
+    for(var g=0;g<gpuCount;g++){
+      var delay=g*.2;
+      var ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.35)));
+      var gx=gsx+g*(gpuW+40)+20;
+      var gy=45;
+      ctx.globalAlpha=ap;
+
+      // GPU outline
+      ctx.strokeStyle='rgba(255,255,255,.2)';ctx.lineWidth=1.5;
+      drawRoundRect(gx,gy,gpuW,gpuH,10);ctx.stroke();
+      ctx.font='bold 12px PingFang SC';ctx.fillStyle='rgba(255,255,255,.5)';ctx.textAlign='center';
+      ctx.fillText('GPU '+g,gx+gpuW/2,gy+gpuH+18);
+
+      var segH=gpuH/3-8;
+      // Parameters - full copy
+      ctx.fillStyle='rgba(108,92,231,.35)';ctx.strokeStyle='rgba(108,92,231,.5)';ctx.lineWidth=1;
+      drawRoundRect(gx+8,gy+8,gpuW-16,segH,6);ctx.fill();ctx.stroke();
+      ctx.font='bold 11px PingFang SC';ctx.fillStyle='#6C5CE7';ctx.textAlign='center';
+      ctx.fillText('Parameters (全量)',gx+gpuW/2,gy+8+segH/2+4);
+
+      // Gradients - sharded
+      ctx.fillStyle='rgba(9,132,227,.25)';ctx.strokeStyle='rgba(9,132,227,.5)';
+      var gPartW=(gpuW-16)/gpuCount;
+      drawRoundRect(gx+8+g*gPartW,gy+8+segH+8,gPartW,segH,6);ctx.fill();ctx.stroke();
+      // dimmed other parts
+      for(var gg=0;gg<gpuCount;gg++){
+        if(gg!==g){
+          ctx.fillStyle='rgba(9,132,227,.05)';
+          drawRoundRect(gx+8+gg*gPartW,gy+8+segH+8,gPartW,segH,6);ctx.fill();
+          ctx.strokeStyle='rgba(9,132,227,.15)';
+          drawRoundRect(gx+8+gg*gPartW,gy+8+segH+8,gPartW,segH,6);ctx.stroke();
+        }
+      }
+      ctx.font='bold 10px PingFang SC';ctx.fillStyle='#0984E3';
+      ctx.fillText('Grad Shard '+g,gx+gpuW/2,gy+8+segH+8+segH/2+4);
+
+      // Optimizer - sharded
+      ctx.fillStyle='rgba(239,68,68,.25)';ctx.strokeStyle='rgba(239,68,68,.5)';
+      var oPartW=(gpuW-16)/gpuCount;
+      drawRoundRect(gx+8+g*oPartW,gy+8+2*(segH+8),oPartW,segH,6);ctx.fill();ctx.stroke();
+      for(var gg=0;gg<gpuCount;gg++){
+        if(gg!==g){
+          ctx.fillStyle='rgba(239,68,68,.05)';
+          drawRoundRect(gx+8+gg*oPartW,gy+8+2*(segH+8),oPartW,segH,6);ctx.fill();
+          ctx.strokeStyle='rgba(239,68,68,.15)';
+          drawRoundRect(gx+8+gg*oPartW,gy+8+2*(segH+8),oPartW,segH,6);ctx.stroke();
+        }
+      }
+      ctx.font='bold 10px PingFang SC';ctx.fillStyle='#EF4444';
+      ctx.fillText('Optim Shard '+g,gx+gpuW/2,gy+8+2*(segH+8)+segH/2+4);
+
+      ctx.globalAlpha=1;
+    }
+
+    // Communication arrows
+    if(p>.65){
+      var cp=easeInOut((p-.65)/.2);
+      ctx.globalAlpha=cp*.5;
+      var g0x=gsx+20+gpuW, g1x=gsx+gpuW+60;
+      drawArrow(g0x+5,45+gpuH/2-10,g1x-5,45+gpuH/2-10,'rgba(249,115,22,.5)',1.5);
+      drawArrow(g1x-5,45+gpuH/2+10,g0x+5,45+gpuH/2+10,'rgba(249,115,22,.5)',1.5);
+      ctx.font='10px PingFang SC';ctx.fillStyle='rgba(249,115,22,.7)';ctx.textAlign='center';
+      ctx.fillText('AllReduce',cx,45+gpuH/2);
+      ctx.globalAlpha=1;
+    }
+
+    // Legend
+    if(p>.8){
+      var lp=easeInOut((p-.8)/.2);
+      ctx.globalAlpha=lp;
+      var ly=H-100;
+      ctx.font='12px PingFang SC';ctx.textAlign='center';
+      ctx.fillStyle='rgba(255,255,255,.5)';
+      ctx.fillText('ZeRO-2: 优化器 + 梯度分片，参数全量保留',cx,ly);
+      ctx.fillText('"auto" 参数由 HuggingFace Trainer 自动填充',cx,ly+20);
+      ctx.globalAlpha=1;
+    }
+
+  } else if(currentStep===4){
+    // LoRA architecture
+    var ap1=easeInOut(Math.min(1,p/.3));
+    ctx.globalAlpha=ap1;
+
+    // Original weight matrix W
+    var wX=30,wY=30,wW=120,wH=160;
+    ctx.fillStyle='rgba(108,92,231,.15)';ctx.strokeStyle='rgba(108,92,231,.4)';ctx.lineWidth=2;
+    drawRoundRect(wX,wY,wW,wH,10);ctx.fill();ctx.stroke();
+    ctx.font='bold 14px PingFang SC';ctx.fillStyle='#6C5CE7';ctx.textAlign='center';
+    ctx.fillText('W',wX+wW/2,wY+wH/2-5);
+    ctx.font='11px Courier New';ctx.fillStyle='rgba(108,92,231,.6)';
+    ctx.fillText('d×d',wX+wW/2,wY+wH/2+15);
+    ctx.font='10px PingFang SC';ctx.fillStyle='rgba(108,92,231,.5)';
+    ctx.fillText('冻结 (frozen)',wX+wW/2,wY+wH+15);
+
+    // LoRA A and B
+    var ap2=easeInOut(Math.max(0,(p-.3)/.3));
+    ctx.globalAlpha=ap2;
+
+    var aX=wX+wW+50,aY=wY+10,aW=40,aH=wH-20;
+    ctx.fillStyle='rgba(0,184,148,.2)';ctx.strokeStyle='rgba(0,184,148,.5)';ctx.lineWidth=1.5;
+    drawRoundRect(aX,aY,aW,aH,8);ctx.fill();ctx.stroke();
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='#00B894';ctx.textAlign='center';
+    ctx.fillText('A',aX+aW/2,aY+aH/2-5);
+    ctx.font='10px Courier New';ctx.fillStyle='rgba(0,184,148,.6)';
+    ctx.fillText('d×r',aX+aW/2,aY+aH/2+12);
+
+    var bX=aX+aW+20,bY=aY+40,bW=aW+40,bH=40;
+    ctx.fillStyle='rgba(249,115,22,.2)';ctx.strokeStyle='rgba(249,115,22,.5)';
+    drawRoundRect(bX,bY,bW,bH,8);ctx.fill();ctx.stroke();
+    ctx.font='bold 13px PingFang SC';ctx.fillStyle='#F97316';
+    ctx.fillText('B',bX+bW/2,bY+bH/2-5);
+    ctx.font='10px Courier New';ctx.fillStyle='rgba(249,115,22,.6)';
+    ctx.fillText('r×d',bX+bW/2,bY+bH/2+12);
+
+    // Arrows A→B
+    drawArrow(aX+aW,aY+aH/2,bX,bY+bH/2,'rgba(255,255,255,.3)',1.5);
+
+    // r = 64 label
+    ctx.font='bold 12px PingFang SC';ctx.fillStyle='rgba(249,115,22,.8)';
+    ctx.fillText('r = 64',aX+aW/2+30,aY-5);
+
+    ctx.globalAlpha=1;
+
+    // Plus sign
+    if(p>.5){
+      var pp=easeInOut((p-.5)/.15);
+      ctx.globalAlpha=pp;
+      ctx.font='bold 24px PingFang SC';ctx.fillStyle='rgba(255,255,255,.4)';ctx.textAlign='center';
+      ctx.fillText('+',wX+wW+25,wY+wH/2+5);
+      ctx.globalAlpha=1;
+    }
+
+    // Target modules visualization
+    if(p>.55){
+      var mp=easeInOut((p-.55)/.3);
+      ctx.globalAlpha=mp;
+      var modY=wY+wH+40;
+      ctx.font='bold 13px PingFang SC';ctx.fillStyle='rgba(226,232,240,.7)';ctx.textAlign='left';
+      ctx.fillText('target_modules:',20,modY);
+
+      var modules=[
+        {name:'q_proj',c:'#6C5CE7'},{name:'k_proj',c:'#0984E3'},
+        {name:'v_proj',c:'#10B981'},{name:'o_proj',c:'#F59E0B'},
+        {name:'gate_proj',c:'#EC4899'},{name:'up_proj',c:'#F97316'},
+        {name:'down_proj',c:'#EF4444'},
+      ];
+
+      var mx=20,my=modY+10;
+      modules.forEach(function(m,mi){
+        var tw=ctx.measureText(m.name).width+16;
+        if(mx+tw>W-20){mx=20;my+=28;}
+        ctx.fillStyle=m.c+'22';ctx.strokeStyle=m.c+'55';ctx.lineWidth=1;
+        drawRoundRect(mx,my,tw,22,5);ctx.fill();ctx.stroke();
+        ctx.font='11px Courier New';ctx.fillStyle=m.c;ctx.textAlign='center';
+        ctx.fillText(m.name,mx+tw/2,my+15);
+        mx+=tw+8;
+      });
+      ctx.globalAlpha=1;
+    }
+
+    // Stats
+    if(p>.8){
+      var sp=easeInOut((p-.8)/.2);
+      ctx.globalAlpha=sp;
+      var sy=H-110;
+      ctx.font='bold 13px PingFang SC';ctx.fillStyle='rgba(0,184,148,.8)';ctx.textAlign='center';
+      ctx.fillText('全参: 0.5B (100%) → LoRA r=64: ~10M (2%)',cx,sy);
+      ctx.fillStyle='rgba(249,115,22,.7)';ctx.font='12px PingFang SC';
+      ctx.fillText('显存: 全参 ~9GB → LoRA ~3GB  |  遗忘风险大幅降低',cx,sy+22);
+      ctx.globalAlpha=1;
+    }
+  }
+}
+
+function updateCode(){
+  var panel=document.getElementById('codePanel');
+  panel.innerHTML='';
+  if(!steps[currentStep].code) return;
+  steps[currentStep].code.forEach(function(line){
+    var div=document.createElement('div');
+    div.className='code-line'+(line.hl?' highlight':'');
+    div.innerHTML=line.text||'&nbsp;';
+    panel.appendChild(div);
+  });
+}
+
+function render(){
+  renderCanvas();
+}
+
+function animate(){
+  animProgress+=.015;
+  if(animProgress>1.5) animProgress=1.5;
+  render();
+  animId=requestAnimationFrame(animate);
+}
+
+function goToStep(i){
+  currentStep=Math.max(0,Math.min(i,steps.length-1));
+  animProgress=0;
+  document.getElementById('infoTitle').textContent=steps[currentStep].title;
+  document.getElementById('infoDesc').innerHTML=steps[currentStep].desc;
+  document.getElementById('counter').textContent='Step '+(currentStep+1)+'/'+steps.length;
+  updateCode();
+  var dots=document.getElementById('dots');
+  dots.innerHTML='';
+  for(var j=0;j<steps.length;j++){
+    var s=document.createElement('span');
+    if(j===currentStep) s.className='active';
+    s.onclick=(function(jj){return function(){goToStep(jj);};})(j);
+    dots.appendChild(s);
+  }
+}
+
+function nextStep(){goToStep(currentStep+1);}
+function prevStep(){goToStep(currentStep-1);}
+function replay(){animProgress=0;}
+
+resize();
+goToStep(0);
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v03 LLM - 代码可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;backdrop-filter:blur(10px)}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}
+.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}
+.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}
+.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}
+.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}
+.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:13px;color:var(--warn);text-align:left;line-height:1.8;white-space:pre-wrap}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05)}.btn:active{transform:scale(.97)}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3)}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">v03</span><h1>Text Encoder (LLM)</h1><span class="tag">代码可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div>
+<div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'RMSNorm 和 precompute_rope_freqs',
+desc:'<strong>RMSNorm</strong>：只需计算 x²的均值再开方，比 LayerNorm 更高效。<br><br><strong>precompute_rope_freqs</strong>：预计算所有位置和维度对的 cos/sin 值：<br>• freq_i = 1 / 10000^(2i/d)<br>• 用 outer product 得到 [max_len, d/2] 的频率表<br>• 分别取 cos 和 sin<br><br>这些值在模型初始化时计算一次，推理时直接查表。',
+formula:'class RMSNorm(nn.Module):\n  def forward(self, x):\n    rms = sqrt(x.pow(2).mean(-1,keepdim=True)+eps)\n    return x / rms * self.weight\n\ndef precompute_rope_freqs(dim, max_len):\n  freqs = 1/(10000**(arange(0,dim,2)/dim))\n  t = arange(max_len)\n  freqs = outer(t, freqs)  # [max_len,dim/2]\n  return freqs.cos(), freqs.sin()'},
+{title:'apply_rope：对 Q/K 做 2D 旋转',
+desc:'RoPE 对 Q/K 的每对相邻维度 (x1, x2) 做 2D 旋转：<br><br>• x1\' = x1 · cos(θ) - x2 · sin(θ)<br>• x2\' = x1 · sin(θ) + x2 · cos(θ)<br><br>实现上将向量<strong>分成前后两半</strong>：x1 = x[..., :d//2]，x2 = x[..., d//2:]<br><br>cos/sin 需要 unsqueeze 到 [1,1,L,d/2] 以匹配 [B,H,L,d] 的 shape。<br><br>KV Cache 场景下需要用 <strong>offset</strong> 获取正确位置的频率。',
+formula:'def apply_rope(x, cos, sin):\n  # x: [B, H, L, D]\n  x1, x2 = x[...,:d//2], x[...,d//2:]\n  cos = cos[:L].unsqueeze(0).unsqueeze(0)\n  sin = sin[:L].unsqueeze(0).unsqueeze(0)\n  out1 = x1*cos - x2*sin\n  out2 = x1*sin + x2*cos\n  return cat([out1, out2], dim=-1)'},
+{title:'CausalSelfAttention 完整实现',
+desc:'整合 RoPE + KV Cache + 因果掩码的完整注意力：<br><br>① <strong>QKV 投影</strong>：一次线性变换得到 Q/K/V<br>② <strong>reshape</strong>：拆分多头 [B,L,3,H,dk]<br>③ <strong>apply_rope</strong>：对 Q/K 施加旋转<br>④ <strong>KV Cache</strong>：拼接历史 K/V<br>⑤ <strong>因果掩码</strong>：triu 生成上三角 mask<br>⑥ <strong>注意力计算</strong>：softmax(QK^T/√dk + mask) · V<br>⑦ <strong>输出投影</strong>：W_o',
+formula:'qkv = W_qkv(x).reshape(B,L,3,H,dk)\nq,k,v = qkv.unbind(2)  # 各[B,L,H,dk]\nq,k = transpose(1,2)   # [B,H,L,dk]\nq = apply_rope(q, cos, sin)\nk = apply_rope(k, cos, sin)\nif cache: k=cat(cache_k,k); v=cat(cache_v,v)\nscores = q@k.T / sqrt(dk)\nscores.masked_fill_(causal_mask, -inf)\nattn = softmax(scores) @ v\nreturn W_o(attn), (k,v)'},
+{title:'MiniGPT.forward 完整数据流',
+desc:'MiniGPT 的前向传播：<br><br>① <strong>tok_embed(input_ids)</strong>: 词嵌入 [B,L] → [B,L,D]<br>② <strong>逐层处理</strong>: 每个 GPTBlock 包含 RMSNorm→Attn→残差→RMSNorm→SwiGLU→残差<br>③ <strong>每层传递 KV Cache</strong>: 新增缓存拼接到历史<br>④ <strong>最终 RMSNorm</strong>: 归一化<br>⑤ <strong>lm_head</strong>: 映射到词汇表大小<br><br>关键技巧：<strong>权重共享</strong> tok_embed.weight = lm_head.weight，减少 ~30% 参数。',
+formula:'def forward(self, input_ids, kv_caches=None):\n  x = self.tok_embed(input_ids)  # [B,L,D]\n  new_caches = []\n  for i, block in enumerate(self.blocks):\n    cache = kv_caches[i] if kv_caches else None\n    x, new_cache = block(x, cache)\n    new_caches.append(new_cache)\n  x = self.norm(x)\n  logits = self.lm_head(x)  # [B,L,V]\n  return logits, new_caches'},
+{title:'自回归生成：采样策略',
+desc:'推理时逐 token 生成，每步选择策略不同：<br><br><strong>Greedy</strong>：取概率最大的 token。确定性但容易重复。<br><br><strong>Top-K</strong>：只保留概率最高的 K 个候选，归一化后采样。K=50 是常见值。<br><br><strong>Top-P (Nucleus)</strong>：保留累积概率达到 P 的最小 token 集合。自适应候选数量。<br><br>通常搭配<strong>温度系数 T</strong>：logits/T，T<1 更确定，T>1 更随机。',
+formula:'# Greedy\nnext_token = logits.argmax(-1)\n\n# Top-K\ntopk_logits, topk_ids = logits.topk(K)\nprobs = softmax(topk_logits / temperature)\nnext_token = topk_ids[sample(probs)]\n\n# Top-P\nsorted_probs = sort(softmax(logits))\ncumsum = sorted_probs.cumsum(-1)\nmask = cumsum < p\nnext_token = sample(masked_probs)'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function ease(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function rrect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+function drawBox(x,y,w,h,label,color,alpha){ctx.globalAlpha=alpha;ctx.fillStyle=color+'1A';ctx.strokeStyle=color;ctx.lineWidth=1.5;rrect(x,y,w,h,8);ctx.fill();ctx.stroke();ctx.fillStyle=color;ctx.font='12px PingFang SC';ctx.textAlign='center';ctx.fillText(label,x+w/2,y+h/2+4);ctx.globalAlpha=1}
+
+function renderStep0(p){
+  const cx=W/2,topY=20;
+  // RMSNorm visualization
+  const p1=ease(Math.min(1,p/.4));ctx.globalAlpha=p1;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';ctx.fillStyle='#00B894';
+  ctx.fillText('RMSNorm 计算过程',cx/2,topY);
+  const vals=[2,-1,3,0.5,-2,1.5];
+  const rms=Math.sqrt(vals.reduce((a,b)=>a+b*b,0)/vals.length);
+  const barW=25,bx=cx/2-vals.length*barW/2,by=topY+30;
+  for(let i=0;i<vals.length;i++){
+    const h=vals[i]*18;
+    ctx.fillStyle=h>0?'rgba(0,184,148,.4)':'rgba(239,68,68,.4)';
+    ctx.fillRect(bx+i*barW+3,by+50,barW-6,-h);
+  }
+  ctx.strokeStyle='rgba(255,255,255,.2)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(bx,by+50);ctx.lineTo(bx+vals.length*barW,by+50);ctx.stroke();
+  ctx.font='11px Courier New';ctx.fillStyle='#F59E0B';
+  ctx.fillText('RMS='+rms.toFixed(2),cx/2,by+90);
+  ctx.fillText('x / '+rms.toFixed(2)+' × γ',cx/2,by+108);
+  ctx.globalAlpha=1;
+  // RoPE freqs
+  const p2=ease(Math.max(0,Math.min(1,(p-.4)/.4)));ctx.globalAlpha=p2;
+  ctx.font='bold 14px PingFang SC';ctx.fillStyle='#6C5CE7';
+  ctx.fillText('RoPE 频率表',cx+cx/2,topY);
+  const dims=[0,1,2,3];const maxPos=20;
+  const colors=['#EF4444','#F59E0B','#0984E3','#6C5CE7'];
+  const plotW=W/2-60,plotH=35,px=cx+20,py=topY+25;
+  for(let d=0;d<dims.length;d++){
+    const freq=1/Math.pow(10000,2*dims[d]/8);
+    const y0=py+d*(plotH+8);
+    ctx.strokeStyle='rgba(255,255,255,.1)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(px,y0+plotH/2);ctx.lineTo(px+plotW,y0+plotH/2);ctx.stroke();
+    ctx.strokeStyle=colors[d];ctx.lineWidth=1.5;ctx.beginPath();
+    for(let x=0;x<=plotW;x++){
+      const pos=x/plotW*maxPos;const v=Math.cos(pos*freq);
+      const yp=y0+plotH/2-v*(plotH/2-3);
+      x===0?ctx.moveTo(px+x,yp):ctx.lineTo(px+x,yp);
+    }ctx.stroke();
+    ctx.fillStyle=colors[d];ctx.font='10px Courier New';ctx.textAlign='right';
+    ctx.fillText('dim='+dims[d],px-5,y0+plotH/2+3);
+  }
+  ctx.globalAlpha=1;
+}
+
+function renderStep1(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('apply_rope: 2D 旋转变换',cx,topY);
+  // Show vector pair rotation
+  const R=Math.min(80,H/3-30);const cy1=topY+R+40;
+  // Before rotation
+  const p1=ease(Math.max(0,Math.min(1,(p-.1)/.3)));
+  ctx.globalAlpha=p1;
+  ctx.strokeStyle='rgba(100,116,139,.3)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(cx/2,cy1,R,0,Math.PI*2);ctx.stroke();
+  ctx.font='12px PingFang SC';ctx.fillStyle='#94A3B8';ctx.fillText('旋转前',cx/2,topY+20);
+  const origAngle=0.3;
+  ctx.strokeStyle='#6C5CE7';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(cx/2,cy1);
+  ctx.lineTo(cx/2+Math.cos(origAngle)*R*.7,cy1-Math.sin(origAngle)*R*.7);ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.beginPath();
+  ctx.arc(cx/2+Math.cos(origAngle)*R*.7,cy1-Math.sin(origAngle)*R*.7,4,0,Math.PI*2);ctx.fill();
+  ctx.font='11px Courier New';ctx.fillText('(x₁, x₂)',cx/2+Math.cos(origAngle)*R*.7+15,cy1-Math.sin(origAngle)*R*.7);
+  ctx.globalAlpha=1;
+  // After rotation
+  const p2=ease(Math.max(0,Math.min(1,(p-.4)/.3)));ctx.globalAlpha=p2;
+  ctx.strokeStyle='rgba(100,116,139,.3)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(cx+cx/2,cy1,R,0,Math.PI*2);ctx.stroke();
+  ctx.font='12px PingFang SC';ctx.fillStyle='#94A3B8';ctx.fillText('旋转后 (pos=3)',cx+cx/2,topY+20);
+  const rotAngle=origAngle+3*0.4;
+  ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(cx+cx/2,cy1);
+  ctx.lineTo(cx+cx/2+Math.cos(rotAngle)*R*.7,cy1-Math.sin(rotAngle)*R*.7);ctx.stroke();
+  ctx.fillStyle='#00B894';ctx.beginPath();
+  ctx.arc(cx+cx/2+Math.cos(rotAngle)*R*.7,cy1-Math.sin(rotAngle)*R*.7,4,0,Math.PI*2);ctx.fill();
+  ctx.font='11px Courier New';ctx.fillText("(x₁',x₂')",cx+cx/2+Math.cos(rotAngle)*R*.7+15,cy1-Math.sin(rotAngle)*R*.7);
+  // Arc showing rotation
+  ctx.strokeStyle='#F59E0B';ctx.lineWidth=1.5;ctx.setLineDash([3,3]);
+  ctx.beginPath();ctx.arc(cx+cx/2,cy1,R*.4,-origAngle,-rotAngle,true);ctx.stroke();
+  ctx.setLineDash([]);ctx.fillStyle='#F59E0B';ctx.fillText('θ=pos×freq',cx+cx/2+R*.5,cy1-R*.3);
+  ctx.globalAlpha=1;
+  // Arrow between
+  if(p>.35){
+    const ap=ease((p-.35)/.15);ctx.globalAlpha=ap;
+    ctx.strokeStyle='#F59E0B';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(cx-20,cy1);ctx.lineTo(cx+20,cy1);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(cx+15,cy1-5);ctx.lineTo(cx+22,cy1);ctx.lineTo(cx+15,cy1+5);ctx.stroke();
+    ctx.font='11px PingFang SC';ctx.fillStyle='#F59E0B';ctx.fillText('旋转 θ',cx,cy1-12);
+    ctx.globalAlpha=1;
+  }
+}
+
+function renderStep2(p){
+  const cx=W/2,topY=10;const bw=180,bh=28,gap=6;
+  const flow=[
+    {label:'QKV = W_qkv(x)',color:'#6C5CE7',t:0},
+    {label:'reshape → [B,L,3,H,dk]',color:'#94A3B8',t:.08},
+    {label:'unbind → Q, K, V',color:'#0984E3',t:.16},
+    {label:'transpose → [B,H,L,dk]',color:'#94A3B8',t:.22},
+    {label:'Q = apply_rope(Q)',color:'#F59E0B',t:.30},
+    {label:'K = apply_rope(K)',color:'#F59E0B',t:.38},
+    {label:'K = cat(cache_K, K)',color:'#00B894',t:.46},
+    {label:'V = cat(cache_V, V)',color:'#00B894',t:.52},
+    {label:'scores = Q·K^T / √dk',color:'#6C5CE7',t:.60},
+    {label:'mask + softmax',color:'#EF4444',t:.70},
+    {label:'attn = scores · V',color:'#0984E3',t:.78},
+    {label:'out = W_o(attn)',color:'#00B894',t:.86},
+  ];
+  let y=topY;
+  for(const f of flow){
+    const sp=ease(Math.max(0,Math.min(1,(p-f.t)/.1)));
+    ctx.globalAlpha=sp;ctx.fillStyle=f.color+'1A';ctx.strokeStyle=f.color+'88';ctx.lineWidth=1;
+    rrect(cx-bw/2,y,bw,bh,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle=f.color;ctx.font='11px Courier New';ctx.textAlign='center';
+    ctx.fillText(f.label,cx,y+18);
+    if(y>topY&&sp>.5){ctx.strokeStyle=f.color+'33';ctx.beginPath();ctx.moveTo(cx,y);ctx.lineTo(cx,y-gap);ctx.stroke()}
+    ctx.globalAlpha=1;y+=bh+gap;
+  }
+}
+
+function renderStep3(p){
+  const cx=W/2,topY=10;const bw=200,bh=30,gap=8;
+  const flow=[
+    {label:'x = tok_embed(input_ids)',shape:'[B,L] → [B,L,D]',color:'#6C5CE7',t:0},
+    {label:'for block in blocks:',shape:'循环 N 层',color:'#94A3B8',t:.12},
+    {label:'  h = norm1(x)',shape:'RMSNorm',color:'#F59E0B',t:.22},
+    {label:'  h, cache = attn(h)',shape:'CausalSelfAttention',color:'#0984E3',t:.34},
+    {label:'  x = x + h',shape:'残差连接',color:'#EF4444',t:.44},
+    {label:'  x = x + ffn(norm2(x))',shape:'SwiGLU + 残差',color:'#10B981',t:.54},
+    {label:'x = norm(x)',shape:'最终 RMSNorm',color:'#F59E0B',t:.66},
+    {label:'logits = lm_head(x)',shape:'[B,L,D]→[B,L,V]',color:'#EF4444',t:.78},
+  ];
+  let y=topY;
+  for(const f of flow){
+    const sp=ease(Math.max(0,Math.min(1,(p-f.t)/.12)));
+    ctx.globalAlpha=sp;ctx.fillStyle=f.color+'15';ctx.strokeStyle=f.color+'88';ctx.lineWidth=1.5;
+    rrect(cx-bw/2,y,bw,bh,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=f.color;ctx.font='11px Courier New';ctx.textAlign='center';ctx.fillText(f.label,cx-10,y+13);
+    ctx.font='10px PingFang SC';ctx.fillStyle=f.color+'AA';ctx.fillText(f.shape,cx-10,y+26);
+    if(y>topY&&sp>.5){ctx.strokeStyle=f.color+'33';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx,y);ctx.lineTo(cx,y-gap);ctx.stroke()}
+    ctx.globalAlpha=1;y+=bh+gap;
+  }
+  // Loop bracket
+  if(p>.2){
+    const lp=ease((p-.2)/.15);ctx.globalAlpha=lp*.4;
+    ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+    const ly=topY+bh+gap+5,lh=4*(bh+gap)-gap;
+    rrect(cx-bw/2-15,ly,bw+30,lh,10);ctx.stroke();
+    ctx.setLineDash([]);ctx.globalAlpha=1;
+  }
+}
+
+function renderStep4(p){
+  const cx=W/2,topY=15;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle=`rgba(148,163,184,${ease(Math.min(1,p/.15))})`;
+  ctx.fillText('三种采样策略对比',cx,topY);
+  // Probability distribution
+  const probs=[.35,.22,.15,.1,.08,.05,.03,.02];
+  const labels=['的','很','在','了','是','和','也','不'];
+  const barW=30,barH=100,bx=30,by=topY+40;
+  // Draw bars
+  const p1=ease(Math.max(0,Math.min(1,(p-.1)/.3)));
+  ctx.globalAlpha=p1;
+  for(let i=0;i<probs.length;i++){
+    const h=probs[i]*barH*2.5;
+    ctx.fillStyle='rgba(108,92,231,.3)';
+    ctx.fillRect(bx+i*(barW+4),by+barH-h,barW,h);
+    ctx.strokeStyle='rgba(108,92,231,.5)';ctx.lineWidth=1;
+    ctx.strokeRect(bx+i*(barW+4),by+barH-h,barW,h);
+    ctx.fillStyle='#E2E8F0';ctx.font='10px PingFang SC';
+    ctx.fillText(labels[i],bx+i*(barW+4)+barW/2,by+barH+14);
+    ctx.fillStyle='#94A3B8';ctx.font='9px Courier New';
+    ctx.fillText((probs[i]*100).toFixed(0)+'%',bx+i*(barW+4)+barW/2,by+barH-h-5);
+  }
+  ctx.globalAlpha=1;
+  // Greedy highlight
+  if(p>.35){
+    const gp=ease((p-.35)/.15);ctx.globalAlpha=gp;
+    ctx.strokeStyle='#EF4444';ctx.lineWidth=2;
+    ctx.strokeRect(bx-1,by+barH-probs[0]*barH*2.5-1,barW+2,probs[0]*barH*2.5+2);
+    ctx.fillStyle='#EF4444';ctx.font='12px PingFang SC';
+    ctx.fillText('Greedy: 取最大',bx+barW/2,by-5);
+    ctx.globalAlpha=1;
+  }
+  // Top-K highlight
+  if(p>.5){
+    const kp=ease((p-.5)/.15);ctx.globalAlpha=kp*.5;
+    ctx.fillStyle='rgba(0,184,148,.15)';
+    for(let i=0;i<3;i++)ctx.fillRect(bx+i*(barW+4),by,barW,barH);
+    ctx.globalAlpha=kp;ctx.fillStyle='#00B894';ctx.font='12px PingFang SC';
+    ctx.fillText('Top-K (K=3): 前3个采样',bx+3*(barW+4)/2,by+barH+35);
+    ctx.globalAlpha=1;
+  }
+  // Top-P highlight
+  if(p>.7){
+    const pp=ease((p-.7)/.15);
+    let cumsum=0;ctx.globalAlpha=pp*.3;
+    for(let i=0;i<probs.length;i++){
+      cumsum+=probs[i];
+      if(cumsum<=0.8){ctx.fillStyle='rgba(249,158,11,.2)';ctx.fillRect(bx+i*(barW+4),by,barW,barH)}
+    }
+    ctx.globalAlpha=pp;ctx.fillStyle='#F59E0B';ctx.font='12px PingFang SC';
+    ctx.fillText('Top-P (P=0.8): 累积概率<80%',bx+probs.length*(barW+4)/2,by+barH+55);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;const start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){const s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;const fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;const d=document.getElementById('dots');d.innerHTML='';for(let i=0;i<steps.length;i++){const s2=document.createElement('span');if(i===currentStep)s2.className='active';s2.onclick=(idx=>()=>{currentStep=idx;updateUI();startAnim()})(i);d.appendChild(s2)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>V18 - 商品理解：代码讲解</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:-apple-system,sans-serif}.header{height:64px;background:linear-gradient(135deg,#1a1e2e,#2a2e3e);display:flex;align-items:center;padding:0 24px;border-bottom:1px solid #333}.badge{background:linear-gradient(135deg,#ff6b35,#f7c948);padding:4px 12px;border-radius:12px;font-size:13px;font-weight:700;margin-right:12px}.title{font-size:18px;font-weight:600;flex:1}.page-type{font-size:13px;color:#aaa;background:#1a1e2e;padding:4px 12px;border-radius:8px}.dots{display:flex;gap:6px;margin-left:16px}.dot{width:10px;height:10px;border-radius:50%;background:#333;cursor:pointer;transition:all .3s}.dot.active{background:#ff6b35}.dot.done{background:#f7c948}.main{display:flex;height:calc(100vh - 136px)}.code-panel{flex:4;padding:16px;overflow-y:auto;background:#0d1117;font-family:monospace;font-size:13px;line-height:1.6}.code-line{padding:2px 8px;border-radius:3px;white-space:pre}.code-line.highlight{background:#ff6b3522;border-left:3px solid #ff6b35}.canvas-area{flex:6;position:relative;display:flex;align-items:center;justify-content:center;background:#111827}canvas{border-radius:8px}.info-box{position:absolute;bottom:16px;left:16px;right:16px;background:#1a1e2eee;border:1px solid #333;border-radius:8px;padding:12px}.info-title{font-size:14px;font-weight:700;color:#ff6b35;margin-bottom:4px}.info-text{font-size:13px;color:#ccc}.controls{height:72px;background:#111827;display:flex;align-items:center;justify-content:center;gap:16px;border-top:1px solid #222}.btn{padding:10px 24px;border:1px solid #555;border-radius:8px;background:transparent;color:#e0e0e0;cursor:pointer;font-size:14px;transition:all .2s}.btn:hover{border-color:#ff6b35}.btn:disabled{opacity:.3}.step-counter{font-size:16px;font-weight:600;min-width:100px;text-align:center}</style></head>
+<body>
+<div class="header"><span class="badge">V18</span><span class="title">商品理解与细粒度视觉</span><span class="page-type">代码讲解</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="code-panel" id="codePanel"></div><div class="canvas-area"><canvas id="canvas"></canvas><div class="info-box"><div class="info-title" id="infoTitle"></div><div class="info-text" id="infoText"></div></div></div></div>
+<div class="controls"><button class="btn" id="prevBtn" onclick="prevStep()">◀ 上一步</button><div class="step-counter" id="stepCounter"></div><button class="btn" id="nextBtn" onclick="nextStep()">下一步 ▶</button><button class="btn" onclick="replay()">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');let W,H,currentStep=0,animProgress=0,animId=null;
+function resize(){const a=document.querySelector('.canvas-area');W=canvas.width=a.clientWidth-40;H=canvas.height=a.clientHeight-120}window.addEventListener('resize',resize);resize();
+function RR(x,y,w,h,r,f,s){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();if(f){ctx.fillStyle=f;ctx.fill()}if(s){ctx.strokeStyle=s;ctx.stroke()}}
+function arr(x1,y1,x2,y2,c='#555'){ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
+function txt(t,x,y,c='#aaa',s=12){ctx.fillStyle=c;ctx.font=s+'px sans-serif';ctx.textAlign='center';ctx.fillText(t,x,y)}
+
+const steps=[
+{title:"PartDetector.forward",info:"可学习 Query 检测判别性零件区域",
+code:[{text:'def forward(self, patch_features, K=4):',hl:true},{text:'    # patch_features: [B, 196, 256]',hl:false},{text:'    queries = self.part_queries  # [4, 256]',hl:true},{text:'    ',hl:false},{text:'    # Cross-attention 分数',hl:true},{text:'    attn = queries @ features.T / √D',hl:false},{text:'    attn = softmax(attn, dim=-1)  # [4,196]',hl:false},{text:'    ',hl:false},{text:'    # 加权聚合',hl:true},{text:'    part_feats = attn @ features  # [4,256]',hl:false},{text:'    return part_feats, attn',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+RR(20,20,100,30,4,'#1a1e2e','#ff6b35');txt('Q [4,D]',70,40,'#ff6b35',11);
+if(p>0.3){RR(20,80,200,30,4,'#1a1e2e','#f7c948');txt('F [196,D]',120,100,'#f7c948',11)}
+if(p>0.5){arr(120,55,120,75,'#555');RR(20,130,200,30,4,'#1a1e2e','#00e5ff');txt('Attn [4,196]',120,150,'#00e5ff',11)}
+if(p>0.8){arr(120,165,120,185,'#555');RR(20,190,200,30,4,'#1a1e2e','#e040fb');txt('Parts [4,D]',120,210,'#e040fb',11)}}},
+
+{title:"MultiGranularityModel.forward",info:"全局CLS + 局部Part → 融合分类",
+code:[{text:'def forward(self, images):',hl:true},{text:'    features = self.backbone(images)',hl:false},{text:'    global_feat = features[:, 0]  # CLS',hl:true},{text:'    patch_feats = features[:, 1:]',hl:false},{text:'    ',hl:false},{text:'    # 零件检测',hl:true},{text:'    parts, attn = self.part_det(patches)',hl:false},{text:'    ',hl:false},{text:'    # 全局 + 局部分类',hl:true},{text:'    g_logits = self.global_head(global)',hl:false},{text:'    p_logits = [h(p) for h,p in ...]',hl:false},{text:'    ',hl:false},{text:'    # 融合',hl:true},{text:'    fused = cat([global, parts.flat])',hl:false},{text:'    f_logits = self.fused_head(fused)',hl:false},{text:'    ',hl:false},{text:'    # 多样性正则',hl:true},{text:'    div = ||A^T·A - I||²',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2,y=20;
+const blocks=[{n:'ViT Backbone',c:'#ff6b35'},{n:'CLS [B,D]',c:'#f7c948'},{n:'Parts [B,4,D]',c:'#00e5ff'},{n:'Cat → Fused Head',c:'#e040fb'},{n:'logits [B,200]',c:'#ff6b35'}];
+blocks.forEach((b,i)=>{const prog=Math.min(1,p*(blocks.length+1)/(i+1));if(prog<=0)return;ctx.globalAlpha=Math.min(1,prog);RR(cx-80,y+i*45,160,30,4,'#1a1e2e',b.c);txt(b.n,cx,y+i*45+20,b.c,11);if(i>0)arr(cx,y+(i-1)*45+35,cx,y+i*45-2,'#555');ctx.globalAlpha=1})}},
+
+{title:"ArcFaceHead.forward",info:"角度 margin 使同类更紧凑",
+code:[{text:'def forward(self, features, labels):',hl:true},{text:'    feat = F.normalize(features)',hl:true},{text:'    W = F.normalize(self.weight)',hl:false},{text:'    ',hl:false},{text:'    cosine = feat @ W.T  # [B,C]',hl:true},{text:'    theta = arccos(cosine)',hl:false},{text:'    ',hl:false},{text:'    # 正确类加 margin',hl:true},{text:'    one_hot = F.one_hot(labels)',hl:false},{text:'    target = cos(theta + margin)',hl:true},{text:'    logits = cos*(1-oh) + target*oh',hl:false},{text:'    logits = logits * scale',hl:false},{text:'    ',hl:false},{text:'    return CE(logits, labels)',hl:true}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2,cy=H/2-20;
+ctx.strokeStyle='#333';ctx.beginPath();ctx.arc(cx,cy,80,0,Math.PI*2);ctx.stroke();
+txt('cos θ 空间',cx,cy-95,'#aaa');
+if(p>0.3){ctx.fillStyle='#ff6b35';ctx.beginPath();ctx.arc(cx+60,cy-40,5,0,Math.PI*2);ctx.fill();txt('θ_yi',cx+80,cy-40,'#ff6b35',10)}
+if(p>0.6){ctx.fillStyle='#f7c948';const mx=0.5*Math.min(1,(p-0.3)*2);ctx.beginPath();ctx.arc(cx+60*Math.cos(mx),cy-40-60*Math.sin(mx),5,0,Math.PI*2);ctx.fill();txt('+margin',cx+60*Math.cos(mx)+20,cy-40-60*Math.sin(mx),'#f7c948',10)}
+if(p>0.8){txt('margin 推开决策边界',cx,cy+100,'#00e5ff',12)}}},
+
+{title:"ProductAttributeModel.forward",info:"属性 Query × 视觉特征 → 多任务预测",
+code:[{text:'def forward(self, images):',hl:true},{text:'    feats = self.encoder(images)',hl:false},{text:'    cls = feats[:, 0]',hl:false},{text:'    patches = feats[:, 1:]',hl:false},{text:'    ',hl:false},{text:'    # 5个属性Query交叉注意力',hl:true},{text:'    queries = self.attr_queries  # [5,D]',hl:false},{text:'    attr, _ = cross_attn(Q, patches)',hl:true},{text:'    attr = norm(attr + queries)',hl:false},{text:'    ',hl:false},{text:'    # 各属性独立预测',hl:true},{text:'    cat = category_head(attr[0])',hl:false},{text:'    brand = brand_head(attr[1])',hl:false},{text:'    color = sigmoid(color_head(attr[2]))',hl:false},{text:'    material = sigmoid(mat_head(attr[3]))',hl:false},{text:'    style = sigmoid(style_head(attr[4]))',hl:false}],
+render(p){ctx.clearRect(0,0,W,H);const cx=W/2;
+const attrs=['类目','品牌','颜色','材质','风格'];const colors=['#ff6b35','#f7c948','#00e5ff','#e040fb','#4caf50'];
+RR(cx-60,10,120,25,4,'#1a1e2e','#aaa');txt('Patches [N,D]',cx,28,'#aaa',10);
+attrs.forEach((a,i)=>{const prog=Math.min(1,p*3-i*0.3);if(prog<=0)return;const y=50+i*30;ctx.globalAlpha=Math.min(1,prog);RR(20,y,80,22,3,colors[i]+'22',colors[i]);txt(a,60,y+15,colors[i],10);RR(cx+50,y,100,22,3,'#1a1e2e',colors[i]);txt('预测→',cx+100,y+15,'#888',9);ctx.globalAlpha=1})}}
+];
+
+function renderCode(){const p=document.getElementById('codePanel');p.innerHTML='';steps[currentStep].code.forEach(l=>{const d=document.createElement('div');d.className='code-line'+(l.hl?' highlight':'');d.textContent=l.text;p.appendChild(d)})}
+function animate(){animProgress+=.015;if(animProgress>1)animProgress=1;steps[currentStep].render(animProgress);if(animProgress<1)animId=requestAnimationFrame(animate)}
+function goToStep(s){currentStep=Math.max(0,Math.min(steps.length-1,s));animProgress=0;if(animId)cancelAnimationFrame(animId);animate();updateUI()}
+function nextStep(){if(currentStep<steps.length-1)goToStep(currentStep+1)}function prevStep(){if(currentStep>0)goToStep(currentStep-1)}
+function replay(){animProgress=0;if(animId)cancelAnimationFrame(animId);animate()}
+function updateUI(){document.getElementById('infoTitle').textContent=steps[currentStep].title;document.getElementById('infoText').textContent=steps[currentStep].info;document.getElementById('stepCounter').textContent=`Step ${currentStep+1}/${steps.length}`;document.getElementById('prevBtn').disabled=currentStep===0;document.getElementById('nextBtn').disabled=currentStep===steps.length-1;document.querySelectorAll('.dot').forEach((d,i)=>{d.className='dot'+(i===currentStep?' active':(i<currentStep?' done':''))});renderCode()}
+function init(){const d=document.getElementById('dots');steps.forEach((_,i)=>{const dot=document.createElement('div');dot.className='dot'+(i===0?' active':'');dot.onclick=()=>goToStep(i);d.appendChild(dot)});updateUI();animate()}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();if(e.key==='ArrowLeft')prevStep()});init();
+</script></body></html>

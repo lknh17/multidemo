@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p01 环境搭建与显存估算 - 原理可视化</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root {
+  --primary: #6C5CE7; --accent: #00B894; --blue: #0984E3;
+  --bg-dark: #0A0E17; --bg-card: #111827; --bg-panel: #1A1F2E;
+  --text-main: #E2E8F0; --text-sub: #94A3B8; --text-dim: #64748B;
+  --warn: #F59E0B; --danger: #EF4444; --success: #10B981;
+  --orange: #F97316; --pink: #EC4899;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg-dark); color:var(--text-main); min-height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+.header { height:64px; background:linear-gradient(135deg,rgba(249,115,22,.15),rgba(0,184,148,.1)); border-bottom:1px solid rgba(249,115,22,.3); display:flex; align-items:center; padding:0 24px; flex-shrink:0; backdrop-filter:blur(10px); }
+.badge { background:linear-gradient(135deg,var(--orange),var(--danger)); padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; margin-right:12px; }
+.header h1 { font-size:20px; font-weight:700; }
+.header .tag { margin-left:16px; font-size:13px; color:var(--accent); border:1px solid rgba(0,184,148,.4); padding:2px 10px; border-radius:12px; }
+.dots { margin-left:auto; display:flex; gap:8px; }
+.dots span { width:10px; height:10px; border-radius:50%; background:var(--text-dim); transition:all .3s; cursor:pointer; }
+.dots span.active { background:var(--accent); box-shadow:0 0 8px var(--accent); transform:scale(1.3); }
+.main { flex:1; display:flex; overflow:hidden; }
+.canvas-area { flex:3; position:relative; background:radial-gradient(ellipse at center,rgba(249,115,22,.05),transparent 70%); }
+.canvas-area canvas { width:100%; height:100%; }
+.grid-bg { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px); background-size:40px 40px; pointer-events:none; }
+.info-panel { flex:2; background:var(--bg-card); border-left:1px solid rgba(255,255,255,.06); padding:28px; overflow-y:auto; display:flex; flex-direction:column; }
+.step-title { font-size:22px; font-weight:700; margin-bottom:12px; background:linear-gradient(90deg,var(--orange),var(--accent)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.step-desc { font-size:15px; line-height:1.9; color:var(--text-sub); }
+.step-desc strong { color:var(--accent); }
+.formula-box { background:var(--bg-panel); border:1px solid rgba(249,115,22,.3); border-radius:12px; padding:16px 20px; margin:16px 0; font-family:'Courier New',monospace; font-size:15px; color:var(--warn); text-align:center; line-height:1.8; white-space:pre-line; }
+.controls { height:72px; background:var(--bg-card); border-top:1px solid rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; gap:20px; flex-shrink:0; }
+.btn { padding:10px 28px; border-radius:12px; border:1px solid rgba(249,115,22,.5); background:rgba(249,115,22,.1); color:var(--text-main); font-size:15px; font-weight:600; cursor:pointer; transition:all .3s; }
+.btn:hover { background:rgba(249,115,22,.3); transform:scale(1.05); box-shadow:0 0 20px rgba(249,115,22,.3); }
+.btn:active { transform:scale(.97); }
+.btn.accent { border-color:rgba(0,184,148,.5); background:rgba(0,184,148,.1); }
+.btn.accent:hover { background:rgba(0,184,148,.3); box-shadow:0 0 20px rgba(0,184,148,.3); }
+.step-counter { font-size:16px; font-weight:700; color:var(--text-sub); min-width:100px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p01</span>
+  <h1>环境搭建与显存估算</h1>
+  <span class="tag">原理可视化</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="info-panel">
+    <div class="step-title" id="stepTitle"></div>
+    <div class="step-desc" id="stepDesc"></div>
+    <div class="formula-box" id="formulaBox" style="display:none"></div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter">Step 1/6</div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, currentStep = 0, animProgress = 0, animId = null;
+
+const steps = [
+  { title: '训练显存的四大组成',
+    desc: '大模型训练时，GPU 显存被四部分占据：<br><br>1. <strong>参数内存</strong> — 模型权重本身<br>2. <strong>梯度内存</strong> — 反向传播的梯度值<br>3. <strong>优化器状态</strong> — AdamW 的 m 和 v<br>4. <strong>激活值内存</strong> — 前向传播的中间结果<br><br>动画展示：0.5B 模型 bf16 训练时四部分显存的<strong>堆叠构成</strong>。',
+    formula: '总显存 = 参数 + 梯度 + 优化器 + 激活值 + 框架开销\n≈ 0.93 + 1.86 + 3.73 + 0.82 + 1.50 = 8.84 GB' },
+  { title: '不同精度的显存对比',
+    desc: '精度选择直接决定<strong>参数内存</strong>的大小：<br><br>• <strong>fp32</strong>: 4 字节/参数 — 最高精度但最耗显存<br>• <strong>bf16</strong>: 2 字节/参数 — 推荐！数值范围与 fp32 相同<br>• <strong>fp16</strong>: 2 字节/参数 — 数值范围小，需要 loss scaling<br>• <strong>int8</strong>: 1 字节/参数 — 量化推理用<br>• <strong>int4</strong>: 0.5 字节/参数 — QLoRA 训练用<br><br>动画展示：同一模型在不同精度下的显存柱状图对比。',
+    formula: '参数显存(GB) = 参数量 × 每参数字节 / 1024³\n0.5B × bf16: 0.5×10⁹ × 2 / 1024³ ≈ 0.93 GB\n0.5B × fp32: 0.5×10⁹ × 4 / 1024³ ≈ 1.86 GB' },
+  { title: '优化器状态：隐藏的显存杀手',
+    desc: 'AdamW 为每个参数维护两个<strong>fp32</strong>状态：<br><br>• <strong>m (一阶动量)</strong>: 梯度的指数移动平均<br>• <strong>v (二阶动量)</strong>: 梯度平方的指数移动平均<br><br>每参数 8 字节，是 bf16 参数本身的 <strong>4 倍</strong>！<br>0.5B 模型的优化器状态就需要 ~3.7 GB。<br><br>这就是为什么训练比推理多占 6-20 倍显存。',
+    formula: 'AdamW 更新公式:\nm_t = β₁·m_{t-1} + (1-β₁)·g_t      ← 4 bytes/param\nv_t = β₂·v_{t-1} + (1-β₂)·g_t²    ← 4 bytes/param\nθ_t = θ_{t-1} - lr · m_t / (√v_t + ε)' },
+  { title: 'DeepSpeed ZeRO Stage 0-3',
+    desc: 'ZeRO 的核心思想：将冗余数据<strong>分片</strong>到多张 GPU。<br><br>• <strong>Stage 0</strong>: 无优化，全量数据在每张卡上<br>• <strong>Stage 1</strong>: 优化器状态分片<br>• <strong>Stage 2</strong>: 优化器 + 梯度分片<br>• <strong>Stage 3</strong>: 全部分片（参数也分片）<br><br>动画展示：4 张 GPU 上，不同 Stage 的数据分布示意。<br><br>单卡时 Stage 2/3 仍有内部优化，但分片收益有限。',
+    formula: 'Stage 0: 每卡 = P + G + O\nStage 1: 每卡 = P + G + O/N\nStage 2: 每卡 = P + G/N + O/N\nStage 3: 每卡 = P/N + G/N + O/N\n(N = GPU 数量)' },
+  { title: 'Gradient Checkpointing',
+    desc: '<strong>用时间换空间</strong>的经典技巧：<br><br>• 正常训练：保存每层的激活值 → 显存 ∝ L（层数）<br>• Checkpoint：只保存部分层 → 显存 ∝ √L<br>• 代价：反向传播时重新计算丢弃的激活值，速度慢约 30%<br><br>对于 24 层的 Qwen2.5-0.5B：<br>• 无 GC: 保存 24 层激活值<br>• 有 GC: 只保存 ~5 层，其余反向传播时重算',
+    formula: '无 Checkpointing:\n  激活值显存 ∝ B × S × H × L\n\n有 Checkpointing:\n  激活值显存 ∝ B × S × H × √L\n  速度代价 ≈ 30%' },
+  { title: '0.5B 模型全流程显存规划',
+    desc: '以 Qwen2.5-0.5B 在 24G GPU 上的完整训练流程为例：<br><br>• <strong>p02 预训练</strong>: bf16 全参 + ZeRO-0 ≈ 9GB ✅<br>• <strong>p03 SFT</strong>: LoRA ≈ 5GB ✅ / 全参 ≈ 9GB ✅<br>• <strong>p04 DPO</strong>: 需要 2 个模型 ≈ 12GB ✅<br>• <strong>p05 GRPO</strong>: 需要 policy + ref ≈ 14GB ✅<br>• <strong>p06 MLLM</strong>: VL-2B + LoRA ≈ 15GB ✅<br><br>24G 显存可以覆盖全部实验！无需更大的 GPU。',
+    formula: '24G 显存分配参考:\n  模型训练:  ≤ 18GB\n  CUDA 框架:  ~1.5GB\n  安全余量:  ~4.5GB\n\n⚠️ 实际显存 ≈ 估算值 × 1.1~1.3\n   (内存碎片、临时 tensor 等)' }
+];
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * r; canvas.height = rect.height * r;
+  W = rect.width; H = rect.height;
+  ctx.setTransform(r,0,0,r,0,0);
+}
+window.addEventListener('resize', resize);
+
+function lerp(a,b,t){ return a+(b-a)*Math.min(Math.max(t,0),1); }
+function easeInOut(t){ return t<.5?2*t*t:(4-2*t)*t-1; }
+function hsl(h,s,l){ return `hsl(${h},${s}%,${l}%)`; }
+function drawRoundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); }
+
+// Step 0: VRAM composition stacked bar
+function renderStep0(p) {
+  const cx=W/2, baseY=H-80;
+  const parts = [
+    {name:'参数 (bf16)', gb:0.93, color:'#6C5CE7'},
+    {name:'梯度 (fp32)', gb:1.86, color:'#0984E3'},
+    {name:'优化器 (AdamW)', gb:3.73, color:'#EF4444'},
+    {name:'激活值 (GC)', gb:0.82, color:'#F59E0B'},
+    {name:'框架开销', gb:1.50, color:'#64748B'},
+  ];
+  const total = parts.reduce((s,p)=>s+p.gb,0);
+  const barW=120, scale=35; // px per GB
+  const sx=cx-barW/2;
+  
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('Qwen2.5-0.5B 训练显存构成',cx,30);
+  
+  let cumY = baseY;
+  for(let i=0;i<parts.length;i++){
+    const delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const h=parts[i].gb*scale*ap;
+    cumY -= h;
+    ctx.globalAlpha=.9;
+    ctx.fillStyle=parts[i].color;
+    drawRoundRect(sx,cumY,barW,h,4); ctx.fill();
+    // label
+    if(ap>.5){
+      ctx.globalAlpha=ap;
+      ctx.fillStyle='#fff'; ctx.font='bold 12px PingFang SC'; ctx.textAlign='left';
+      ctx.fillText(parts[i].name,sx+barW+15,cumY+h/2+4);
+      ctx.fillStyle='rgba(255,255,255,.7)'; ctx.font='12px Courier New';
+      ctx.fillText(parts[i].gb.toFixed(2)+' GB',sx+barW+15,cumY+h/2+20);
+    }
+    ctx.globalAlpha=1;
+  }
+  // Total
+  if(p>.8){
+    const tp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=tp;
+    ctx.font='bold 18px PingFang SC'; ctx.textAlign='center';
+    ctx.fillStyle='var(--accent)';
+    ctx.fillText('总计: '+total.toFixed(2)+' GB',cx,cumY-25);
+    ctx.font='14px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.7)';
+    ctx.fillText('24G GPU 完全够用 ✅',cx,cumY-5);
+    ctx.globalAlpha=1;
+  }
+  // GPU outline
+  ctx.strokeStyle='rgba(255,255,255,.15)'; ctx.lineWidth=1; ctx.setLineDash([5,5]);
+  const gpu24=24*scale;
+  drawRoundRect(sx-10,baseY-gpu24,barW+20,gpu24,8); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.textAlign='right';
+  ctx.fillText('24GB',sx-15,baseY-gpu24+15);
+}
+
+// Step 1: Precision comparison bars
+function renderStep1(p) {
+  const precisions = [
+    {name:'fp32', bytes:4, color:'#EF4444'},
+    {name:'bf16', bytes:2, color:'#6C5CE7'},
+    {name:'fp16', bytes:2, color:'#0984E3'},
+    {name:'int8', bytes:1, color:'#F59E0B'},
+    {name:'int4', bytes:0.5, color:'#10B981'},
+  ];
+  const paramB=0.5;
+  const cx=W/2, startY=50, barH=40, gap=15;
+  
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('0.5B 模型 — 不同精度的参数显存',cx,30);
+  
+  const maxGB=paramB*1e9*4/Math.pow(1024,3);
+  const scale=(W-200)/maxGB;
+  
+  for(let i=0;i<precisions.length;i++){
+    const delay=i*.12;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.35)));
+    const gb=paramB*1e9*precisions[i].bytes/Math.pow(1024,3);
+    const barW=gb*scale*ap;
+    const y=startY+i*(barH+gap);
+    
+    // Bar
+    ctx.fillStyle=precisions[i].color; ctx.globalAlpha=.8;
+    drawRoundRect(100,y,barW,barH,6); ctx.fill();
+    ctx.globalAlpha=1;
+    
+    // Label left
+    ctx.font='bold 14px Courier New'; ctx.textAlign='right';
+    ctx.fillStyle=precisions[i].color;
+    ctx.fillText(precisions[i].name,85,y+barH/2+5);
+    
+    // Value right
+    if(ap>.3){
+      ctx.font='bold 13px PingFang SC'; ctx.textAlign='left';
+      ctx.fillStyle='rgba(255,255,255,.8)';
+      ctx.fillText(gb.toFixed(2)+' GB',105+barW,y+barH/2+5);
+      ctx.font='11px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.4)';
+      ctx.fillText(precisions[i].bytes+' B/param',105+barW,y+barH/2+22);
+    }
+  }
+  
+  // Highlight bf16
+  if(p>.7){
+    const hp=easeInOut((p-.7)/.3);
+    ctx.strokeStyle=`rgba(108,92,231,${hp})`; ctx.lineWidth=2;
+    const y1=startY+1*(barH+gap);
+    drawRoundRect(98,y1-2,W-180,barH+4,8); ctx.stroke();
+    ctx.fillStyle=`rgba(108,92,231,${hp*.8})`; ctx.font='bold 13px PingFang SC'; ctx.textAlign='right';
+    ctx.fillText('← 推荐！',W-30,y1+barH/2+5);
+  }
+}
+
+// Step 2: AdamW optimizer states
+function renderStep2(p) {
+  const cx=W/2, cy=H/2;
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('AdamW 优化器状态显存',cx,30);
+  
+  const boxW=140, boxH=80, gap=30;
+  const items = [
+    {name:'参数 θ', sub:'bf16: 2B/p', gb:0.93, color:'#6C5CE7', y:cy-60},
+    {name:'动量 m', sub:'fp32: 4B/p', gb:1.86, color:'#EF4444', y:cy+50},
+    {name:'方差 v', sub:'fp32: 4B/p', gb:1.86, color:'#F97316', y:cy+50},
+  ];
+  
+  // Parameter box
+  const p1=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=p1;
+  ctx.fillStyle='rgba(108,92,231,.2)'; ctx.strokeStyle='rgba(108,92,231,.5)'; ctx.lineWidth=2;
+  drawRoundRect(cx-boxW/2,items[0].y,boxW,boxH,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#6C5CE7'; ctx.font='bold 16px PingFang SC';
+  ctx.fillText(items[0].name,cx,items[0].y+30);
+  ctx.fillStyle='rgba(108,92,231,.7)'; ctx.font='13px Courier New';
+  ctx.fillText(items[0].sub,cx,items[0].y+52);
+  ctx.fillText(items[0].gb.toFixed(2)+' GB',cx,items[0].y+70);
+  ctx.globalAlpha=1;
+  
+  // m and v boxes
+  const p2=easeInOut(Math.max(0,(p-.3)/.35));
+  const mX=cx-boxW-gap/2, vX=cx+gap/2;
+  [{x:mX,i:1,c:'#EF4444'},{x:vX,i:2,c:'#F97316'}].forEach(({x,i,c})=>{
+    ctx.globalAlpha=p2;
+    ctx.fillStyle=c+'33'; ctx.strokeStyle=c+'88'; ctx.lineWidth=2;
+    drawRoundRect(x,items[i].y,boxW,boxH,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=c; ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+    ctx.fillText(items[i].name,x+boxW/2,items[i].y+30);
+    ctx.fillStyle=c+'BB'; ctx.font='13px Courier New';
+    ctx.fillText(items[i].sub,x+boxW/2,items[i].y+52);
+    ctx.fillText(items[i].gb.toFixed(2)+' GB',x+boxW/2,items[i].y+70);
+    ctx.globalAlpha=1;
+  });
+  
+  // Arrow from params to m,v
+  if(p>.4){
+    const ap=easeInOut((p-.4)/.2);
+    ctx.strokeStyle=`rgba(255,255,255,${ap*.4})`; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(cx,items[0].y+boxH); ctx.lineTo(mX+boxW/2,items[1].y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx,items[0].y+boxH); ctx.lineTo(vX+boxW/2,items[1].y); ctx.stroke();
+  }
+  
+  // Total comparison
+  if(p>.7){
+    const tp=easeInOut((p-.7)/.3);
+    ctx.globalAlpha=tp;
+    const ty=items[1].y+boxH+40;
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle='var(--warn)'; ctx.textAlign='center';
+    ctx.fillText('优化器(m+v)='+3.72+' GB  vs  参数(θ)=0.93 GB',cx,ty);
+    ctx.font='13px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.8)';
+    ctx.fillText('优化器状态是参数的 4 倍！',cx,ty+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: ZeRO stages visualization
+function renderStep3(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('DeepSpeed ZeRO Stage 0-3（4 GPU 示意）',W/2,30);
+  
+  const stages=[0,1,2,3];
+  const gpuW=60, gpuH=160, gpuGap=15;
+  const stageGap=W/4;
+  const colors={P:'#6C5CE7',G:'#0984E3',O:'#EF4444'};
+  
+  stages.forEach((stage,si)=>{
+    const delay=si*.2;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.35)));
+    const sx=si*stageGap+stageGap/2;
+    
+    ctx.globalAlpha=ap;
+    ctx.font='bold 14px PingFang SC'; ctx.fillStyle='var(--warn)'; ctx.textAlign='center';
+    ctx.fillText('Stage '+stage,sx,55);
+    
+    for(let gpu=0;gpu<4;gpu++){
+      const gx=sx-(4*(gpuW+gpuGap))/2+gpu*(gpuW+gpuGap);
+      const gy=75;
+      // GPU outline
+      ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+      drawRoundRect(gx,gy,gpuW,gpuH,6); ctx.stroke();
+      ctx.font='10px PingFang SC'; ctx.fillStyle='rgba(255,255,255,.3)';
+      ctx.fillText('GPU'+gpu,gx+gpuW/2,gy+gpuH+15);
+      
+      // Fill based on stage
+      const segH=gpuH/3;
+      // Parameters
+      let pH=segH; if(stage===3) pH=segH/4;
+      ctx.fillStyle=colors.P+'CC';
+      drawRoundRect(gx+3,gy+3,gpuW-6,pH-3,3); ctx.fill();
+      
+      // Gradients
+      let gH=segH; if(stage>=2) gH=segH/4;
+      ctx.fillStyle=colors.G+'CC';
+      drawRoundRect(gx+3,gy+segH+3,gpuW-6,gH-3,3); ctx.fill();
+      
+      // Optimizer
+      let oH=segH; if(stage>=1) oH=segH/4;
+      ctx.fillStyle=colors.O+'CC';
+      drawRoundRect(gx+3,gy+2*segH+3,gpuW-6,oH-3,3); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  });
+  
+  // Legend
+  if(p>.5){
+    const lp=easeInOut((p-.5)/.2);
+    ctx.globalAlpha=lp;
+    const ly=H-45;
+    ctx.font='13px PingFang SC'; ctx.textAlign='center';
+    [{c:colors.P,t:'P=参数'},{c:colors.G,t:'G=梯度'},{c:colors.O,t:'O=优化器'}].forEach(({c,t},i)=>{
+      ctx.fillStyle=c; ctx.fillRect(W/2-100+i*80,ly,14,14);
+      ctx.fillStyle='var(--text-sub)'; ctx.textAlign='left';
+      ctx.fillText(t,W/2-82+i*80,ly+12);
+    });
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: Gradient Checkpointing
+function renderStep4(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('Gradient Checkpointing: 用时间换空间',W/2,30);
+  
+  const L=8; // layers
+  const layerW=50, layerH=30, gap=8;
+  const sx=W/2-L*(layerW+gap)/2;
+  
+  // Without GC
+  const y1=70;
+  ctx.font='bold 13px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.8)'; ctx.textAlign='left';
+  ctx.fillText('无 Checkpointing — 保存全部激活值',20,y1-5);
+  
+  for(let i=0;i<L;i++){
+    const delay=i*.06;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const x=sx+i*(layerW+gap);
+    ctx.globalAlpha=ap;
+    ctx.fillStyle='rgba(239,68,68,.3)'; ctx.strokeStyle='rgba(239,68,68,.5)'; ctx.lineWidth=1;
+    drawRoundRect(x,y1,layerW,layerH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.6)'; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText('L'+i,x+layerW/2,y1+layerH/2+4);
+    // Memory bar
+    ctx.fillStyle='rgba(239,68,68,.5)';
+    drawRoundRect(x,y1+layerH+5,layerW,12,3); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+  
+  // With GC
+  const y2=y1+80;
+  ctx.font='bold 13px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.8)'; ctx.textAlign='left';
+  const p2=easeInOut(Math.max(0,(p-.4)/.4));
+  ctx.globalAlpha=p2;
+  ctx.fillText('有 Checkpointing — 只保存 √L 个检查点',20,y2-5);
+  
+  const checkpoints=[0,2,5,7]; // sqrt(8)≈3 checkpoints
+  for(let i=0;i<L;i++){
+    const isCp=checkpoints.includes(i);
+    const x=sx+i*(layerW+gap);
+    ctx.fillStyle=isCp?'rgba(0,184,148,.3)':'rgba(100,116,139,.15)';
+    ctx.strokeStyle=isCp?'rgba(0,184,148,.5)':'rgba(100,116,139,.3)'; ctx.lineWidth=1;
+    drawRoundRect(x,y2,layerW,layerH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=isCp?'rgba(0,184,148,.8)':'rgba(255,255,255,.3)'; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText('L'+i,x+layerW/2,y2+layerH/2+4);
+    if(isCp){
+      ctx.fillStyle='rgba(0,184,148,.5)';
+      drawRoundRect(x,y2+layerH+5,layerW,12,3); ctx.fill();
+      ctx.font='9px PingFang SC'; ctx.fillStyle='rgba(0,184,148,.7)';
+      ctx.fillText('✓',x+layerW/2,y2+layerH+14);
+    }
+  }
+  ctx.globalAlpha=1;
+  
+  // Comparison
+  if(p>.8){
+    const cp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=cp;
+    const cy=y2+80;
+    ctx.font='14px PingFang SC'; ctx.textAlign='center';
+    ctx.fillStyle='rgba(239,68,68,.7)';
+    ctx.fillText('无 GC: 保存 8 层激活值 → 显存高',W/2,cy);
+    ctx.fillStyle='rgba(0,184,148,.7)';
+    ctx.fillText('有 GC: 保存 3 层 + 重算 → 显存低，速度慢 30%',W/2,cy+25);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: Full pipeline VRAM planning
+function renderStep5(p) {
+  ctx.font='bold 16px PingFang SC'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(226,232,240,.8)';
+  ctx.fillText('0.5B 模型全流程显存规划 (24G GPU)',W/2,30);
+  
+  const stages=[
+    {name:'p02 预训练',vram:9,method:'bf16 全参',color:'#6C5CE7'},
+    {name:'p03 SFT',vram:5,method:'LoRA',color:'#0984E3'},
+    {name:'p04 DPO',vram:12,method:'2模型',color:'#F97316'},
+    {name:'p05 GRPO',vram:14,method:'policy+ref',color:'#EF4444'},
+    {name:'p06 MLLM',vram:15,method:'VL-2B LoRA',color:'#EC4899'},
+    {name:'p07 量化',vram:3,method:'推理',color:'#10B981'},
+    {name:'p08 部署',vram:4,method:'vLLM',color:'#F59E0B'},
+  ];
+  
+  const barH=28, gap=12, maxW=W-200, startY=55;
+  
+  stages.forEach((s,i)=>{
+    const delay=i*.1;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.3)));
+    const y=startY+i*(barH+gap);
+    const w=s.vram/24*maxW*ap;
+    
+    ctx.globalAlpha=.8;
+    ctx.fillStyle=s.color;
+    drawRoundRect(130,y,w,barH,5); ctx.fill();
+    ctx.globalAlpha=1;
+    
+    // Label
+    ctx.font='bold 12px PingFang SC'; ctx.textAlign='right';
+    ctx.fillStyle=s.color;
+    ctx.fillText(s.name,120,y+barH/2+4);
+    
+    if(ap>.3){
+      ctx.font='12px Courier New'; ctx.textAlign='left';
+      ctx.fillStyle='rgba(255,255,255,.7)';
+      ctx.fillText(s.vram+'GB ('+s.method+')',140+w,y+barH/2+4);
+    }
+  });
+  
+  // 24G line
+  if(p>.3){
+    const lp=easeInOut((p-.3)/.2);
+    ctx.globalAlpha=lp;
+    const lineX=130+maxW;
+    ctx.strokeStyle='rgba(239,68,68,.5)'; ctx.lineWidth=1; ctx.setLineDash([5,5]);
+    ctx.beginPath(); ctx.moveTo(lineX,startY-10); ctx.lineTo(lineX,startY+stages.length*(barH+gap)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font='12px PingFang SC'; ctx.fillStyle='rgba(239,68,68,.7)'; ctx.textAlign='center';
+    ctx.fillText('24GB',lineX,startY-15);
+    ctx.globalAlpha=1;
+  }
+  
+  // All pass
+  if(p>.9){
+    const fp=easeInOut((p-.9)/.1);
+    ctx.globalAlpha=fp;
+    ctx.font='bold 18px PingFang SC'; ctx.fillStyle='var(--accent)'; ctx.textAlign='center';
+    ctx.fillText('✅ 24G 显存覆盖全部实验！',W/2,H-30);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+
+function render() {
+  ctx.clearRect(0,0,W,H);
+  if(renderers[currentStep]) renderers[currentStep](animProgress);
+}
+
+function animate() {
+  animProgress += .012;
+  if(animProgress > 1.5) animProgress = 1.5;
+  render();
+  animId = requestAnimationFrame(animate);
+}
+
+function goToStep(i) {
+  currentStep = Math.max(0, Math.min(i, steps.length-1));
+  animProgress = 0;
+  document.getElementById('stepTitle').textContent = steps[currentStep].title;
+  document.getElementById('stepDesc').innerHTML = steps[currentStep].desc;
+  const fb = document.getElementById('formulaBox');
+  if(steps[currentStep].formula){ fb.textContent = steps[currentStep].formula; fb.style.display='block'; }
+  else fb.style.display='none';
+  document.getElementById('counter').textContent = `Step ${currentStep+1}/${steps.length}`;
+  // dots
+  const dots = document.getElementById('dots');
+  dots.innerHTML = '';
+  for(let j=0;j<steps.length;j++){
+    const s = document.createElement('span');
+    if(j===currentStep) s.className='active';
+    s.onclick = ()=>goToStep(j);
+    dots.appendChild(s);
+  }
+}
+
+function nextStep(){ goToStep(currentStep+1); }
+function prevStep(){ goToStep(currentStep-1); }
+function replay(){ animProgress=0; }
+
+resize();
+goToStep(0);
+animate();
+</script>
+</body>
+</html>

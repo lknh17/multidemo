@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p08 推理部署 - 原理可视化</title>
+<style>
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{height:64px;background:linear-gradient(135deg,rgba(108,92,231,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(108,92,231,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0}.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px}.header h1{font-size:20px;font-weight:700}.header .tag{margin-left:16px;font-size:13px;color:var(--accent);border:1px solid rgba(0,184,148,.4);padding:2px 10px;border-radius:12px}.dots{margin-left:auto;display:flex;gap:8px}.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer}.dots span.active{background:var(--accent);box-shadow:0 0 8px var(--accent);transform:scale(1.3)}.main{flex:1;display:flex;overflow:hidden}.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(108,92,231,.05),transparent 70%)}.canvas-area canvas{width:100%;height:100%}.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none}.info-panel{flex:2;background:var(--bg-card);border-left:1px solid rgba(255,255,255,.06);padding:28px;overflow-y:auto;display:flex;flex-direction:column}.step-title{font-size:22px;font-weight:700;margin-bottom:12px;background:linear-gradient(90deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.step-desc{font-size:15px;line-height:1.9;color:var(--text-sub)}.step-desc strong{color:var(--accent)}.formula-box{background:var(--bg-panel);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:16px 20px;margin:16px 0;font-family:'Courier New',monospace;font-size:15px;color:var(--warn);text-align:center;line-height:1.8}.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0}.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(108,92,231,.5);background:rgba(108,92,231,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s}.btn:hover{background:rgba(108,92,231,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(108,92,231,.3)}.btn:active{transform:scale(.97)}.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1)}.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3)}.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center}
+</style>
+</head>
+<body>
+<div class="header"><span class="badge">p08</span><h1>推理部署</h1><span class="tag">原理可视化</span><div class="dots" id="dots"></div></div>
+<div class="main"><div class="canvas-area"><div class="grid-bg"></div><canvas id="canvas"></canvas></div><div class="info-panel"><div class="step-title" id="stepTitle"></div><div class="step-desc" id="stepDesc"></div><div class="formula-box" id="formulaBox" style="display:none"></div></div></div>
+<div class="controls"><button class="btn" onclick="prevStep()">← 上一步</button><div class="step-counter" id="counter"></div><button class="btn accent" onclick="nextStep()">下一步 →</button><button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+const steps=[
+{title:'Prefill 与 Decode 两阶段',desc:'LLM 推理分为两个阶段：<br><br><strong>Prefill</strong>：输入完整 prompt，<strong>并行</strong>计算所有 token 的 KV Cache。计算密集型。<br><br><strong>Decode</strong>：每步生成<strong>一个</strong> token，需读取整个 KV Cache。访存密集型，是主要瓶颈。',formula:'Prefill: Q=[q₁..qₙ] → O(n²·d) 并行\nDecode: q=qₜ → O(t·d) 每步\nGPU利用率: Prefill~60% vs Decode<5%'},
+{title:'KV Cache 缓存机制',desc:'<strong>KV Cache</strong> 将已计算 token 的 Key/Value 缓存在显存中。<br><br>无缓存：生成第 t 个 token 需重算前 t-1 个 → O(t²)<br>有缓存：只计算当前 token 的 KV → O(t)<br><br>但显存开销巨大：7B 模型每 token 需 512KB，2048 长度 = 1GB/请求。',formula:'KV/token = 2×L×H×d×dtype\n7B: 2×32×32×128×2B = 512KB/token\n10并发×2048 = 10GB 仅KV Cache'},
+{title:'PagedAttention 分页管理',desc:'借鉴 OS 虚拟内存分页：<br><br>• 显存划分为固定大小的<strong>Block</strong><br>• 通过<strong>页表</strong>映射逻辑序列到物理块<br>• <strong>按需分配</strong>，不预留 max_len<br>• 支持<strong>前缀共享</strong>：相同 system prompt 共享 KV Block<br><br>利用率从 ~50% 提升到 <strong>>95%</strong>。',formula:'传统: [████____] 利用率~55%\nPaged: [B0][B1][..] 利用率>95%\n前缀共享: 节省 (N-1)×prefix 显存'},
+{title:'Continuous Batching',desc:'<strong>Static Batching</strong>：整批等最慢完成，短请求空闲。<br><br><strong>Continuous Batching</strong>：<br>• 每个 decode step 级别调度<br>• 请求完成立即移出，新请求插入<br>• GPU 始终满载<br><br><strong>Chunked Prefill</strong>：长 prompt 分块，与 decode 混合调度。',formula:'Static:  等最慢 → GPU利用率~40%\nContinuous: 逐步调度 → GPU利用率~90%\nChunked: 长prompt分块+decode混合→低TTFT'},
+{title:'Speculative Decoding',desc:'用<strong>小模型</strong>快速生成候选，<strong>大模型</strong>并行验证：<br><br>1. Draft(0.5B) 生成 K 个 token<br>2. Verify(7B) 并行验证全部<br>3. 接受正确的，拒绝后重采样<br><br>每步可产出 2-4 个 token → <strong>加速 2-4x</strong>',formula:'Draft:  [t₁,t₂,t₃,t₄,t₅] 快速生成\nVerify: [✓, ✓, ✓, ✗, -] 并行验证\nAccept: [t₁,t₂,t₃,t₃\'] → 4 token/步'},
+{title:'性能指标与 Tradeoff',desc:'<strong>TTFT</strong>: 首 token 延迟<br><strong>TPS</strong>: 每秒生成 token 数<br><strong>吞吐</strong>: 系统每秒总 token 数<br><strong>P50/P90/P99</strong>: 延迟百分位<br><br>核心 Tradeoff: batch↑ → 吞吐↑ 但延迟↑',formula:'TTFT = T_queue + T_prefill\nTPS = output_tokens / total_time\n吞吐 = Σ(tokens) / 总时间'}
+];
+function resize(){const r=window.devicePixelRatio||1,rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0)}
+window.addEventListener('resize',resize);
+function ease(t){return t<.5?2*t*t:(4-2*t)*t-1}
+function drawRR(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath()}
+
+function renderStep0(p){
+  var cx=W/2,topY=15,tw=28,th=22,g=4;
+  // Prefill label
+  ctx.globalAlpha=ease(Math.min(1,p/.1));ctx.font='bold 13px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle='#6C5CE7';ctx.fillText('Prefill (并行)',cx/2,topY);
+  ctx.fillStyle='#00B894';ctx.fillText('Decode (逐个)',cx+cx/2,topY);ctx.globalAlpha=1;
+  // Prefill tokens
+  for(var i=0;i<8;i++){var d=.08+i*.025,pp=ease(Math.max(0,Math.min(1,(p-d)/.1)));
+    ctx.globalAlpha=pp;ctx.fillStyle='rgba(108,92,231,.3)';ctx.strokeStyle='#6C5CE7';ctx.lineWidth=1;
+    drawRR(15+i*(tw+g),topY+10,tw,th,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#6C5CE7';ctx.font='9px Courier New';ctx.textAlign='center';
+    ctx.fillText('t'+i,15+i*(tw+g)+tw/2,topY+10+th/2+3);ctx.globalAlpha=1}
+  // KV Cache bar
+  if(p>.35){var kp=ease((p-.35)/.12);ctx.globalAlpha=kp;var ky=topY+th+18;
+    ctx.fillStyle='rgba(249,158,11,.15)';ctx.strokeStyle='#F59E0B';ctx.lineWidth=1;
+    drawRR(15,ky,8*(tw+g)-g,22,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#F59E0B';ctx.font='bold 10px PingFang SC';ctx.textAlign='center';
+    ctx.fillText('KV Cache [K₀..K₇, V₀..V₇]',15+4*(tw+g),ky+14);ctx.globalAlpha=1}
+  // Decode tokens
+  var dx=cx+30,dy=topY+10;
+  for(var i=0;i<5;i++){var d2=.45+i*.08,dp=ease(Math.max(0,Math.min(1,(p-d2)/.08)));
+    if(dp<=0)continue;ctx.globalAlpha=dp;
+    ctx.fillStyle='rgba(0,184,148,.4)';ctx.strokeStyle='#00B894';ctx.lineWidth=1.5;
+    drawRR(dx+30,dy+i*30,tw,th,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='9px Courier New';ctx.textAlign='center';
+    ctx.fillText('t'+(8+i),dx+30+tw/2,dy+i*30+th/2+3);
+    if(i>0){ctx.strokeStyle='rgba(0,184,148,.3)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(dx+30+tw/2,dy+(i-1)*30+th);ctx.lineTo(dx+30+tw/2,dy+i*30);ctx.stroke()}
+    if(i===0){ctx.fillStyle='#94A3B8';ctx.font='8px PingFang SC';ctx.textAlign='left';
+      ctx.fillText('← 读KV',dx+30+tw+5,dy+th/2+3)}
+    ctx.globalAlpha=1}
+  if(p>.85){var lp=ease((p-.85)/.15);ctx.globalAlpha=lp;ctx.font='11px PingFang SC';ctx.textAlign='center';
+    ctx.fillStyle='#6C5CE7';ctx.fillText('Compute-bound',cx/2,H-10);
+    ctx.fillStyle='#00B894';ctx.fillText('Memory-bound',cx+cx/2,H-10);ctx.globalAlpha=1}
+}
+
+function renderStep1(p){
+  var cx=W/2,topY=10,bw=20,bh=16,gy=topY+25;
+  ctx.globalAlpha=ease(Math.min(1,p/.12));ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle='#EF4444';ctx.fillText('无 KV Cache (重复计算)',cx/2,topY+10);
+  ctx.fillStyle='#00B894';ctx.fillText('有 KV Cache (增量计算)',cx+cx/2,topY+10);ctx.globalAlpha=1;
+  for(var s=0;s<5;s++){var d=.1+s*.1,sp=ease(Math.max(0,Math.min(1,(p-d)/.08)));if(sp<=0)continue;
+    ctx.globalAlpha=sp;
+    for(var j=0;j<=s;j++){ctx.fillStyle=j===s?'rgba(239,68,68,.5)':'rgba(239,68,68,.15)';
+      ctx.strokeStyle=j===s?'#EF4444':'rgba(239,68,68,.3)';ctx.lineWidth=1;
+      drawRR(12+j*(bw+3),gy+s*(bh+6),bw,bh,3);ctx.fill();ctx.stroke()}
+    ctx.fillStyle='#EF4444';ctx.font='7px Courier New';ctx.textAlign='left';
+    ctx.fillText('×'+(s+1),15+(s+1)*(bw+3)+5,gy+s*(bh+6)+bh/2+3);ctx.globalAlpha=1}
+  var rx=cx+12;
+  for(var s=0;s<5;s++){var d=.15+s*.1,sp=ease(Math.max(0,Math.min(1,(p-d)/.08)));if(sp<=0)continue;
+    ctx.globalAlpha=sp;
+    for(var j=0;j<s;j++){ctx.fillStyle='rgba(249,158,11,.2)';ctx.strokeStyle='rgba(249,158,11,.3)';ctx.lineWidth=1;
+      drawRR(rx+j*(bw+3),gy+s*(bh+6),bw,bh,3);ctx.fill();ctx.stroke()}
+    ctx.fillStyle='rgba(0,184,148,.5)';ctx.strokeStyle='#00B894';ctx.lineWidth=1.5;
+    drawRR(rx+s*(bw+3),gy+s*(bh+6),bw,bh,3);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='7px Courier New';ctx.textAlign='left';
+    ctx.fillText('+1',rx+(s+1)*(bw+3)+5,gy+s*(bh+6)+bh/2+3);ctx.globalAlpha=1}
+  if(p>.8){var lp=ease((p-.8)/.2);ctx.globalAlpha=lp;var ly=gy+5*(bh+6)+12;
+    ctx.font='bold 11px Courier New';ctx.textAlign='center';
+    ctx.fillStyle='#EF4444';ctx.fillText('O(t²)',cx/2,ly);
+    ctx.fillStyle='#00B894';ctx.fillText('O(t)',cx+cx/2,ly);ctx.globalAlpha=1}
+}
+
+function renderStep2(p){
+  var cx=W/2,topY=5,barW=W/2-30,barH=20,barX=10,barY=topY+20;
+  ctx.globalAlpha=ease(Math.min(1,p/.1));ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle='#EF4444';ctx.fillText('传统预分配',cx/2,topY+10);
+  ctx.fillStyle='#00B894';ctx.fillText('PagedAttention',cx+cx/2,topY+10);ctx.globalAlpha=1;
+  var reqs=[{n:'A',u:.6,c:'#0984E3'},{n:'B',u:.3,c:'#6C5CE7'},{n:'C',u:.8,c:'#00B894'}];
+  for(var i=0;i<reqs.length;i++){var d=.08+i*.06,rp=ease(Math.max(0,Math.min(1,(p-d)/.08)));
+    var y=barY+i*(barH+8);ctx.globalAlpha=rp;
+    ctx.fillStyle='rgba(100,116,139,.12)';drawRR(barX,y,barW,barH,4);ctx.fill();
+    ctx.fillStyle=reqs[i].c+'44';ctx.strokeStyle=reqs[i].c;ctx.lineWidth=1;
+    drawRR(barX,y,barW*reqs[i].u,barH,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle=reqs[i].c;ctx.font='9px PingFang SC';ctx.textAlign='left';ctx.fillText(reqs[i].n,barX+4,y+barH/2+3);
+    ctx.fillStyle='#EF4444';ctx.textAlign='right';ctx.fillText(Math.round((1-reqs[i].u)*100)+'%浪费',barX+barW-4,y+barH/2+3);
+    ctx.globalAlpha=1}
+  var bS=20,bG=3,bR=8,bX=cx+12,bY2=topY+20,bi=0;
+  var blks=[{c:'#0984E3',n:5,l:'A'},{c:'#6C5CE7',n:3,l:'B'},{c:'#00B894',n:6,l:'C'},{c:'#64748B',n:6,l:''}];
+  for(var b=0;b<blks.length;b++)for(var j=0;j<blks[b].n;j++){
+    var d2=.18+bi*.015,bp=ease(Math.max(0,Math.min(1,(p-d2)/.06)));
+    var row=Math.floor(bi/bR),col=bi%bR,x=bX+col*(bS+bG),y=bY2+row*(bS+bG);
+    ctx.globalAlpha=bp;var free=blks[b].l==='';
+    ctx.fillStyle=free?'rgba(100,116,139,.08)':blks[b].c+'33';
+    ctx.strokeStyle=free?'rgba(100,116,139,.2)':blks[b].c+'88';ctx.lineWidth=1;
+    drawRR(x,y,bS,bS,3);ctx.fill();ctx.stroke();
+    if(!free){ctx.fillStyle=blks[b].c;ctx.font='bold 8px Courier New';ctx.textAlign='center';ctx.fillText(blks[b].l,x+bS/2,y+bS/2+3)}
+    ctx.globalAlpha=1;bi++}
+  if(p>.75){var lp=ease((p-.75)/.25);ctx.globalAlpha=lp;
+    var uy=barY+reqs.length*(barH+8)+10;
+    ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+    ctx.fillStyle='#EF4444';ctx.fillText('利用率 ~55%',cx/2,uy);
+    ctx.fillStyle='#00B894';ctx.fillText('利用率 >95%',cx+cx/2,uy);ctx.globalAlpha=1}
+}
+
+function renderStep3(p){
+  var cx=W/2,topY=5,barH=20,barG=6,axW=W/2-30;
+  ctx.globalAlpha=ease(Math.min(1,p/.1));ctx.font='bold 11px PingFang SC';ctx.textAlign='center';
+  ctx.fillStyle='#EF4444';ctx.fillText('Static Batching',cx/2,topY+10);
+  ctx.fillStyle='#00B894';ctx.fillText('Continuous Batching',cx+cx/2,topY+10);ctx.globalAlpha=1;
+  var axY=topY+20,sX=10;
+  var sr=[{n:'A',l:.4,c:'#0984E3'},{n:'B',l:1,c:'#6C5CE7'},{n:'C',l:.25,c:'#00B894'}];
+  for(var i=0;i<sr.length;i++){var d=.08+i*.06,sp=ease(Math.max(0,Math.min(1,(p-d)/.1)));
+    var y=axY+i*(barH+barG);ctx.globalAlpha=sp;
+    ctx.fillStyle='rgba(100,116,139,.06)';drawRR(sX,y,axW,barH,4);ctx.fill();
+    var aw=axW*sr[i].l*sp;ctx.fillStyle=sr[i].c+'44';ctx.strokeStyle=sr[i].c;ctx.lineWidth=1;
+    drawRR(sX,y,aw,barH,4);ctx.fill();ctx.stroke();
+    if(sr[i].l<1&&sp>.7){ctx.fillStyle='rgba(239,68,68,.08)';drawRR(sX+aw,y,axW-aw,barH,4);ctx.fill();
+      ctx.fillStyle='#EF4444';ctx.font='7px PingFang SC';ctx.textAlign='center';ctx.fillText('空闲',sX+aw+(axW-aw)/2,y+barH/2+3)}
+    ctx.fillStyle=sr[i].c;ctx.font='bold 8px PingFang SC';ctx.textAlign='left';ctx.fillText(sr[i].n,sX+3,y+barH/2+3);
+    ctx.globalAlpha=1}
+  var cX=cx+12;
+  var cr2=[{n:'A',s:0,e:.4,r:0,c:'#0984E3'},{n:'B',s:0,e:1,r:1,c:'#6C5CE7'},{n:'C',s:0,e:.25,r:2,c:'#00B894'},
+    {n:'D',s:.28,e:.75,r:2,c:'#F59E0B'},{n:'E',s:.42,e:.85,r:0,c:'#EF4444'},{n:'F',s:.78,e:1,r:2,c:'#0984E3'}];
+  for(var i=0;i<cr2.length;i++){var r=cr2[i],d2=.12+r.s*.5,cp=ease(Math.max(0,Math.min(1,(p-d2)/.12)));
+    var y=axY+r.r*(barH+barG),x=cX+r.s*axW,w=(r.e-r.s)*axW*cp;
+    ctx.globalAlpha=cp;ctx.fillStyle=r.c+'44';ctx.strokeStyle=r.c;ctx.lineWidth=1;
+    drawRR(x,y,Math.max(w,2),barH,4);ctx.fill();ctx.stroke();
+    if(w>14){ctx.fillStyle=r.c;ctx.font='bold 8px PingFang SC';ctx.textAlign='left';ctx.fillText(r.n,x+3,y+barH/2+3)}
+    ctx.globalAlpha=1}
+  if(p>.85){var lp=ease((p-.85)/.15);ctx.globalAlpha=lp;var ly=axY+3*(barH+barG)+8;
+    ctx.font='10px PingFang SC';ctx.textAlign='center';
+    ctx.fillStyle='#EF4444';ctx.fillText('等最慢 → GPU空闲',cx/2,ly);
+    ctx.fillStyle='#00B894';ctx.fillText('即时调度 → GPU满载',cx+cx/2,ly);ctx.globalAlpha=1}
+}
+
+function renderStep4(p){
+  var cx=W/2,topY=8,tw=35,th=22,tg=6,sx=25;
+  var toks=['t₁','t₂','t₃','t₄','t₅'],acc=[1,1,1,0,0];
+  var dY=topY+25,vY=topY+80,aY=topY+135;
+  ctx.globalAlpha=ease(Math.min(1,p/.15));ctx.fillStyle='#0984E3';ctx.font='bold 11px PingFang SC';ctx.textAlign='left';
+  ctx.fillText('① Draft (小模型) 快速生成',sx,topY+12);ctx.globalAlpha=1;
+  for(var i=0;i<5;i++){var d=.04+i*.035,tp=ease(Math.max(0,Math.min(1,(p-d)/.07)));
+    ctx.globalAlpha=tp;ctx.fillStyle='rgba(9,132,227,.2)';ctx.strokeStyle='#0984E3';ctx.lineWidth=1.5;
+    drawRR(sx+i*(tw+tg),dY,tw,th,5);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#0984E3';ctx.font='bold 10px Courier New';ctx.textAlign='center';
+    ctx.fillText(toks[i],sx+i*(tw+tg)+tw/2,dY+th/2+3);ctx.globalAlpha=1}
+  if(p>.3){var vp=ease((p-.3)/.07);ctx.globalAlpha=vp;ctx.fillStyle='#6C5CE7';ctx.font='bold 11px PingFang SC';ctx.textAlign='left';
+    ctx.fillText('② Verify (大模型) 并行验证',sx,vY-10);ctx.globalAlpha=1;
+    for(var i=0;i<5;i++){var d2=.32+i*.02,tp2=ease(Math.max(0,Math.min(1,(p-d2)/.05)));
+      ctx.globalAlpha=tp2;var a=acc[i];
+      ctx.fillStyle=a?'rgba(0,184,148,.25)':'rgba(239,68,68,.25)';
+      ctx.strokeStyle=a?'#00B894':'#EF4444';ctx.lineWidth=1.5;
+      drawRR(sx+i*(tw+tg),vY,tw,th,5);ctx.fill();ctx.stroke();
+      ctx.fillStyle=a?'#00B894':'#EF4444';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+      ctx.fillText(a?'✓':'✗',sx+i*(tw+tg)+tw/2,vY+th/2+4);ctx.globalAlpha=1}}
+  if(p>.55){var rp=ease((p-.55)/.12);ctx.globalAlpha=rp;ctx.fillStyle='#F59E0B';ctx.font='bold 11px PingFang SC';ctx.textAlign='left';
+    ctx.fillText('③ Accept + 重采样',sx,aY-10);ctx.globalAlpha=1;
+    var at=['t₁','t₂','t₃','t₃\''];
+    for(var i=0;i<4;i++){var d3=.57+i*.035,tp3=ease(Math.max(0,Math.min(1,(p-d3)/.06)));
+      ctx.globalAlpha=tp3;var rs=i===3;
+      ctx.fillStyle=rs?'rgba(249,158,11,.3)':'rgba(0,184,148,.3)';
+      ctx.strokeStyle=rs?'#F59E0B':'#00B894';ctx.lineWidth=2;
+      drawRR(sx+i*(tw+tg),aY,tw,th,5);ctx.fill();ctx.stroke();
+      ctx.fillStyle=rs?'#F59E0B':'#00B894';ctx.font='bold 10px Courier New';ctx.textAlign='center';
+      ctx.fillText(at[i],sx+i*(tw+tg)+tw/2,aY+th/2+3);ctx.globalAlpha=1}
+    if(p>.82){var lp=ease((p-.82)/.18);ctx.globalAlpha=lp;ctx.fillStyle='#F59E0B';ctx.font='bold 12px PingFang SC';ctx.textAlign='center';
+      ctx.fillText('4 token/步 → 加速 ~4x',cx,aY+th+18);ctx.globalAlpha=1}}
+}
+
+function renderStep5(p){
+  var cx=W/2,topY=8,tlX=25,tlW=W-50,tlY=topY+20,tlH=18;
+  ctx.globalAlpha=ease(Math.min(1,p/.15));
+  ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(tlX,tlY+tlH/2);ctx.lineTo(tlX+tlW,tlY+tlH/2);ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.beginPath();ctx.arc(tlX,tlY+tlH/2,4,0,Math.PI*2);ctx.fill();
+  ctx.font='8px PingFang SC';ctx.textAlign='center';ctx.fillText('请求',tlX,tlY-4);
+  var ttW=tlW*.1;ctx.fillStyle='rgba(9,132,227,.2)';ctx.fillRect(tlX,tlY,ttW,tlH);
+  ctx.strokeStyle='#0984E3';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(tlX+ttW,tlY);ctx.lineTo(tlX+ttW,tlY+tlH);ctx.stroke();
+  ctx.fillStyle='#0984E3';ctx.font='bold 9px PingFang SC';ctx.fillText('TTFT',tlX+ttW/2,tlY+tlH+12);ctx.globalAlpha=1;
+  if(p>.2){for(var i=0;i<10;i++){var d=.2+i*.025,dp=ease(Math.max(0,Math.min(1,(p-d)/.04)));
+    ctx.globalAlpha=dp;var dw=(tlW-ttW)*.7/10;
+    ctx.fillStyle='rgba(0,184,148,.3)';ctx.fillRect(tlX+ttW+i*dw+1,tlY+2,dw-2,tlH-4);ctx.globalAlpha=1}}
+  if(p>.55){var cp=ease((p-.55)/.25);ctx.globalAlpha=cp;
+    var cX2=25,cY=tlY+40,cW=W/2-45,cH2=H-cY-25;
+    ctx.strokeStyle='#94A3B8';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cX2,cY);ctx.lineTo(cX2,cY+cH2);ctx.lineTo(cX2+cW,cY+cH2);ctx.stroke();
+    ctx.fillStyle='#94A3B8';ctx.font='9px PingFang SC';ctx.textAlign='center';ctx.fillText('Batch Size →',cX2+cW/2,cY+cH2+12);
+    ctx.strokeStyle='#00B894';ctx.lineWidth=2;ctx.beginPath();
+    for(var i=0;i<=20;i++){var t=i/20,x=cX2+t*cW,y=cY+cH2-(1-Math.exp(-t*4))*cH2*.8;
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='8px PingFang SC';ctx.fillText('吞吐',cX2+cW-15,cY+10);
+    ctx.strokeStyle='#EF4444';ctx.lineWidth=2;ctx.beginPath();
+    for(var i=0;i<=20;i++){var t=i/20,x=cX2+t*cW,y=cY+cH2-(.08+t*t*.82)*cH2;
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
+    ctx.fillStyle='#EF4444';ctx.fillText('延迟',cX2+cW-15,cY+cH2*.35);ctx.globalAlpha=1}
+  if(p>.7){var bp=ease((p-.7)/.2);ctx.globalAlpha=bp;
+    var bx=cx+15,by=tlY+40,bw=W/2-45,bh2=14;
+    ctx.fillStyle='#94A3B8';ctx.font='bold 10px PingFang SC';ctx.textAlign='left';ctx.fillText('延迟百分位',bx,by-3);
+    var pcts=[{n:'P50',v:.4,c:'#00B894'},{n:'P90',v:.65,c:'#F59E0B'},{n:'P99',v:.9,c:'#EF4444'}];
+    for(var i=0;i<pcts.length;i++){var y=by+6+i*(bh2+8);
+      ctx.fillStyle=pcts[i].c+'22';drawRR(bx,y,bw*pcts[i].v,bh2,4);ctx.fill();
+      ctx.strokeStyle=pcts[i].c;ctx.lineWidth=1;drawRR(bx,y,bw*pcts[i].v,bh2,4);ctx.stroke();
+      ctx.fillStyle=pcts[i].c;ctx.font='bold 9px Courier New';ctx.textAlign='left';ctx.fillText(pcts[i].n,bx+4,y+bh2/2+3);
+      ctx.textAlign='right';ctx.fillText((pcts[i].v*5).toFixed(1)+'s',bx+bw*pcts[i].v-4,y+bh2/2+3)}
+    ctx.globalAlpha=1}
+}
+
+var renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress)}
+function startAnim(){animProgress=0;var start=performance.now(),dur=2500;function tick(now){animProgress=Math.min(1,(now-start)/dur);render();if(animProgress<1)animId=requestAnimationFrame(tick)}if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick)}
+function updateUI(){var s=steps[currentStep];document.getElementById('stepTitle').textContent=s.title;document.getElementById('stepDesc').innerHTML=s.desc;var fb=document.getElementById('formulaBox');if(s.formula){fb.style.display='block';fb.textContent=s.formula}else fb.style.display='none';document.getElementById('counter').textContent='Step '+(currentStep+1)+'/'+steps.length;var d=document.getElementById('dots');d.innerHTML='';for(var i=0;i<steps.length;i++){var sp=document.createElement('span');if(i===currentStep)sp.className='active';sp.onclick=(function(idx){return function(){currentStep=idx;updateUI();startAnim()}})(i);d.appendChild(sp)}}
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim()}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim()}}
+function replay(){startAnim()}
+document.addEventListener('keydown',function(e){if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep()});
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>

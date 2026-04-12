@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V19 - 层级标签理解原理可视化</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',sans-serif;overflow:hidden}canvas{display:block}
+#controls{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10;flex-wrap:wrap;justify-content:center}
+#controls button{padding:10px 20px;border:1px solid #4caf50;border-radius:25px;background:rgba(76,175,80,0.1);color:#81c784;cursor:pointer;font-size:13px;transition:all 0.3s}
+#controls button:hover{background:rgba(76,175,80,0.3)}#controls button.active{background:linear-gradient(135deg,#4caf50,#81c784);color:#0a0e1a}
+#info{position:fixed;top:20px;left:50%;transform:translateX(-50%);text-align:center;z-index:10}
+#title{font-size:20px;background:linear-gradient(135deg,#4caf50,#81c784);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:5px}
+#desc{font-size:13px;color:#aaa;max-width:700px}
+</style>
+</head>
+<body>
+<div id="info"><div id="title">V19 - 层级标签理解原理</div><div id="desc"></div></div>
+<canvas id="canvas"></canvas>
+<div id="controls">
+<button onclick="setStep(0)" class="active">分类学树</button>
+<button onclick="setStep(1)">层级Softmax</button>
+<button onclick="setStep(2)">标签传播</button>
+<button onclick="setStep(3)">双曲空间</button>
+<button onclick="setStep(4)">多标签约束</button>
+<button onclick="setStep(5)">分类学损失</button>
+</div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,step=0,time=0;
+const descs=[
+'分类学树：从粗到细的层级结构，行业→品类→子品类，父子约束 y_child=1 → y_parent=1',
+'层级Softmax：逐层条件分类 P(leaf|x)=∏P(v_{k+1}|v_k,x)，每层只在兄弟节点间比较',
+'标签传播GNN：在分类学图上传播信息，父→子约束 + 子→父聚合，Ĥ=σ(ÂHW)',
+'Poincaré球双曲嵌入：根节点靠近原点，叶节点靠近边界，d(u,v)=arcosh(1+2||u-v||²/...)',
+'多标签约束：BCE + 一致性约束 max(0,P(child)-P(parent)) + 标签平滑',
+'分类学损失：根据树距离加权，预测到远处节点惩罚更大'
+];
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+window.addEventListener('resize',resize);resize();
+function setStep(s){step=s;time=0;document.querySelectorAll('#controls button').forEach((b,i)=>b.classList.toggle('active',i===s));document.getElementById('desc').textContent=descs[s]}
+setStep(0);
+
+function drawTaxonomyTree(){
+const cx=W/2,cy=H/2-30;
+const levels=[
+{labels:['行业A','行业B','行业C'],y:cy-120,color:'#ff6b6b'},
+{labels:['品类1','品类2','品类3','品类4','品类5','品类6'],y:cy-20,color:'#ffd93d'},
+{labels:['子1','子2','子3','子4','子5','子6','子7','子8','子9','子10','子11','子12'],y:cy+80,color:'#4caf50'}
+];
+// 绘制节点和连线
+const getX=(i,total)=>cx+(i-(total-1)/2)*Math.min(100,W/(total+2));
+// 连线
+const edges=[[0,0],[0,1],[1,2],[1,3],[2,4],[2,5],[0,0],[0,1],[1,2],[1,3],[2,4],[2,5]];
+for(let p=0;p<3;p++){
+const px=getX(p,3);
+const children=p===0?[0,1]:p===1?[2,3]:[4,5];
+children.forEach(ci=>{
+const cxx=getX(ci,6);
+ctx.beginPath();ctx.moveTo(px,levels[0].y+15);ctx.lineTo(cxx,levels[1].y-15);
+ctx.strokeStyle=levels[0].color+'66';ctx.lineWidth=1.5;ctx.stroke();
+});
+}
+for(let p=0;p<6;p++){
+const px=getX(p,6);
+const children=[p*2,p*2+1];
+children.forEach(ci=>{
+if(ci<12){
+const cxx=getX(ci,12);
+ctx.beginPath();ctx.moveTo(px,levels[1].y+15);ctx.lineTo(cxx,levels[2].y-12);
+ctx.strokeStyle=levels[1].color+'44';ctx.lineWidth=1;ctx.stroke();
+}
+});
+}
+// 节点
+levels.forEach((lv,li)=>{
+lv.labels.forEach((label,i)=>{
+const x=getX(i,lv.labels.length);
+const pulse=0.6+Math.sin(time*0.03+i+li)*0.3;
+ctx.fillStyle=lv.color+Math.floor(pulse*200).toString(16).padStart(2,'0');
+const r=li===0?20:li===1?16:12;
+ctx.beginPath();ctx.arc(x,lv.y,r,0,Math.PI*2);ctx.fill();
+ctx.fillStyle='#fff';ctx.font=`${li===2?9:11}px sans-serif`;ctx.textAlign='center';
+ctx.fillText(label,x,lv.y+4);
+});
+ctx.fillStyle=lv.color;ctx.font='12px sans-serif';
+ctx.fillText(`Level ${li}`,cx+280,lv.y+4);
+});
+// 约束说明
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';ctx.textAlign='center';
+ctx.fillText('父子约束：y_child = 1 ⟹ y_parent = 1',cx,cy+140);
+ctx.textAlign='start';
+}
+
+function drawHierSoftmax(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';
+// 条件概率链
+ctx.fillStyle='#81c784';ctx.font='bold 14px sans-serif';
+ctx.fillText('P(leaf | x) = P(粗|x) × P(中|粗,x) × P(细|中,x)',cx,cy-110);
+// 三层 Softmax 可视化
+const layers=[
+{name:'Level 0: 粗粒度',n:3,color:'#ff6b6b',y:cy-70},
+{name:'Level 1: 中粒度',n:5,color:'#ffd93d',y:cy-10},
+{name:'Level 2: 细粒度',n:8,color:'#4caf50',y:cy+50},
+];
+layers.forEach((lv,li)=>{
+ctx.fillStyle='#fff';ctx.font='12px sans-serif';
+ctx.fillText(lv.name,cx-200,lv.y+12);
+const phase=Math.floor(time*0.02)%lv.n;
+for(let i=0;i<lv.n;i++){
+const x=cx-60+i*35;
+const active=i===phase;
+const prob=active?0.6+Math.sin(time*0.05)*0.2:0.1;
+ctx.fillStyle=active?lv.color:lv.color+'33';
+ctx.fillRect(x,lv.y,28,20);
+ctx.fillStyle=active?'#0a0e1a':'#666';ctx.font='10px monospace';
+ctx.fillText(prob.toFixed(2),x+14,lv.y+13);
+}
+if(li<2){
+ctx.beginPath();ctx.moveTo(cx-60+phase*35+14,lv.y+20);
+ctx.lineTo(cx-60+(phase%layers[li+1].n)*35+14,layers[li+1].y);
+ctx.strokeStyle=lv.color+'88';ctx.lineWidth=2;ctx.stroke();
+}
+});
+ctx.fillStyle='#aaa';ctx.font='12px monospace';
+ctx.fillText('复杂度: O(D·max|children|) << O(C)',cx,cy+100);
+ctx.textAlign='start';
+}
+
+function drawLabelPropagation(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';ctx.fillStyle='#81c784';ctx.font='bold 14px sans-serif';
+ctx.fillText('标签传播 GNN：Ĥ⁽ˡ⁺¹⁾ = σ(Â · H⁽ˡ⁾ · W⁽ˡ⁾)',cx,cy-110);
+// 图上的节点
+const nodes=[
+{x:cx,y:cy-70,label:'根',color:'#ff6b6b',r:22},
+{x:cx-100,y:cy-10,label:'行业A',color:'#ffd93d',r:18},
+{x:cx+100,y:cy-10,label:'行业B',color:'#ffd93d',r:18},
+{x:cx-150,y:cy+60,label:'品类1',color:'#4caf50',r:15},
+{x:cx-50,y:cy+60,label:'品类2',color:'#4caf50',r:15},
+{x:cx+50,y:cy+60,label:'品类3',color:'#4caf50',r:15},
+{x:cx+150,y:cy+60,label:'品类4',color:'#4caf50',r:15},
+];
+const edges=[[0,1],[0,2],[1,3],[1,4],[2,5],[2,6]];
+// 动画消息
+const msgPhase=(time*0.02)%3;
+edges.forEach(([a,b])=>{
+ctx.beginPath();ctx.moveTo(nodes[a].x,nodes[a].y);ctx.lineTo(nodes[b].x,nodes[b].y);
+ctx.strokeStyle='#555';ctx.lineWidth=1.5;ctx.stroke();
+// 消息粒子
+const t=(Math.sin(time*0.05+a+b)+1)/2;
+const mx=nodes[a].x+(nodes[b].x-nodes[a].x)*t;
+const my=nodes[a].y+(nodes[b].y-nodes[a].y)*t;
+ctx.beginPath();ctx.arc(mx,my,3,0,Math.PI*2);
+ctx.fillStyle='#81c784';ctx.fill();
+});
+nodes.forEach(n=>{
+const pulse=0.7+Math.sin(time*0.04)*0.3;
+ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+ctx.fillStyle=n.color+Math.floor(pulse*200).toString(16).padStart(2,'0');ctx.fill();
+ctx.fillStyle='#fff';ctx.font='10px sans-serif';
+ctx.fillText(n.label,n.x,n.y+3);
+});
+ctx.fillStyle='#aaa';ctx.font='12px sans-serif';
+ctx.fillText('Â = D⁻¹/² A D⁻¹/²（对称归一化）',cx,cy+110);
+ctx.fillText('父→子：粗粒度约束 | 子→父：细粒度聚合',cx,cy+130);
+ctx.textAlign='start';
+}
+
+function drawHyperbolicSpace(){
+const cx=W/2,cy=H/2-10;
+const R=130;
+// Poincaré 球
+ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);
+ctx.strokeStyle='#4caf5088';ctx.lineWidth=2;ctx.stroke();
+ctx.fillStyle='#4caf5008';ctx.fill();
+ctx.textAlign='center';ctx.fillStyle='#81c784';ctx.font='bold 14px sans-serif';
+ctx.fillText('Poincaré 球模型',cx,cy-R-20);
+// 根节点靠近原点
+const rootNodes=[{x:cx,y:cy,label:'根',color:'#ff6b6b'}];
+const midNodes=[];
+const leafNodes=[];
+for(let i=0;i<4;i++){
+const a=i*Math.PI/2+time*0.005;
+midNodes.push({x:cx+Math.cos(a)*50,y:cy+Math.sin(a)*50,label:`L1_${i}`,color:'#ffd93d'});
+for(let j=0;j<2;j++){
+const a2=a+(j-0.5)*0.5;
+const r=90+Math.sin(time*0.02+i+j)*10;
+leafNodes.push({x:cx+Math.cos(a2)*r,y:cy+Math.sin(a2)*r,label:`L2_${i*2+j}`,color:'#4caf50'});
+}
+}
+// 连线
+midNodes.forEach((m,i)=>{
+ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(m.x,m.y);
+ctx.strokeStyle='#ff6b6b33';ctx.lineWidth=1;ctx.stroke();
+[i*2,i*2+1].forEach(li=>{
+if(li<leafNodes.length){
+ctx.beginPath();ctx.moveTo(m.x,m.y);ctx.lineTo(leafNodes[li].x,leafNodes[li].y);
+ctx.strokeStyle='#ffd93d22';ctx.lineWidth=1;ctx.stroke();
+}
+});
+});
+// 节点
+[...rootNodes,...midNodes,...leafNodes].forEach((n,i)=>{
+const r=i===0?10:i<5?7:5;
+ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);ctx.fillStyle=n.color;ctx.fill();
+});
+// 注释
+ctx.fillStyle='#aaa';ctx.font='11px sans-serif';
+ctx.fillText('原点附近 → 粗粒度（根）',cx,cy+R+25);
+ctx.fillText('边界附近 → 细粒度（叶）',cx,cy+R+45);
+ctx.fillText('d(u,v) = arcosh(1 + 2||u-v||² / ((1-||u||²)(1-||v||²)))',cx,cy+R+65);
+ctx.textAlign='start';
+}
+
+function drawMultiLabelConstraint(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';ctx.fillStyle='#81c784';ctx.font='bold 14px sans-serif';
+ctx.fillText('多标签分类 + 层级约束',cx,cy-110);
+// 预测柱状图
+const labels=['行业A','品类1','品类2','子1','子2','子3'];
+const preds=[0.3,0.8,0.2,0.9,0.1,0.7];
+const isViolation=[true,false,false,true,false,true];
+const barW=50,barH=100;
+labels.forEach((l,i)=>{
+const x=cx-180+i*65;
+const h=preds[i]*barH;
+ctx.fillStyle=isViolation[i]?'#ff6b6b44':'#4caf5044';
+ctx.fillRect(x,cy-h,barW,h);
+ctx.strokeStyle=isViolation[i]?'#ff6b6b':'#4caf50';
+ctx.strokeRect(x,cy-h,barW,h);
+ctx.fillStyle='#fff';ctx.font='10px sans-serif';
+ctx.fillText(l,x+barW/2,cy+15);
+ctx.fillText(preds[i].toFixed(1),x+barW/2,cy-h-8);
+});
+// 约束违反示例
+const animPhase=Math.floor(time*0.02)%2;
+if(animPhase===0){
+ctx.fillStyle='#ff6b6b';ctx.font='12px sans-serif';
+ctx.fillText('⚠ 违反: P(子1)=0.9 > P(行业A)=0.3',cx,cy+45);
+ctx.fillText('约束: max(0, P(child) - P(parent))',cx,cy+65);
+}else{
+ctx.fillStyle='#4caf50';ctx.font='12px sans-serif';
+ctx.fillText('✓ 修正后: P(行业A) = max(0.3, 0.9) = 0.9',cx,cy+45);
+ctx.fillText('自底向上传播确保一致性',cx,cy+65);
+}
+ctx.fillStyle='#aaa';ctx.font='12px monospace';
+ctx.fillText('L = L_BCE + λ·L_consistency + L_smoothing',cx,cy+95);
+ctx.textAlign='start';
+}
+
+function drawTaxonomicLoss(){
+const cx=W/2,cy=H/2-20;
+ctx.textAlign='center';ctx.fillStyle='#81c784';ctx.font='bold 14px sans-serif';
+ctx.fillText('分类学损失：根据树距离加权',cx,cy-110);
+// 树结构
+const nodes=[
+{x:cx,y:cy-70,label:'GT:子品类A',color:'#4caf50'},
+{x:cx-120,y:cy-70,label:'预测1:子品类B',color:'#ffd93d'},
+{x:cx+120,y:cy-70,label:'预测2:子品类X',color:'#ff6b6b'},
+];
+// 真实标签
+ctx.beginPath();ctx.arc(nodes[0].x,nodes[0].y,18,0,Math.PI*2);
+ctx.fillStyle=nodes[0].color+'66';ctx.fill();
+ctx.strokeStyle=nodes[0].color;ctx.lineWidth=2;ctx.stroke();
+ctx.fillStyle='#fff';ctx.font='11px sans-serif';
+ctx.fillText(nodes[0].label,nodes[0].x,nodes[0].y+3);
+// 预测1（同父，距离近）
+const pulse1=0.5+Math.sin(time*0.04)*0.3;
+ctx.beginPath();ctx.arc(nodes[1].x,nodes[1].y,15,0,Math.PI*2);
+ctx.fillStyle=nodes[1].color+Math.floor(pulse1*200).toString(16).padStart(2,'0');ctx.fill();
+ctx.fillStyle='#fff';ctx.font='10px sans-serif';
+ctx.fillText(nodes[1].label,nodes[1].x,nodes[1].y+3);
+ctx.fillStyle='#ffd93d';ctx.fillText('树距离=2',nodes[1].x,nodes[1].y+25);
+ctx.fillText('惩罚小',nodes[1].x,nodes[1].y+40);
+// 预测2（不同父，距离远）
+ctx.beginPath();ctx.arc(nodes[2].x,nodes[2].y,15,0,Math.PI*2);
+ctx.fillStyle=nodes[2].color+Math.floor(pulse1*200).toString(16).padStart(2,'0');ctx.fill();
+ctx.fillStyle='#fff';ctx.font='10px sans-serif';
+ctx.fillText(nodes[2].label,nodes[2].x,nodes[2].y+3);
+ctx.fillStyle='#ff6b6b';ctx.fillText('树距离=6',nodes[2].x,nodes[2].y+25);
+ctx.fillText('惩罚大',nodes[2].x,nodes[2].y+40);
+// 公式
+ctx.fillStyle='#aaa';ctx.font='12px monospace';
+ctx.fillText('w(c,ĉ) = d_tree(c,ĉ) / D_max',cx,cy+70);
+ctx.fillText('L_tax = Σ w(c,ĉ) · ℓ(y_c, ŷ_c)',cx,cy+90);
+ctx.fillStyle='#81c784';ctx.font='12px sans-serif';
+ctx.fillText('→ 预测到远处节点的惩罚 > 近处节点',cx,cy+120);
+ctx.textAlign='start';
+}
+
+const drawFns=[drawTaxonomyTree,drawHierSoftmax,drawLabelPropagation,drawHyperbolicSpace,drawMultiLabelConstraint,drawTaxonomicLoss];
+function animate(){ctx.fillStyle='#0a0e1a';ctx.fillRect(0,0,W,H);time++;drawFns[step]();requestAnimationFrame(animate)}
+animate();
+</script>
+</body>
+</html>

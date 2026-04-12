@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p07 模型量化 - 代码讲解</title>
+<style>
+@import url('https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css');
+:root{--primary:#6C5CE7;--accent:#00B894;--blue:#0984E3;--bg-dark:#0A0E17;--bg-card:#111827;--bg-panel:#1A1F2E;--text-main:#E2E8F0;--text-sub:#94A3B8;--text-dim:#64748B;--warn:#F59E0B;--danger:#EF4444;--success:#10B981;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-dark);color:var(--text-main);min-height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.header{height:64px;background:linear-gradient(135deg,rgba(9,132,227,.15),rgba(0,184,148,.1));border-bottom:1px solid rgba(9,132,227,.3);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.badge{background:linear-gradient(135deg,var(--primary),var(--blue));padding:4px 12px;border-radius:20px;font-size:13px;font-weight:700;margin-right:12px;}
+.header h1{font-size:20px;font-weight:700;}
+.header .tag{margin-left:16px;font-size:13px;color:var(--blue);border:1px solid rgba(9,132,227,.4);padding:2px 10px;border-radius:12px;}
+.dots{margin-left:auto;display:flex;gap:8px;}
+.dots span{width:10px;height:10px;border-radius:50%;background:var(--text-dim);transition:all .3s;cursor:pointer;}
+.dots span.active{background:var(--blue);box-shadow:0 0 8px var(--blue);transform:scale(1.3);}
+.main{flex:1;display:flex;overflow:hidden;}
+.code-panel{flex:2;background:var(--bg-panel);border-right:1px solid rgba(255,255,255,.06);padding:20px;overflow-y:auto;font-family:'Courier New',monospace;font-size:13px;line-height:1.8;}
+.code-line{padding:2px 8px;border-radius:4px;transition:background .3s;white-space:pre;}
+.code-line.highlight{background:rgba(108,92,231,.25);border-left:3px solid var(--primary);}
+.code-line .kw{color:#C792EA;} .code-line .fn{color:#82AAFF;} .code-line .str{color:#C3E88D;}
+.code-line .num{color:#F78C6C;} .code-line .cm{color:#546E7A;font-style:italic;} .code-line .op{color:#89DDFF;}
+.canvas-area{flex:3;position:relative;background:radial-gradient(ellipse at center,rgba(9,132,227,.05),transparent 70%);}
+.canvas-area canvas{width:100%;height:100%;}
+.grid-bg{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;}
+.info-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(17,24,39,.9);border-top:1px solid rgba(255,255,255,.06);padding:16px 24px;backdrop-filter:blur(10px);}
+.info-bar .title{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;}
+.info-bar .desc{font-size:13px;color:var(--text-sub);line-height:1.7;}
+.controls{height:72px;background:var(--bg-card);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;gap:20px;flex-shrink:0;}
+.btn{padding:10px 28px;border-radius:12px;border:1px solid rgba(9,132,227,.5);background:rgba(9,132,227,.1);color:var(--text-main);font-size:15px;font-weight:600;cursor:pointer;transition:all .3s;}
+.btn:hover{background:rgba(9,132,227,.3);transform:scale(1.05);box-shadow:0 0 20px rgba(9,132,227,.3);}
+.btn.accent{border-color:rgba(0,184,148,.5);background:rgba(0,184,148,.1);}
+.btn.accent:hover{background:rgba(0,184,148,.3);box-shadow:0 0 20px rgba(0,184,148,.3);}
+.step-counter{font-size:16px;font-weight:700;color:var(--text-sub);min-width:100px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="badge">p07</span>
+  <h1>模型量化</h1>
+  <span class="tag">代码讲解</span>
+  <div class="dots" id="dots"></div>
+</div>
+<div class="main">
+  <div class="code-panel" id="codePanel"></div>
+  <div class="canvas-area">
+    <div class="grid-bg"></div>
+    <canvas id="canvas"></canvas>
+    <div class="info-bar">
+      <div class="title" id="infoTitle"></div>
+      <div class="desc" id="infoDesc"></div>
+    </div>
+  </div>
+</div>
+<div class="controls">
+  <button class="btn" onclick="prevStep()">← 上一步</button>
+  <div class="step-counter" id="counter"></div>
+  <button class="btn accent" onclick="nextStep()">下一步 →</button>
+  <button class="btn" onclick="replay()" style="margin-left:20px">↻ 重播</button>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+let W,H,currentStep=0,animProgress=0,animId=null;
+
+const steps=[
+  {title:'GPTQ 校准数据准备',
+   desc:'从 WikiText 加载文本，tokenize 为模型输入格式。校准数据用于估计 Hessian 矩阵 H=XX^T，指导量化补偿。128 条通常足够。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">prepare_calibration_data</span>(tokenizer, n_samples=<span class="num">128</span>):',hl:false},
+     {text:'    <span class="cm"># 加载 WikiText 数据集</span>',hl:false},
+     {text:'    dataset = load_dataset(<span class="str">"wikitext"</span>, <span class="str">"wikitext-2-raw-v1"</span>)',hl:true},
+     {text:'',hl:false},
+     {text:'    <span class="cm"># 过滤过短文本（< 50 字符）</span>',hl:false},
+     {text:'    texts = [t <span class="kw">for</span> t <span class="kw">in</span> dataset <span class="kw">if</span> len(t) > <span class="num">50</span>]',hl:true},
+     {text:'',hl:false},
+     {text:'    calibration_data = []',hl:false},
+     {text:'    <span class="kw">for</span> text <span class="kw">in</span> selected_texts:',hl:false},
+     {text:'        tokens = tokenizer(text, truncation=<span class="kw">True</span>,',hl:true},
+     {text:'                           max_length=<span class="num">512</span>)',hl:true},
+     {text:'        <span class="kw">if</span> tokens.shape[<span class="num">1</span>] >= <span class="num">256</span>:  <span class="cm"># 足够长</span>',hl:true},
+     {text:'            calibration_data.append(tokens.input_ids)',hl:false},
+     {text:'',hl:false},
+     {text:'    <span class="kw">return</span> calibration_data  <span class="cm"># List[Tensor]</span>',hl:false},
+   ],
+   highlightLines:[2,5,9,10,11]},
+  {title:'GPTQ 量化配置与执行',
+   desc:'BaseQuantizeConfig 定义量化参数。auto-gptq 内部逐层计算 Hessian、量化权重、补偿误差。整个过程在 GPU 上完成。',
+   code:[
+     {text:'<span class="kw">from</span> auto_gptq <span class="kw">import</span> AutoGPTQForCausalLM, BaseQuantizeConfig',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 配置量化参数</span>',hl:false},
+     {text:'quantize_config = BaseQuantizeConfig(',hl:true},
+     {text:'    bits=<span class="num">4</span>,            <span class="cm"># 4-bit 量化</span>',hl:true},
+     {text:'    group_size=<span class="num">128</span>,    <span class="cm"># 每 128 权重一组</span>',hl:true},
+     {text:'    desc_act=<span class="kw">True</span>,     <span class="cm"># 按激活排序</span>',hl:true},
+     {text:'    sym=<span class="kw">True</span>,          <span class="cm"># 对称量化</span>',hl:false},
+     {text:'    damp_percent=<span class="num">0.01</span>, <span class="cm"># Hessian 阻尼</span>',hl:false},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 加载原始模型</span>',hl:false},
+     {text:'model = AutoGPTQForCausalLM.from_pretrained(',hl:true},
+     {text:'    <span class="str">"Qwen/Qwen2.5-0.5B"</span>, quantize_config)',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 执行量化（逐层 Hessian + 补偿）</span>',hl:false},
+     {text:'model.quantize(calibration_data)  <span class="cm"># ~60s</span>',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 保存量化模型</span>',hl:false},
+     {text:'model.save_quantized(<span class="str">"outputs/gptq-4bit"</span>)',hl:true},
+   ],
+   highlightLines:[3,4,5,6,12,16,19]},
+  {title:'AWQ 量化 — 一行核心调用',
+   desc:'AWQ 的 API 更简洁：传入 tokenizer 和配置即可。内部自动完成激活值统计、缩放因子搜索、权重量化。version="GEMM" 使用矩阵乘法内核。',
+   code:[
+     {text:'<span class="kw">from</span> awq <span class="kw">import</span> AutoAWQForCausalLM',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 加载模型</span>',hl:false},
+     {text:'model = AutoAWQForCausalLM.from_pretrained(<span class="str">"Qwen/Qwen2.5-0.5B"</span>)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="cm"># AWQ 量化（自动处理校准）</span>',hl:false},
+     {text:'model.quantize(',hl:true},
+     {text:'    tokenizer,',hl:false},
+     {text:'    quant_config={',hl:false},
+     {text:'        <span class="str">"zero_point"</span>: <span class="kw">True</span>,     <span class="cm"># 非对称量化</span>',hl:true},
+     {text:'        <span class="str">"q_group_size"</span>: <span class="num">128</span>,  <span class="cm"># 分组大小</span>',hl:true},
+     {text:'        <span class="str">"w_bit"</span>: <span class="num">4</span>,           <span class="cm"># 4-bit</span>',hl:true},
+     {text:'        <span class="str">"version"</span>: <span class="str">"GEMM"</span>,    <span class="cm"># 矩阵乘法内核</span>',hl:true},
+     {text:'    },',hl:false},
+     {text:'    calib_data=<span class="str">"wikitext"</span>,  <span class="cm"># 自动下载校准数据</span>',hl:true},
+     {text:'    n_samples=<span class="num">128</span>,',hl:false},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'model.save_quantized(<span class="str">"outputs/awq-4bit"</span>)',hl:true},
+   ],
+   highlightLines:[3,6,9,10,11,12,14,18]},
+  {title:'bitsandbytes NF4 — 零校准量化',
+   desc:'bitsandbytes 在 from_pretrained 时直接量化，无需校准数据。BitsAndBytesConfig 指定 NF4 类型和双重量化。compute_dtype=bf16 表示推理时反量化到 bf16。',
+   code:[
+     {text:'<span class="kw">from</span> transformers <span class="kw">import</span> BitsAndBytesConfig',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 配置 NF4 量化</span>',hl:false},
+     {text:'bnb_config = BitsAndBytesConfig(',hl:true},
+     {text:'    load_in_4bit=<span class="kw">True</span>,',hl:true},
+     {text:'    bnb_4bit_quant_type=<span class="str">"nf4"</span>,         <span class="cm"># NF4 类型</span>',hl:true},
+     {text:'    bnb_4bit_compute_dtype=torch.bfloat16, <span class="cm"># 计算精度</span>',hl:true},
+     {text:'    bnb_4bit_use_double_quant=<span class="kw">True</span>,     <span class="cm"># 双重量化</span>',hl:true},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 加载即量化（无需校准！）</span>',hl:false},
+     {text:'model = AutoModelForCausalLM.from_pretrained(',hl:true},
+     {text:'    <span class="str">"Qwen/Qwen2.5-0.5B"</span>,',hl:false},
+     {text:'    quantization_config=bnb_config,  <span class="cm"># 传入量化配置</span>',hl:true},
+     {text:'    device_map=<span class="str">"auto"</span>,',hl:false},
+     {text:')',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 直接推理（内部自动反量化）</span>',hl:false},
+     {text:'outputs = model.generate(**inputs, max_new_tokens=<span class="num">100</span>)',hl:true},
+   ],
+   highlightLines:[3,4,5,6,7,11,13,18]},
+  {title:'GGUF 转换 — 两步流程',
+   desc:'GGUF 转换分两步：(1) convert_hf_to_gguf.py 将 HF 格式转为 GGUF FP16，(2) llama-quantize 执行指定级别量化。整个过程通过 subprocess 调用 llama.cpp 工具链。',
+   code:[
+     {text:'<span class="cm"># Step 1: HF → GGUF FP16</span>',hl:false},
+     {text:'subprocess.run([',hl:true},
+     {text:'    sys.executable,',hl:false},
+     {text:'    <span class="str">"llama.cpp/convert_hf_to_gguf.py"</span>,',hl:true},
+     {text:'    model_name,                  <span class="cm"># HF 模型路径</span>',hl:false},
+     {text:'    <span class="str">"--outfile"</span>, <span class="str">"model-fp16.gguf"</span>,',hl:true},
+     {text:'    <span class="str">"--outtype"</span>, <span class="str">"f16"</span>,',hl:false},
+     {text:'])',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># Step 2: GGUF FP16 → 量化 GGUF</span>',hl:false},
+     {text:'<span class="kw">for</span> qt <span class="kw">in</span> [<span class="str">"Q2_K"</span>, <span class="str">"Q4_K_M"</span>, <span class="str">"Q8_0"</span>]:',hl:true},
+     {text:'    subprocess.run([',hl:true},
+     {text:'        <span class="str">"llama.cpp/build/bin/llama-quantize"</span>,',hl:true},
+     {text:'        <span class="str">"model-fp16.gguf"</span>,       <span class="cm"># 输入</span>',hl:false},
+     {text:'        f<span class="str">"model-{qt.lower()}.gguf"</span>, <span class="cm"># 输出</span>',hl:true},
+     {text:'        qt,                       <span class="cm"># 量化级别</span>',hl:true},
+     {text:'    ])',hl:false},
+     {text:'',hl:false},
+     {text:'<span class="cm"># 结果: 多个量化版本 GGUF 文件</span>',hl:false},
+     {text:'<span class="cm"># model-q2_k.gguf   (~0.15 GB)</span>',hl:false},
+     {text:'<span class="cm"># model-q4_k_m.gguf (~0.30 GB) ← 推荐</span>',hl:false},
+     {text:'<span class="cm"># model-q8_0.gguf   (~0.55 GB)</span>',hl:false},
+   ],
+   highlightLines:[1,3,5,10,11,12,14,15]},
+  {title:'Benchmark — 困惑度与推理速度',
+   desc:'compute_perplexity 在测试集上计算 PPL = exp(avg_loss)。measure_inference_speed 预热后多次生成取平均。torch.cuda.synchronize() 确保 GPU 计算完成。',
+   code:[
+     {text:'<span class="kw">def</span> <span class="fn">compute_perplexity</span>(model, tokenizer):',hl:false},
+     {text:'    total_loss, total_tokens = <span class="num">0.0</span>, <span class="num">0</span>',hl:false},
+     {text:'    <span class="kw">for</span> text <span class="kw">in</span> test_texts:',hl:false},
+     {text:'        outputs = model(**inputs, labels=inputs[<span class="str">"input_ids"</span>])',hl:true},
+     {text:'        total_loss += outputs.loss.item() * seq_len',hl:true},
+     {text:'        total_tokens += seq_len',hl:false},
+     {text:'    ppl = np.exp(total_loss / total_tokens)',hl:true},
+     {text:'',hl:false},
+     {text:'<span class="kw">def</span> <span class="fn">measure_inference_speed</span>(model, tokenizer):',hl:false},
+     {text:'    <span class="cm"># Warmup（排除编译/缓存开销）</span>',hl:false},
+     {text:'    <span class="kw">for</span> _ <span class="kw">in</span> range(<span class="num">3</span>):',hl:false},
+     {text:'        model.generate(**inputs, max_new_tokens=<span class="num">64</span>)',hl:false},
+     {text:'',hl:false},
+     {text:'    torch.cuda.synchronize()  <span class="cm"># 等 GPU 完成</span>',hl:true},
+     {text:'    start = time.time()',hl:true},
+     {text:'    <span class="kw">for</span> _ <span class="kw">in</span> range(<span class="num">10</span>):',hl:false},
+     {text:'        outputs = model.generate(max_new_tokens=<span class="num">64</span>)',hl:true},
+     {text:'        total_tokens += generated_length',hl:false},
+     {text:'    torch.cuda.synchronize()  <span class="cm"># 确保计时准确</span>',hl:true},
+     {text:'    tokens_per_sec = total_tokens / elapsed',hl:true},
+   ],
+   highlightLines:[3,4,6,13,14,16,18,19]},
+];
+
+function resize(){const r=window.devicePixelRatio||1;const rect=canvas.parentElement.getBoundingClientRect();canvas.width=rect.width*r;canvas.height=rect.height*r;W=rect.width;H=rect.height;ctx.setTransform(r,0,0,r,0,0);}
+window.addEventListener('resize',resize);
+function lerp(a,b,t){return a+(b-a)*Math.min(Math.max(t,0),1);}
+function easeInOut(t){return t<.5?2*t*t:(4-2*t)*t-1;}
+function drawRoundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+
+// Step 0: Calibration data flow
+function renderStep0(p){
+  const cx=W/2,topY=20;
+  ctx.font='bold 14px PingFang SC';ctx.textAlign='center';
+  const stages=[
+    {label:'WikiText 数据集',color:'#94A3B8',y:topY},
+    {label:'过滤 (len > 50)',color:'#F59E0B',y:topY+55},
+    {label:'随机采样 128 条',color:'#0984E3',y:topY+110},
+    {label:'Tokenize (max_len=512)',color:'#6C5CE7',y:topY+165},
+    {label:'校准数据 List[Tensor]',color:'#00B894',y:topY+220},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'1A';ctx.strokeStyle=s.color;
+    drawRoundRect(cx-120,s.y,240,38,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='13px PingFang SC';
+    ctx.fillText(s.label,cx,s.y+24);
+    if(i>0){ctx.strokeStyle=s.color+'44';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+38);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+  // Arrow to GPTQ
+  if(p>.8){
+    const ap=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=ap;ctx.strokeStyle='#00B894';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(cx,topY+258);ctx.lineTo(cx,topY+280);ctx.stroke();
+    ctx.fillStyle='rgba(0,184,148,.15)';ctx.strokeStyle='#00B894';
+    drawRoundRect(cx-80,topY+285,160,30,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 12px PingFang SC';
+    ctx.fillText('→ GPTQ model.quantize()',cx,topY+305);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 1: GPTQ quantization flow
+function renderStep1(p){
+  const cx=W/2,topY=15;
+  ctx.textAlign='center';
+  const stages=[
+    {label:'加载 FP16 模型',sub:'from_pretrained()',color:'#6C5CE7',y:topY},
+    {label:'配置量化参数',sub:'bits=4, group=128, desc_act',color:'#F59E0B',y:topY+60},
+    {label:'逐层计算 Hessian',sub:'H = X·X^T (每层)',color:'#0984E3',y:topY+120},
+    {label:'逐列量化 + 误差补偿',sub:'w_q = round(w/s), 补偿后续列',color:'#EF4444',y:topY+180},
+    {label:'保存 INT4 权重 + scale',sub:'save_quantized() → safetensors',color:'#00B894',y:topY+240},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.16;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'15';ctx.strokeStyle=s.color+'88';
+    drawRoundRect(cx-140,s.y,280,45,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 12px PingFang SC';
+    ctx.fillText(s.label,cx,s.y+18);
+    ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='11px PingFang SC';
+    ctx.fillText(s.sub,cx,s.y+35);
+    if(i>0){ctx.strokeStyle=s.color+'44';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+45);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+  // Time estimate
+  if(p>.85){
+    const tp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=tp;ctx.font='12px PingFang SC';ctx.fillStyle='#F59E0B';
+    ctx.fillText('整个过程 ~60s (0.5B 模型)',cx,topY+300);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 2: AWQ flow
+function renderStep2(p){
+  const cx=W/2,topY=15;
+  ctx.textAlign='center';
+  const stages=[
+    {label:'加载模型 + Tokenizer',color:'#6C5CE7',y:topY},
+    {label:'前向传播统计激活值',sub:'saliency_j = E[||X_j||]',color:'#F59E0B',y:topY+55},
+    {label:'搜索最优缩放因子 α',sub:'α* = argmin ||WX - Ŵ(α)X||²',color:'#EF4444',y:topY+110},
+    {label:'缩放保护 + 量化',sub:'Ŵ = quant(W × s) / s',color:'#0984E3',y:topY+165},
+    {label:'保存（含 GEMM 内核）',sub:'AWQ 格式 + 推理优化',color:'#00B894',y:topY+220},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.16;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'15';ctx.strokeStyle=s.color+'88';
+    drawRoundRect(cx-140,s.y,280,42,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 12px PingFang SC';
+    ctx.fillText(s.label,cx,s.y+17);
+    if(s.sub){ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='11px Courier New';ctx.fillText(s.sub,cx,s.y+33);}
+    if(i>0){ctx.strokeStyle=s.color+'44';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+42);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+  // AWQ advantage
+  if(p>.85){
+    const tp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=tp;ctx.font='12px PingFang SC';ctx.fillStyle='#00B894';
+    ctx.fillText('AWQ: 自动校准 + GEMM 推理加速 = 最快方案',cx,topY+280);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 3: BnB NF4 flow
+function renderStep3(p){
+  const cx=W/2,topY=15;
+  ctx.textAlign='center';
+  const stages=[
+    {label:'构造 BitsAndBytesConfig',sub:'NF4 + double_quant + bf16',color:'#F59E0B',y:topY},
+    {label:'from_pretrained + 量化',sub:'加载时自动量化（无校准！）',color:'#6C5CE7',y:topY+60},
+    {label:'NF4 量化点映射',sub:'每个权重 → 最近的 16 个分位点',color:'#0984E3',y:topY+120},
+    {label:'双重量化压缩 scale',sub:'FP32 scale → INT8 scale',color:'#EF4444',y:topY+180},
+    {label:'推理时反量化 → bf16',sub:'INT4 × scale → bf16 → 计算',color:'#00B894',y:topY+240},
+  ];
+  for(let i=0;i<stages.length;i++){
+    const delay=i*.16;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const s=stages[i];
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=s.color+'15';ctx.strokeStyle=s.color+'88';
+    drawRoundRect(cx-145,s.y,290,45,8);ctx.fill();ctx.stroke();
+    ctx.fillStyle=s.color;ctx.font='bold 12px PingFang SC';
+    ctx.fillText(s.label,cx,s.y+17);
+    ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='11px PingFang SC';
+    ctx.fillText(s.sub,cx,s.y+35);
+    if(i>0){ctx.strokeStyle=s.color+'44';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,stages[i-1].y+45);ctx.lineTo(cx,s.y);ctx.stroke();}
+    ctx.globalAlpha=1;
+  }
+  // Note
+  if(p>.85){
+    const tp=easeInOut((p-.85)/.15);
+    ctx.globalAlpha=tp;ctx.font='12px PingFang SC';ctx.fillStyle='#F59E0B';
+    ctx.fillText('bitsandbytes: 最简单（零校准），适合 QLoRA 训练',cx,topY+300);
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 4: GGUF pipeline
+function renderStep4(p){
+  const cx=W/2,topY=10;
+  ctx.textAlign='center';
+  
+  // Two-step pipeline
+  const step1Y=topY+30,step2Y=topY+170;
+  
+  // Step 1 box
+  const s1p=easeInOut(Math.min(1,p/.3));
+  ctx.globalAlpha=s1p;
+  ctx.fillStyle='rgba(108,92,231,.1)';ctx.strokeStyle='rgba(108,92,231,.5)';
+  drawRoundRect(cx-160,step1Y,320,100,12);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#6C5CE7';ctx.font='bold 14px PingFang SC';
+  ctx.fillText('Step 1: HF → GGUF FP16',cx,step1Y+22);
+  ctx.fillStyle='#94A3B8';ctx.font='12px Courier New';
+  ctx.fillText('convert_hf_to_gguf.py',cx,step1Y+45);
+  ctx.fillText('safetensors → GGUF 张量布局',cx,step1Y+65);
+  ctx.fillText('输出: model-fp16.gguf (~1GB)',cx,step1Y+85);
+  ctx.globalAlpha=1;
+  
+  // Arrow
+  if(p>.3){
+    const ap=easeInOut((p-.3)/.1);
+    ctx.globalAlpha=ap;ctx.strokeStyle='#F59E0B';ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(cx,step1Y+100);ctx.lineTo(cx,step2Y);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(cx-8,step2Y-8);ctx.lineTo(cx,step2Y);ctx.lineTo(cx+8,step2Y-8);ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  
+  // Step 2 box
+  if(p>.35){
+    const s2p=easeInOut((p-.35)/.3);
+    ctx.globalAlpha=s2p;
+    ctx.fillStyle='rgba(0,184,148,.1)';ctx.strokeStyle='rgba(0,184,148,.5)';
+    drawRoundRect(cx-160,step2Y,320,120,12);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#00B894';ctx.font='bold 14px PingFang SC';
+    ctx.fillText('Step 2: llama-quantize',cx,step2Y+22);
+    
+    // Multiple outputs
+    const qtypes=[{n:'Q2_K',s:'~0.15G',c:'#EF4444'},{n:'Q4_K_M',s:'~0.30G',c:'#F59E0B'},{n:'Q8_0',s:'~0.55G',c:'#00B894'}];
+    for(let i=0;i<qtypes.length;i++){
+      const delay=.5+i*.1;
+      const qp=easeInOut(Math.max(0,Math.min(1,(p-delay)/.15)));
+      const qy=step2Y+45+i*25;
+      ctx.globalAlpha=qp;
+      ctx.fillStyle=qtypes[i].c;ctx.font='12px Courier New';
+      ctx.fillText(`${qtypes[i].n} → model-${qtypes[i].n.toLowerCase()}.gguf (${qtypes[i].s})`,cx,qy);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+// Step 5: Benchmark visualization
+function renderStep5(p){
+  const cx=W/2,topY=15;
+  ctx.textAlign='center';
+  
+  ctx.fillStyle=`rgba(249,158,11,${easeInOut(Math.min(1,p/.15))})`; ctx.font='bold 14px PingFang SC';
+  ctx.fillText('Benchmark 评测流程',cx,topY+10);
+  
+  // Metrics
+  const metrics=[
+    {name:'PPL (困惑度)',icon:'📊',desc:'exp(avg_loss) on test set',color:'#6C5CE7'},
+    {name:'Speed (tok/s)',icon:'⚡',desc:'warmup=3, runs=10, synchronize',color:'#0984E3'},
+    {name:'Size (GB)',icon:'💾',desc:'sum(file sizes in output_dir)',color:'#00B894'},
+    {name:'VRAM (GB)',icon:'🖥️',desc:'torch.cuda.memory_allocated()',color:'#F59E0B'},
+  ];
+  
+  for(let i=0;i<metrics.length;i++){
+    const delay=.15+i*.15;
+    const ap=easeInOut(Math.max(0,Math.min(1,(p-delay)/.2)));
+    const m=metrics[i];
+    const my=topY+40+i*60;
+    
+    ctx.globalAlpha=ap;
+    ctx.fillStyle=m.color+'15';ctx.strokeStyle=m.color+'66';
+    drawRoundRect(cx-150,my,300,45,10);ctx.fill();ctx.stroke();
+    
+    ctx.fillStyle=m.color;ctx.font='bold 13px PingFang SC';ctx.textAlign='left';
+    ctx.fillText(m.name,cx-135,my+18);
+    ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='11px Courier New';ctx.textAlign='left';
+    ctx.fillText(m.desc,cx-135,my+35);
+    ctx.textAlign='center';
+    ctx.globalAlpha=1;
+  }
+  
+  // Result table preview
+  if(p>.8){
+    const tp=easeInOut((p-.8)/.2);
+    ctx.globalAlpha=tp;
+    ctx.fillStyle='rgba(148,163,184,.15)';
+    drawRoundRect(cx-140,topY+290,280,30,6);ctx.fill();
+    ctx.fillStyle='#94A3B8';ctx.font='12px PingFang SC';
+    ctx.fillText('→ 生成对比表格 + JSON 报告',cx,topY+310);
+    ctx.globalAlpha=1;
+  }
+}
+
+const renderers=[renderStep0,renderStep1,renderStep2,renderStep3,renderStep4,renderStep5];
+
+function updateCodePanel(){
+  const panel=document.getElementById('codePanel');
+  const s=steps[currentStep];
+  panel.innerHTML=s.code.map((line,i)=>{
+    const cls=s.highlightLines.includes(i)?'code-line highlight':'code-line';
+    return `<div class="${cls}">${line.text||'&nbsp;'}</div>`;
+  }).join('');
+}
+
+function render(){ctx.clearRect(0,0,W,H);if(renderers[currentStep])renderers[currentStep](animProgress);}
+
+function startAnim(){
+  animProgress=0;const start=performance.now(),duration=2200;
+  function tick(now){animProgress=Math.min(1,(now-start)/duration);render();if(animProgress<1)animId=requestAnimationFrame(tick);}
+  if(animId)cancelAnimationFrame(animId);animId=requestAnimationFrame(tick);
+}
+
+function updateUI(){
+  const s=steps[currentStep];
+  document.getElementById('infoTitle').textContent=s.title;
+  document.getElementById('infoDesc').innerHTML=s.desc;
+  document.getElementById('counter').textContent=`Step ${currentStep+1}/${steps.length}`;
+  updateCodePanel();
+  const dotsEl=document.getElementById('dots');dotsEl.innerHTML='';
+  for(let i=0;i<steps.length;i++){const d=document.createElement('span');if(i===currentStep)d.className='active';d.onclick=()=>{currentStep=i;updateUI();startAnim();};dotsEl.appendChild(d);}
+}
+
+function nextStep(){if(currentStep<steps.length-1){currentStep++;updateUI();startAnim();}}
+function prevStep(){if(currentStep>0){currentStep--;updateUI();startAnim();}}
+function replay(){startAnim();}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')nextStep();else if(e.key==='ArrowLeft')prevStep();});
+
+resize();updateUI();startAnim();
+</script>
+</body>
+</html>
