@@ -60,6 +60,8 @@ def generate(model, tokenizer, prompt: str, max_new_tokens: int = 150) -> str:
             temperature=0.7,
             top_p=0.9,
             do_sample=True,
+            repetition_penalty=1.3,        # 惩罚重复 token（>1.0 越大越强）
+            no_repeat_ngram_size=4,        # 禁止 4-gram 以上的重复
             pad_token_id=tokenizer.eos_token_id,
         )
     new_tokens = outputs[0][inputs["input_ids"].shape[1]:]

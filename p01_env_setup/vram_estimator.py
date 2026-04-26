@@ -545,7 +545,7 @@ def main():
     try:
         import torch
         if torch.cuda.is_available():
-            vram = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+            vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
             if result["total_gb"] < vram * 0.9:  # 留 10% 余量
                 print(f"\n  ✅ 当前 GPU ({vram:.0f}GB) 可以训练！")
             else:

@@ -30,6 +30,9 @@ import os
 import sys
 import argparse
 
+# 禁用 DeepSpeed FusedAdam，避免 GCC/Python 开发头文件编译问题
+os.environ["DS_BUILD_FUSED_ADAM"] = "0"
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config import PretrainConfig, config
@@ -130,6 +133,32 @@ def train(cfg: PretrainConfig, args):
         remove_unused_columns=False,
     )
     
+    # ---- 创建优化器（避免 DeepSpeed 自动使用 FusedAdam）----
+    # 当使用 DeepSpeed 时，传入自定义优化器可防止 DeepSpeed 尝试编译 FusedAdam
+    # 这在系统缺少 GCC 9+ 或 Python 开发头文件时非常有用
+    if args.deepspeed:
+        print("  使用自定义 AdamW 优化器（避免 FusedAdam 编译）")
+        import torch
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": cfg.weight_decay,
+            },
+            {
+                "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer = torch.optim.AdamW(
+            optimizer_grouped_parameters,
+            lr=args.learning_rate or cfg.learning_rate,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+        )
+    else:
+        optimizer = None
+    
     # ---- 创建 Trainer ----
     trainer = Trainer(
         model=model,
@@ -137,6 +166,7 @@ def train(cfg: PretrainConfig, args):
         train_dataset=train_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
+        optimizers=(optimizer, None) if optimizer else (None, None),
     )
     
     # 打印训练信息

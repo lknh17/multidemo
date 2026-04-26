@@ -142,21 +142,21 @@ def train_dpo(cfg: DPOConfig, args):
         max_samples=args.max_samples,
     )
     
-    # 划分训练/验证集
-    eval_size = max(1, int(len(dataset) * cfg.eval_ratio))
-    train_size = len(dataset) - eval_size
+    # 转换为 HuggingFace Dataset（DPOTrainer 需要调用 .map()）
+    from datasets import Dataset as HFDataset
+    hf_dataset = HFDataset.from_list(dataset.samples)
     
-    import torch.utils.data
-    train_dataset, eval_dataset = torch.utils.data.random_split(
-        dataset, [train_size, eval_size]
-    )
+    # 划分训练/验证集
+    split = hf_dataset.train_test_split(test_size=cfg.eval_ratio, seed=cfg.seed)
+    train_dataset = split["train"]
+    eval_dataset = split["test"]
     
     # ---- LoRA 配置 ----
     peft_config = None
     if cfg.use_lora:
         print("\n[4/5] 配置 LoRA...")
         peft_config = create_lora_config(cfg)
-        trainable = sum(cfg.lora_r * 2 * len(cfg.lora_target_modules))
+        trainable = cfg.lora_r * 2 * len(cfg.lora_target_modules)
         print(f"  LoRA r={cfg.lora_r}, alpha={cfg.lora_alpha}")
     else:
         print("\n[4/5] 全参训练（不使用 LoRA）")

@@ -27,10 +27,10 @@ class PretrainConfig:
     model_name: str = "Qwen/Qwen2.5-0.5B"      # 基座模型
     
     # ---- 数据 ----
-    dataset_name: str = "wikipedia"               # 数据集名称
-    dataset_config: str = "20220301.zh"           # Wikipedia 中文子集
+    dataset_name: str = "wikimedia/wikipedia"     # 数据集名称（新版）
+    dataset_config: str = "20231101.zh"           # Wikipedia 中文子集
     dataset_split: str = "train"
-    max_samples: int = 50000                      # 使用的最大样本数（控制训练时间）
+    max_samples: int = 10000                      # 长文本 10000 条已足够（优于 50000 条短句）
     streaming: bool = True                        # 流式加载（节省内存）
     
     # ---- Tokenize & Packing ----
@@ -41,7 +41,7 @@ class PretrainConfig:
     num_train_epochs: int = 1                     # 训练轮数（继续预训练通常 1-3 轮）
     per_device_train_batch_size: int = 4          # 每设备 batch size
     gradient_accumulation_steps: int = 4          # 梯度累积步数（等效 batch = 4×4 = 16）
-    learning_rate: float = 2e-5                   # 学习率（继续预训练用比 SFT 更小的 lr）
+    learning_rate: float = 5e-6                   # 学习率（降低到 5e-6，防止小模型灾难性遗忘）
     lr_scheduler_type: str = "cosine"             # 学习率策略: cosine / linear / constant
     warmup_ratio: float = 0.05                    # Warmup 比例（总步数的 5%）
     weight_decay: float = 0.01                    # 权重衰减

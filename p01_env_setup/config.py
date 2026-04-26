@@ -31,7 +31,7 @@ def detect_gpu_preset() -> str:
         import torch
         if torch.cuda.is_available():
             # 获取第一张 GPU 的显存（单位：GB）
-            vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
             gpu_name = torch.cuda.get_device_name(0)
             print(f"[GPU 检测] {gpu_name} | 显存: {vram_gb:.1f} GB")
             
@@ -60,7 +60,7 @@ class EnvConfig:
     # ---- 模型路径 ----
     base_model_name: str = "Qwen/Qwen2.5-0.5B"           # 基座模型（贯穿 p01-p05）
     chat_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"  # Chat 版本（用于对比）
-    vl_model_name: str = "Qwen/Qwen2.5-VL-2B-Instruct"   # 多模态模型（p06 使用）
+    vl_model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"   # 多模态模型（p06 使用）
     
     # 本地缓存路径（模型下载后的存储位置）
     model_cache_dir: str = os.path.expanduser("~/.cache/huggingface/hub")
