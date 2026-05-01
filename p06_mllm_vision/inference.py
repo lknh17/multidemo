@@ -62,7 +62,7 @@ TEST_CASES = [
 def load_model(model_path: str):
     """加载 Qwen2.5-VL 模型"""
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
+    from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
     
     print(f"  加载模型: {model_path}")
     
@@ -77,11 +77,10 @@ def load_model(model_path: str):
         )
         processor = None
     
-    model = AutoModelForCausalLM.from_pretrained(
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        trust_remote_code=True,
     )
     model.eval()
     
@@ -220,7 +219,7 @@ def create_test_image(save_path: str = "data/test_image.jpg"):
     
     draw.text((50, 280), "MLLM 视觉理解测试", fill=(0, 0, 0), font=font)
     draw.text((50, 330), "蓝色方块 · 红色圆形 · 绿色三角", fill=(100, 100, 100), font=font)
-    draw.text((50, 380), "Qwen2.5-VL-2B", fill=(65, 105, 225), font=font)
+    draw.text((50, 380), "Qwen2.5-VL-3B", fill=(65, 105, 225), font=font)
     draw.text((50, 420), "2024 多模态微调实验", fill=(100, 100, 100), font=font)
     
     img.save(save_path, quality=95)
@@ -234,7 +233,7 @@ def create_test_image(save_path: str = "data/test_image.jpg"):
 def main():
     parser = argparse.ArgumentParser(description="MLLM 多模态推理")
     parser.add_argument("--model-path", type=str, default=None,
-                       help="模型路径（默认: 原始 Qwen2.5-VL-2B）")
+                       help="模型路径（默认: 原始 Qwen2.5-VL-3B）")
     parser.add_argument("--image", type=str, default=None,
                        help="输入图像路径")
     parser.add_argument("--question", type=str, default=None,

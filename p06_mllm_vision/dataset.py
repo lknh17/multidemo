@@ -254,21 +254,70 @@ class MLLMDataset:
         
         sample = self.data[idx]
         
-        # 加载并预处理图像
+        # 加载图像
         image_path = sample.get("image", "")
         image = self._load_image(image_path)
-        pixel_values = self.processor(image)
         
-        # 构建对话并 tokenize
+        # 构建对话消息
         messages = self._build_prompt(sample)
-        tokens = self._tokenize_messages(messages)
         
-        return {
-            "pixel_values": pixel_values,
-            "input_ids": tokens["input_ids"],
-            "attention_mask": tokens["attention_mask"],
-            "labels": tokens["labels"],
-        }
+        # 使用 processor 处理图文输入（适配 Qwen2.5-VL）
+        if hasattr(self.processor, 'apply_chat_template'):
+            # Qwen2.5-VL AutoProcessor
+            # 构造带图片引用的消息格式
+            qwen_messages = []
+            for msg in messages:
+                if msg["role"] == "user":
+                    content_parts = []
+                    if "<|image_pad|>" in msg["content"]:
+                        content_parts.append({"type": "image", "image": image})
+                        text = msg["content"].replace("<|image_pad|>", "").strip()
+                    else:
+                        text = msg["content"]
+                    if text:
+                        content_parts.append({"type": "text", "text": text})
+                    qwen_messages.append({"role": "user", "content": content_parts})
+                else:
+                    qwen_messages.append({"role": msg["role"], "content": msg["content"]})
+            
+            text = self.processor.apply_chat_template(
+                qwen_messages, tokenize=False, add_generation_prompt=False,
+            )
+            # 不截断，保持图像 token 和 pixel_values 一致
+            inputs = self.processor(
+                text=[text], images=[image],
+                padding=False, return_tensors="pt",
+            )
+            
+            input_ids = inputs["input_ids"].squeeze(0)
+            attention_mask = inputs["attention_mask"].squeeze(0)
+            
+            # 构造 labels：只对 assistant 部分计算 loss
+            labels = input_ids.clone()
+            labels[attention_mask == 0] = -100
+            
+            result = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": labels,
+            }
+            # 传递视觉相关字段（保持原始 shape）
+            if "pixel_values" in inputs:
+                result["pixel_values"] = inputs["pixel_values"]
+            if "image_grid_thw" in inputs:
+                result["image_grid_thw"] = inputs["image_grid_thw"]
+            
+            return result
+        else:
+            # Fallback: 自定义 ImageProcessor
+            pixel_values = self.processor(image)
+            tokens = self._tokenize_messages(messages)
+            return {
+                "pixel_values": pixel_values,
+                "input_ids": tokens["input_ids"],
+                "attention_mask": tokens["attention_mask"],
+                "labels": tokens["labels"],
+            }
 
 
 # ============================================================

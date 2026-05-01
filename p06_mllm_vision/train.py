@@ -1,7 +1,7 @@
 """
 p06 MLLM 多模态视觉微调 - 主训练脚本
 
-对 Qwen2.5-VL-2B 进行多模态指令微调，支持三种冻结策略：
+对 Qwen2.5-VL-3B 进行多模态指令微调，支持三种冻结策略：
 1. freeze_vision: 冻结视觉编码器，只训练 LLM + 投影层（推荐）
 2. partial_unfreeze: 冻结视觉编码器前 N 层，解冻后几层
 3. full: 全模型端到端训练
@@ -116,7 +116,6 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
     """执行多模态微调"""
     import torch
     from transformers import (
-        AutoModelForCausalLM,
         AutoTokenizer,
         AutoProcessor,
         TrainingArguments,
@@ -156,10 +155,10 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
     
     # ---- 加载模型 ----
     print("\n[2/5] 加载模型...")
-    model = AutoModelForCausalLM.from_pretrained(
+    from transformers import Qwen2_5_VLForConditionalGeneration
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         cfg.model_name,
         torch_dtype=torch.bfloat16 if cfg.bf16 else torch.float32,
-        trust_remote_code=cfg.trust_remote_code,
         attn_implementation="flash_attention_2" if args.flash_attn else "eager",
     )
     
@@ -171,18 +170,21 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
         unfreeze_layers=args.unfreeze_layers or cfg.vision_unfreeze_layers,
     )
     
-    # 启用 gradient checkpointing
-    if cfg.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
-        print("  ✅ Gradient Checkpointing 已启用")
-    
     # 应用 LoRA（可选）
     use_lora = lora_cfg.use_lora and not args.no_lora
+    
+    # 启用 gradient checkpointing（仅在不使用 LoRA 时，避免 FPE 问题）
+    use_gc = cfg.gradient_checkpointing and not use_lora
+    if use_gc:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.enable_input_require_grads()
+        print("  ✅ Gradient Checkpointing 已启用 (use_reentrant=False)")
+    
     if use_lora:
         print("\n  应用 LoRA...")
         model = apply_lora(model, lora_cfg)
     
-    print_model_summary(model, "Qwen2.5-VL-2B")
+    print_model_summary(model, "Qwen2.5-VL-3B")
     
     # ---- 准备数据 ----
     print("\n[4/5] 准备数据...")
@@ -208,8 +210,10 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
     
     lr = lora_cfg.learning_rate if use_lora else (args.learning_rate or cfg.learning_rate)
     
+    output_dir = args.output_dir or cfg.output_dir
+    
     training_args = TrainingArguments(
-        output_dir=cfg.output_dir,
+        output_dir=output_dir,
         num_train_epochs=cfg.num_train_epochs,
         per_device_train_batch_size=cfg.per_device_train_batch_size,
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
@@ -226,10 +230,42 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
         evaluation_strategy="steps" if val_dataset else "no",
         seed=cfg.seed,
         report_to="none",
-        gradient_checkpointing=cfg.gradient_checkpointing,
+        gradient_checkpointing=use_gc,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if use_gc else None,
         remove_unused_columns=False,
-        dataloader_pin_memory=True,
+        dataloader_pin_memory=False,
     )
+    
+    # ---- 自定义 data collator ----
+    def mllm_collate_fn(batch):
+        """处理变长多模态输入的 collate 函数"""
+        import torch
+        
+        # Pad input_ids, attention_mask, labels 到 batch 内最大长度
+        max_len = max(b["input_ids"].shape[0] for b in batch)
+        pad_token_id = tokenizer.pad_token_id or 0
+        
+        input_ids_list, attention_mask_list, labels_list = [], [], []
+        for b in batch:
+            seq_len = b["input_ids"].shape[0]
+            pad_len = max_len - seq_len
+            input_ids_list.append(torch.cat([b["input_ids"], torch.full((pad_len,), pad_token_id, dtype=torch.long)]))
+            attention_mask_list.append(torch.cat([b["attention_mask"], torch.zeros(pad_len, dtype=torch.long)]))
+            labels_list.append(torch.cat([b["labels"], torch.full((pad_len,), -100, dtype=torch.long)]))
+        
+        result = {
+            "input_ids": torch.stack(input_ids_list),
+            "attention_mask": torch.stack(attention_mask_list),
+            "labels": torch.stack(labels_list),
+        }
+        
+        # pixel_values: 拼接（不同图片 token 数不同）
+        if "pixel_values" in batch[0]:
+            result["pixel_values"] = torch.cat([b["pixel_values"] for b in batch], dim=0)
+        if "image_grid_thw" in batch[0]:
+            result["image_grid_thw"] = torch.cat([b["image_grid_thw"] for b in batch], dim=0)
+        
+        return result
     
     # ---- 创建 Trainer ----
     trainer = Trainer(
@@ -237,7 +273,7 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        tokenizer=tokenizer,
+        data_collator=mllm_collate_fn,
     )
     
     # 打印训练信息
@@ -251,14 +287,14 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
     print(f"    Batch Size:     {cfg.per_device_train_batch_size} × {cfg.gradient_accumulation_steps} = {eff_batch}")
     print(f"    学习率:         {lr}")
     print(f"    预计步数:       ~{total_steps}")
-    print(f"    输出目录:       {cfg.output_dir}")
+    print(f"    输出目录:       {output_dir}")
     
     # ---- 训练 ----
     resume_from = args.resume_from_checkpoint
     trainer.train(resume_from_checkpoint=resume_from)
     
     # ---- 保存最终模型 ----
-    final_dir = os.path.join(cfg.output_dir, "final")
+    final_dir = os.path.join(output_dir, "final")
     trainer.save_model(final_dir)
     tokenizer.save_pretrained(final_dir)
     
@@ -285,6 +321,8 @@ def main():
                        help="不使用 LoRA，全参训练 LLM 部分")
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--flash-attn", action="store_true")
+    parser.add_argument("--output-dir", type=str, default=None,
+                       help="输出目录（覆盖 config 中的 output_dir）")
     parser.add_argument("--resume-from-checkpoint", type=str, default=None)
     parser.add_argument("--local_rank", type=int, default=-1)
     args = parser.parse_args()

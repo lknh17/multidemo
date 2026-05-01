@@ -11,7 +11,7 @@
 ```python
 @dataclass
 class MLLMConfig:
-    model_name: str = "Qwen/Qwen2.5-VL-2B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"
     freeze_strategy: str = "freeze_vision"    # 三种策略
     vision_unfreeze_layers: int = 4           # partial_unfreeze 时解冻的层数
 ```

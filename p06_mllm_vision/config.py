@@ -14,6 +14,9 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional, List
 
+# 设置 HuggingFace 镜像（国内加速）
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -25,7 +28,7 @@ class MLLMConfig:
     """多模态大语言模型微调配置"""
     
     # ---- 模型 ----
-    model_name: str = "Qwen/Qwen2.5-VL-2B-Instruct"   # 基座模型
+    model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"   # 基座模型
     trust_remote_code: bool = True
     
     # ---- 冻结策略 ----
@@ -42,9 +45,9 @@ class MLLMConfig:
     val_ratio: float = 0.05                              # 验证集比例
     
     # ---- 训练超参数 ----
-    num_train_epochs: int = 3                            # 训练轮数
-    per_device_train_batch_size: int = 2                 # 每设备 batch size（VL 模型较大）
-    gradient_accumulation_steps: int = 8                 # 梯度累积（等效 batch = 2×8 = 16）
+    num_train_epochs: int = 1                            # 训练轮数
+    per_device_train_batch_size: int = 1                 # 每设备 batch size
+    gradient_accumulation_steps: int = 1                 # 梯度累积
     learning_rate: float = 1e-5                          # 学习率（冻结 vision 时可用较大 lr）
     lr_scheduler_type: str = "cosine"                    # 学习率策略
     warmup_ratio: float = 0.03                           # Warmup 比例
@@ -52,7 +55,7 @@ class MLLMConfig:
     max_grad_norm: float = 1.0                           # 梯度裁剪
     
     # ---- 序列长度 ----
-    max_seq_length: int = 2048                           # 最大文本序列长度
+    max_seq_length: int = 512                            # 最大文本序列长度
     
     # ---- 精度 & 优化 ----
     bf16: bool = True                                    # 使用 bf16 混合精度
@@ -98,7 +101,7 @@ class ImageConfig:
     
     image_size: int = 448                                # Qwen2.5-VL 默认输入分辨率
     min_pixels: int = 256 * 28 * 28                      # 最小像素数
-    max_pixels: int = 1280 * 28 * 28                     # 最大像素数
+    max_pixels: int = 512 * 28 * 28                       # 最大像素数（控制视觉 token 数）
     
     # 归一化参数（ImageNet 标准）
     mean: List[float] = field(default_factory=lambda: [0.485, 0.456, 0.406])

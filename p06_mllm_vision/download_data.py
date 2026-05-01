@@ -46,12 +46,31 @@ def download_llava_instruct(max_samples: int = 20000, cache_dir: str = None):
     if os.environ.get("HF_ENDPOINT"):
         print(f"  镜像: {os.environ['HF_ENDPOINT']}")
     
-    # 加载 LLaVA-Instruct-150K
-    dataset = load_dataset(
-        "liuhaotian/LLaVA-Instruct-150K",
-        split="train",
-        trust_remote_code=True,
-    )
+    # 加载 LLaVA-Instruct-150K（只加载 llava_instruct_150k.json 避免多文件格式冲突）
+    try:
+        dataset = load_dataset(
+            "liuhaotian/LLaVA-Instruct-150K",
+            data_files="llava_instruct_150k.json",
+            split="train",
+            trust_remote_code=True,
+        )
+    except Exception as e:
+        print(f"  ⚠️ load_dataset 失败: {e}")
+        print("  尝试使用 huggingface_hub 直接下载 JSON...")
+        from huggingface_hub import hf_hub_download
+        local_path = hf_hub_download(
+            repo_id="liuhaotian/LLaVA-Instruct-150K",
+            filename="llava_instruct_150k.json",
+            repo_type="dataset",
+        )
+        import json as _json
+        with open(local_path, "r", encoding="utf-8") as f:
+            raw_data = _json.load(f)
+        # 转为 datasets 兼容格式
+        from datasets import Dataset
+        for item in raw_data:
+            item["id"] = str(item.get("id", ""))
+        dataset = Dataset.from_list(raw_data)
     
     # 随机采样子集
     total = len(dataset)
@@ -198,6 +217,79 @@ def save_data(samples: list, save_path: str):
 
 
 # ============================================================
+# 4.5 下载 COCO 图片（只下载数据集用到的）
+# ============================================================
+def download_coco_images(samples: list, image_dir: str = "data/images", max_workers: int = 8):
+    """
+    根据样本中的 image 字段，从 COCO 官方下载对应图片。
+    只下载数据集实际用到的图片，而非整个 COCO train2017。
+    
+    图片 URL 格式: http://images.cocodataset.org/train2017/{filename}
+    """
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    os.makedirs(image_dir, exist_ok=True)
+    
+    # 收集需要下载的图片
+    image_files = set()
+    for s in samples:
+        img = s.get("image", "")
+        if img:
+            image_files.add(img)
+    
+    # 过滤已存在的
+    to_download = []
+    for img in image_files:
+        local_path = os.path.join(image_dir, img)
+        if not os.path.exists(local_path):
+            to_download.append(img)
+    
+    if not to_download:
+        print(f"\n  ✅ 所有 {len(image_files)} 张图片已存在，跳过下载")
+        return image_dir
+    
+    print(f"\n下载 COCO 图片...")
+    print(f"  需要下载: {len(to_download)} 张（已存在: {len(image_files) - len(to_download)} 张）")
+    print(f"  保存目录: {image_dir}")
+    
+    # COCO 图片 URL 基础地址
+    base_url = "http://images.cocodataset.org/train2017/"
+    
+    success = 0
+    failed = []
+    
+    def download_one(filename):
+        url = base_url + filename
+        local_path = os.path.join(image_dir, filename)
+        try:
+            urllib.request.urlretrieve(url, local_path)
+            return True, filename
+        except Exception as e:
+            return False, filename
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(download_one, img): img for img in to_download}
+        done_count = 0
+        for future in as_completed(futures):
+            done_count += 1
+            ok, filename = future.result()
+            if ok:
+                success += 1
+            else:
+                failed.append(filename)
+            
+            if done_count % 100 == 0 or done_count == len(to_download):
+                print(f"  进度: {done_count}/{len(to_download)} (成功: {success}, 失败: {len(failed)})")
+    
+    print(f"\n  ✅ 图片下载完成: 成功 {success} 张, 失败 {len(failed)} 张")
+    if failed:
+        print(f"  ⚠️ 失败列表（前10）: {failed[:10]}")
+    
+    return image_dir
+
+
+# ============================================================
 # 5. 主流程
 # ============================================================
 def main():
@@ -234,10 +326,15 @@ def main():
     parsed_path = args.output.replace(".json", "_parsed.json")
     save_data(parsed_samples, parsed_path)
     
+    # 下载 COCO 图片
+    image_dir = os.path.join(os.path.dirname(args.output), "images")
+    download_coco_images(samples, image_dir=image_dir)
+    
     print("\n" + "=" * 60)
     print("  ✅ 数据下载完成！")
     print(f"  原始数据: {args.output}")
     print(f"  解析数据: {parsed_path}")
+    print(f"  图片目录: {image_dir}")
     print(f"  下一步: python train.py")
     print("=" * 60)
 

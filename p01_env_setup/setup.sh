@@ -18,6 +18,13 @@
 
 set -e  # 遇到错误立即退出
 
+# ---- 0. 配置 python 和 pip 别名 ----
+# 确保 python 命令指向 python3，pip 命令指向 pip3
+shopt -s expand_aliases
+alias python=python3
+alias pip=pip3
+echo "[Pre-check] 已配置 python→python3, pip→pip3 别名"
+
 echo "=================================================="
 echo "  实践大模型 - 环境一键安装"
 echo "=================================================="
