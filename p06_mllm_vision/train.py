@@ -227,7 +227,7 @@ def train(cfg: MLLMConfig, lora_cfg: LoRAConfig, img_cfg: ImageConfig, args):
         save_steps=cfg.save_steps,
         save_total_limit=cfg.save_total_limit,
         eval_steps=cfg.eval_steps if val_dataset else None,
-        evaluation_strategy="steps" if val_dataset else "no",
+        eval_strategy="steps" if val_dataset else "no",
         seed=cfg.seed,
         report_to="none",
         gradient_checkpointing=use_gc,
@@ -326,7 +326,8 @@ def main():
     parser.add_argument("--resume-from-checkpoint", type=str, default=None)
     parser.add_argument("--local_rank", type=int, default=-1)
     args = parser.parse_args()
-    
+
+
     train(config, lora_config, image_config, args)
 
 

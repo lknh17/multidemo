@@ -71,3 +71,6 @@ runs/
 
 # Codebuddy internal
 .codebuddy/
+
+# Full training outputs (too large)
+full_output/

@@ -59,31 +59,45 @@ TEST_CASES = [
 # ============================================================
 # 1. 模型加载
 # ============================================================
-def load_model(model_path: str):
-    """加载 Qwen2.5-VL 模型"""
+def load_model(model_path: str, base_model: str = None):
+    """
+    加载 Qwen2.5-VL 模型，支持三种模式：
+    1. 全参微调模型（目录下有 model*.safetensors）
+    2. LoRA adapter（目录下有 adapter_model.safetensors）
+    3. 原始 HuggingFace 模型名
+    """
     import torch
     from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
     
     print(f"  加载模型: {model_path}")
     
+    base_model = base_model or config.model_name
+    is_adapter = os.path.exists(os.path.join(model_path, "adapter_model.safetensors"))
+    
+    # 加载 processor（优先从模型路径，fallback 到基座模型）
     try:
-        processor = AutoProcessor.from_pretrained(
-            model_path, trust_remote_code=True
-        )
-        tokenizer = processor.tokenizer
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=True
+        processor = AutoProcessor.from_pretrained(base_model, trust_remote_code=True)
+    tokenizer = processor.tokenizer
+    
+    if is_adapter:
+        # LoRA adapter: 先加载基座模型，再加载 adapter
+        print(f"  检测到 LoRA adapter，加载基座模型: {base_model}")
+        from peft import PeftModel
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            base_model, torch_dtype=torch.bfloat16, device_map="auto",
         )
-        processor = None
+        model = PeftModel.from_pretrained(model, model_path)
+        model = model.merge_and_unload()
+        print("  ✅ LoRA adapter 已合并")
+    else:
+        # 全参微调模型 或 原始模型
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_path, torch_dtype=torch.bfloat16, device_map="auto",
+        )
     
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
     model.eval()
-    
     return model, tokenizer, processor
 
 
@@ -249,7 +263,7 @@ def main():
     
     # 加载模型
     print("\n加载模型...")
-    model, tokenizer, processor = load_model(model_path)
+    model, tokenizer, processor = load_model(model_path, base_model=args.base_model)
     
     # 单张图像推理模式
     if args.image and args.question:
