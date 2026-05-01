@@ -18,6 +18,20 @@ import sys
 import time
 import json
 import argparse
+
+# 阻止 autoawq 的 triton kernel 模块加载（triton 2.1 不兼容 autoawq 0.2.9）
+# 只 block triton 相关子模块，允许 awq 其他模块正常导入
+class _AwqTritonBlocker:
+    """拦截 awq.modules.triton 相关模块的导入"""
+    def find_module(self, name, path=None):
+        if name.startswith('awq.modules.triton') or name.startswith('awq.nn_modules.triton'):
+            return self
+        return None
+    def load_module(self, name):
+        raise ImportError(f"{name} blocked (triton version incompatible)")
+
+sys.meta_path.insert(0, _AwqTritonBlocker())
+
 import torch
 import numpy as np
 from pathlib import Path
@@ -68,6 +82,17 @@ def clear_gpu():
     gc.collect()
 
 
+def get_model_device(model):
+    """获取模型所在设备（兼容不同模型类型）"""
+    if hasattr(model, "device"):
+        return model.device
+    # AWQ / 其他自定义模型：从第一个参数获取 device
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def compute_perplexity(model, tokenizer, dataset_name="wikitext", n_samples=256, max_length=512):
     """计算困惑度"""
     from datasets import load_dataset
@@ -78,11 +103,12 @@ def compute_perplexity(model, tokenizer, dataset_name="wikitext", n_samples=256,
     model.eval()
     total_loss = 0.0
     total_tokens = 0
+    device = get_model_device(model)
     
     with torch.no_grad():
         for text in texts:
             inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+            inputs = {k: v.to(device) for k, v in inputs.items()}
             
             outputs = model(**inputs, labels=inputs["input_ids"])
             seq_len = inputs["input_ids"].shape[1]
@@ -104,7 +130,8 @@ def measure_inference_speed(
     # 生成固定输入
     prompt = "人工智能技术的快速发展正在改变" * (input_length // 10)
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=input_length)
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    device = get_model_device(model)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
     
     # Warmup
     for _ in range(warmup_runs):
@@ -199,9 +226,8 @@ def benchmark_gptq(model_dir: str = None) -> BenchmarkResult:
 
 
 def benchmark_awq(model_dir: str = None) -> BenchmarkResult:
-    """评测 AWQ 量化模型"""
-    from awq import AutoAWQForCausalLM
-    from transformers import AutoTokenizer
+    """评测 AWQ 量化模型（使用 transformers 原生 AWQ 支持）"""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     
     model_dir = model_dir or awq_config.output_dir
     result = BenchmarkResult(method="AWQ", bits=f"{awq_config.bits}-bit")
@@ -215,8 +241,9 @@ def benchmark_awq(model_dir: str = None) -> BenchmarkResult:
     
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     
+    # 使用 transformers 原生加载 AWQ 模型（避免 autoawq triton 兼容问题）
     start = time.time()
-    model = AutoAWQForCausalLM.from_quantized(
+    model = AutoModelForCausalLM.from_pretrained(
         model_dir,
         device_map="auto",
         trust_remote_code=True,
@@ -247,17 +274,30 @@ def benchmark_bnb(model_name: str = None) -> BenchmarkResult:
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=torch.float16,
         bnb_4bit_use_double_quant=True,
     )
     
-    start = time.time()
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        quantization_config=quantization_config,
-        device_map="auto",
-        trust_remote_code=True,
-    )
+    # Monkey-patch: bnb 0.42 已支持 4-bit on GPU，但 transformers 4.51.3
+    # 在 dispatch_model 时会对 bnb<0.43.2 的模型 to() 调用抛异常
+    import transformers.modeling_utils as _mu
+    _orig_to = _mu.PreTrainedModel.to
+    def _patched_to(self, *args, **kwargs):
+        if getattr(self, "is_quantized", False):
+            return self
+        return _orig_to(self, *args, **kwargs)
+    _mu.PreTrainedModel.to = _patched_to
+    
+    try:
+        start = time.time()
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=quantization_config,
+            device_map={"": 0},
+            trust_remote_code=True,
+        )
+    finally:
+        _mu.PreTrainedModel.to = _orig_to
     result.load_time_sec = time.time() - start
     result.vram_gb = measure_vram()
     
@@ -345,7 +385,10 @@ def run_benchmark(methods: List[str] = None, skip_perplexity: bool = False):
                 continue
             
             results.append(result)
-            print(f"  PPL={result.perplexity:.2f}, Speed={result.tokens_per_sec:.1f} tok/s, VRAM={result.vram_gb:.2f}G")
+            if result.notes:
+                print(f"  ⚠️ 跳过: {result.notes}")
+            else:
+                print(f"  PPL={result.perplexity:.2f}, Speed={result.tokens_per_sec:.1f} tok/s, VRAM={result.vram_gb:.2f}G")
             
         except Exception as e:
             print(f"  ❌ 评测失败: {e}")

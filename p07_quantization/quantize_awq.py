@@ -80,13 +80,19 @@ def quantize_awq(
         "version": version,
     }
     
+    # 手动加载校准数据（autoawq 内部不支持 wikitext 的 config name）
+    from datasets import load_dataset
+    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    calib_texts = [item["text"] for item in dataset if len(item["text"].strip()) > 50]
+    calib_texts = calib_texts[:calibration_samples]
+    
     start_time = time.time()
     model.quantize(
         tokenizer,
         quant_config=quant_config,
-        calib_data="wikitext",
-        n_samples=calibration_samples,
-        seqlen=calibration_seq_length,
+        calib_data=calib_texts,
+        max_calib_samples=calibration_samples,
+        max_calib_seq_len=calibration_seq_length,
     )
     quant_time = time.time() - start_time
     print(f"  量化耗时: {quant_time:.1f}s")

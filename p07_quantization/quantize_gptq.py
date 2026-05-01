@@ -53,12 +53,15 @@ def prepare_calibration_data(
     indices = rng.choice(len(texts), min(n_samples * 3, len(texts)), replace=False)
     selected_texts = [texts[i] for i in indices]
     
-    # Tokenize
+    # Tokenize — auto_gptq 0.7+ 期望 list[dict] 格式
     calibration_data = []
     for text in selected_texts:
         tokens = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_length)
         if tokens.input_ids.shape[1] >= seq_length // 2:
-            calibration_data.append(tokens.input_ids)
+            calibration_data.append({
+                "input_ids": tokens.input_ids,
+                "attention_mask": tokens.attention_mask,
+            })
         if len(calibration_data) >= n_samples:
             break
     
